@@ -1,0 +1,2523 @@
+/*
+ * Open source copyright declaration based on BSD open source template:
+ * http://www.opensource.org/licenses/bsd-license.php
+ *
+ * This file is part of the OPS distribution.
+ *
+ * Copyright (c) 2013, Mike Giles and others. Please see the AUTHORS file in
+ * the main source directory for a full list of copyright holders.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * * Redistributions of source code must retain the above copyright
+ * notice, this list of conditions and the following disclaimer.
+ * * Redistributions in binary form must reproduce the above copyright
+ * notice, this list of conditions and the following disclaimer in the
+ * documentation and/or other materials provided with the distribution.
+ * * The name of Mike Giles may not be used to endorse or promote products
+ * derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY Mike Giles ''AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL Mike Giles BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/** @file
+ * @brief HDF5 file I/O backend implementation for MPI
+ * @author Gihan Mudalige (started 28-08-2015)
+ * @details Implements the OPS API calls for the HDF5 file I/O functionality
+ */
+
+#include <math.h>
+#include <mpi.h>
+#include <ops_mpi_core.h>
+#include <ops_util.h>
+#include <ops_exceptions.h>
+#include <tuple>
+#include <vector>
+#include <sstream>
+#include <string>
+
+// Use version 2 of H5Dopen H5Acreate and H5Dcreate
+#define H5Dopen_vers 2
+#define H5Acreate_vers 2
+#define H5Dcreate_vers 2
+
+// hdf5 header
+#include <hdf5.h>
+#include <hdf5_hl.h>
+#include "ops_hdf5_common.h"
+
+static char *copy_str(char const *src) {
+  const size_t len = strlen(src) + 1;
+  char *dest = (char *)calloc(len + 16, sizeof(char));
+  return strncpy(dest, src, len);
+}
+
+//
+// MPI Communicator for parallel I/O
+//
+
+MPI_Comm OPS_MPI_HDF5_WORLD;
+
+extern sub_block_list *OPS_sub_block_list; // pointer to list holding sub-block
+// geometries
+
+extern sub_dat_list *OPS_sub_dat_list; // pointer to list holding sub-dat
+// details
+
+extern void (*ops_read_dat_hdf5_dynamic)(ops_dat dat);
+
+
+void remove_mpi_halos(ops_dat dat, hsize_t *size, hsize_t *disp, char *data, int dimensions) {
+  int index = 0;
+  int count = 0;
+  for (int m = (dimensions > 4 ? disp[4] : 0); m < (dimensions > 4 ? disp[4] + size[4] : 1); m++) {
+    for (int l = (dimensions > 3 ? disp[3] : 0); l < (dimensions > 3 ? disp[3] + size[3] : 1); l++) {
+      for (int k = (dimensions > 2 ? disp[2] : 0); k < (dimensions > 2 ? disp[2] + size[2] : 1); k++) {
+        for (int j = (dimensions > 1 ? disp[1] : 0); j < (dimensions > 1 ? disp[1] + size[1] : 1); j++) {
+          for (int i = disp[0]; i < disp[0] + size[0]; i++) {
+            index = i + (j * (dimensions > 1 ? dat->size[0] : 0)) + (k * (dimensions > 2 ? dat->size[0] * dat->size[1] : 0))
+                    + (l * (dimensions > 3 ? dat->size[0] * dat->size[1] * dat->size[2] : 0))
+                    + (m * (dimensions > 4 ? dat->size[0] * dat->size[1] * dat->size[2] * dat->size[3] : 0));
+            memcpy(&data[count * dat->elem_size], &dat->data[index * dat->elem_size], dat->elem_size);
+            count++;
+          }
+        }
+      }
+    }
+  }
+}
+
+void determine_plane_global_range(const ops_dat dat,
+                                  const int cross_section_dir, const int pos,
+                                  int *range) {
+  const int space_dim{dat->block->dims};
+  const sub_dat *sd = OPS_sub_dat_list[dat->index];
+  int *size{new int[space_dim]};
+  for (int d = 0; d < space_dim; d++) {
+    size[d] = sd->gbl_size[d] - (sd->gbl_d_p[d] - sd->gbl_d_m[d]);
+  }
+
+  for (int d = 0; d < dat->block->dims; d++) {
+    range[2 * d] = 0;
+    range[2 * d + 1] = size[d];
+  }
+  range[2 * cross_section_dir + 1] = pos + 1;
+  range[2 * cross_section_dir] = pos;
+  delete[] size;
+}
+void copy_data_buf(const ops_dat &dat, const int *local_range,
+                   char *local_buf) {
+  const sub_dat *sd = OPS_sub_dat_list[dat->index];
+  ops_execute(dat->block->instance);
+  ops_get_data(dat);
+  int local_buf_size[OPS_MAX_DIM] = {1};
+  int range_max_dim[2 * OPS_MAX_DIM] = {0};
+  int d_m[OPS_MAX_DIM]{0};
+  for (int d = 0; d < dat->block->dims; d++) {
+    local_buf_size[d] = local_range[2 * d + 1] - local_range[2 * d + 0];
+    range_max_dim[2 * d] = local_range[2 * d];
+    range_max_dim[2 * d + 1] = local_range[2 * d + 1];
+  }
+  for (int d = dat->block->dims; d < OPS_MAX_DIM; d++) {
+    local_buf_size[d] = 1;
+    range_max_dim[2 * d] = 0;
+    range_max_dim[2 * d + 1] = 1;
+  }
+
+  for (int d = 0; d < OPS_MAX_DIM; d++) {
+    d_m[d] = sd->d_im[d] + dat->d_m[d];
+    // printf("At rank %d d_im[%d]=%d d_m[%d]=%d\n", ops_my_global_rank, d,
+    //        sd->d_im[d], d, dat->d_m[d]);
+  }
+
+  if (dat->block->dims > 5)
+    throw OPSException(OPS_NOT_IMPLEMENTED,
+                       "Error, missing OPS implementation: ops_dat_fetch_data "
+                       "not implemented for dims>5");
+  // printf(
+  //     "At Rank II = %d istart=%d iend=%d  jstart=%d jend=%d  kstart=%d kend=%d\n",
+  //     ops_my_global_rank,range_max_dim[0], range_max_dim[1], range_max_dim[2],
+  //     range_max_dim[3],range_max_dim[4], range_max_dim[5]);
+  fetch_loop_slab(local_buf, dat->data, local_buf_size, dat->size, d_m,
+                    dat->elem_size, dat->dim, range_max_dim);
+  dat->dirty_hd = 1;
+}
+
+/*******************************************************************************
+ * Routine to write an ops_block to a named hdf5 file,
+ * if file does not exist, creates it
+ * if the block does not exists in file creates block as a hdf5 group
+ *******************************************************************************/
+void ops_fetch_block_hdf5_file(ops_block block, char const *file_name) {
+  sub_block *sb = OPS_sub_block_list[block->index];
+
+  if (sb->owned == 1) {
+    // HDF5 APIs definitions
+    hid_t file_id;  // file identifier
+    hid_t group_id; // group identifier
+    hid_t plist_id; // property list identifier
+
+    // create new communicator
+    int my_rank, comm_size;
+    MPI_Comm OPS_MPI_HDF5_BLOCK_WORLD;
+    // use the communicator for MPI procs holding this block
+    MPI_Comm_dup(sb->comm1, &OPS_MPI_HDF5_BLOCK_WORLD);
+    MPI_Comm_rank(OPS_MPI_HDF5_BLOCK_WORLD, &my_rank);
+    MPI_Comm_size(OPS_MPI_HDF5_BLOCK_WORLD, &comm_size);
+
+    // MPI variables
+    MPI_Info info = MPI_INFO_NULL;
+
+    // Set up file access property list with parallel I/O access
+    plist_id = H5Pcreate(H5P_FILE_ACCESS);
+    H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_BLOCK_WORLD, info);
+
+    if (file_exist(file_name) == 0) {
+      if (OPS_instance::getOPSInstance()->OPS_diags > 2)
+        ops_printf("File %s does not exist .... creating file\n", file_name);
+      MPI_Barrier(OPS_MPI_HDF5_BLOCK_WORLD);
+      if (my_rank==0) {
+        FILE *fp;
+        fp = fopen(file_name, "w");
+        fclose(fp);
+      }
+      // Create a new file collectively and release property list identifier.
+      file_id = H5Fcreate(file_name, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id);
+      H5Fclose(file_id);
+    }
+
+    file_id = H5Fopen(file_name, H5F_ACC_RDWR, plist_id);
+
+    if (H5Lexists(file_id, block->name, H5P_DEFAULT) == 0) {
+      if (OPS_instance::getOPSInstance()->OPS_diags > 2)
+        ops_printf(
+            "ops_block %s does not exists in file %s ... creating ops_block\n",
+            block->name, file_name);
+      // create group - ops_block
+      group_id = H5Gcreate(file_id, block->name, H5P_DEFAULT, H5P_DEFAULT,
+                           H5P_DEFAULT);
+      H5Gclose(group_id);
+    }
+
+    // open existing group -- an ops_block is a group
+    group_id = H5Gopen2(file_id, block->name, H5P_DEFAULT);
+
+    // attach attributes to block
+    H5LTset_attribute_string(file_id, block->name, "ops_type",
+                             "ops_block"); // ops type
+    H5LTset_attribute_int(file_id, block->name, "dims", &(block->dims),
+                          1); // dim
+    H5LTset_attribute_int(file_id, block->name, "index", &(block->index),
+                          1); // index
+
+    H5Gclose(group_id);
+    H5Pclose(plist_id);
+    H5Fclose(file_id);
+    MPI_Comm_free(&OPS_MPI_HDF5_BLOCK_WORLD);
+  }
+  MPI_Barrier(OPS_MPI_GLOBAL); // wait for every rank to finish their I/O
+}
+
+/*******************************************************************************
+ * Routine to write an ops_stencil to a named hdf5 file,
+ * if file does not exist, creates it
+ *******************************************************************************/
+void ops_fetch_stencil_hdf5_file(ops_stencil stencil, char const *file_name) {
+  // HDF5 APIs definitions
+  hid_t file_id;  // file identifier
+  hid_t dset_id;  // dataset identifier
+  hid_t plist_id; // property list identifier
+
+  // create new communicator
+  int my_rank, comm_size;
+  MPI_Comm_dup(OPS_MPI_GLOBAL, &OPS_MPI_HDF5_WORLD);
+  MPI_Comm_rank(OPS_MPI_HDF5_WORLD, &my_rank);
+  MPI_Comm_size(OPS_MPI_HDF5_WORLD, &comm_size);
+
+  // MPI variables
+  MPI_Info info = MPI_INFO_NULL;
+
+  // Set up file access property list with parallel I/O access
+  plist_id = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_WORLD, info);
+
+  if (file_exist(file_name) == 0) {
+    MPI_Barrier(OPS_MPI_GLOBAL);
+    if (OPS_instance::getOPSInstance()->OPS_diags > 2)
+      ops_printf("File %s does not exist .... creating file\n", file_name);
+    MPI_Barrier(OPS_MPI_HDF5_WORLD);
+    if (ops_is_root()) {
+      FILE *fp;
+      fp = fopen(file_name, "w");
+      fclose(fp);
+    }
+    // Create a new file collectively and release property list identifier.
+    file_id = H5Fcreate(file_name, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id);
+    H5Fclose(file_id);
+  }
+
+  file_id = H5Fopen(file_name, H5F_ACC_RDWR, plist_id);
+  hsize_t rank = 1;
+  hsize_t elems = stencil->dims * stencil->points;
+
+  /* create and write the dataset */
+  if (H5Lexists(file_id, stencil->name, H5P_DEFAULT) == 0) {
+    if (OPS_instance::getOPSInstance()->OPS_diags > 2)
+      ops_printf(
+          "ops_stencil %s does not exists in the file ... creating data\n",
+          stencil->name);
+    H5LTmake_dataset(file_id, stencil->name, rank, &elems, H5T_NATIVE_INT,
+                     stencil->stencil);
+  } else {
+    dset_id = H5Dopen2(file_id, stencil->name, H5P_DEFAULT);
+    H5Dwrite(dset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+             stencil->stencil);
+    H5Dclose(dset_id);
+  }
+
+  // attach attributes to stencil
+  H5LTset_attribute_string(file_id, stencil->name, "ops_type",
+                           "ops_stencil"); // ops type
+  H5LTset_attribute_int(file_id, stencil->name, "dims", &(stencil->dims),
+                        1); // dim
+  H5LTset_attribute_int(file_id, stencil->name, "index", &(stencil->index),
+                        1); // index
+  H5LTset_attribute_int(file_id, stencil->name, "points", &(stencil->points),
+                        1); // number of points
+  H5LTset_attribute_int(file_id, stencil->name, "stride", stencil->stride,
+                        stencil->dims); // strides
+
+  H5Pclose(plist_id);
+  H5Fclose(file_id);
+  MPI_Comm_free(&OPS_MPI_HDF5_WORLD);
+}
+
+/*******************************************************************************
+ * Routine to write an ops_halo to a named hdf5 file,
+ * if file does not exist, creates it
+ *******************************************************************************/
+void ops_fetch_halo_hdf5_file(ops_halo halo, char const *file_name) {
+  // HDF5 APIs definitions
+  hid_t file_id;  // file identifier
+  hid_t group_id; // group identifier
+  hid_t plist_id; // property list identifier
+
+  // create new communicator
+  int my_rank, comm_size;
+  MPI_Comm_dup(OPS_MPI_GLOBAL, &OPS_MPI_HDF5_WORLD);
+  MPI_Comm_rank(OPS_MPI_HDF5_WORLD, &my_rank);
+  MPI_Comm_size(OPS_MPI_HDF5_WORLD, &comm_size);
+
+  // MPI variables
+  MPI_Info info = MPI_INFO_NULL;
+
+  // Set up file access property list with parallel I/O access
+  plist_id = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_WORLD, info);
+
+  if (file_exist(file_name) == 0) {
+    MPI_Barrier(OPS_MPI_GLOBAL);
+    if (OPS_instance::getOPSInstance()->OPS_diags > 2)
+      ops_printf("File %s does not exist .... creating file\n", file_name);
+    MPI_Barrier(OPS_MPI_HDF5_WORLD);
+    if (ops_is_root()) {
+      FILE *fp;
+      fp = fopen(file_name, "w");
+      fclose(fp);
+    }
+    // Create a new file collectively and release property list identifier.
+    file_id = H5Fcreate(file_name, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id);
+    H5Fclose(file_id);
+  }
+
+  file_id = H5Fopen(file_name, H5F_ACC_RDWR, plist_id);
+
+  char halo_name[100]; // strlen(halo->from->name)+strlen(halo->to->name)];
+  sprintf(halo_name, "from_%s_to_%s", halo->from->name, halo->to->name);
+
+  /* create and write the a group that holds the halo information */
+  if (H5Lexists(file_id, halo_name, H5P_DEFAULT) == 0) {
+    if (OPS_instance::getOPSInstance()->OPS_diags > 2)
+      ops_printf(
+          "ops_halo %s does not exists in the file ... creating group to "
+          "hold halo\n",
+          halo_name);
+    group_id =
+        H5Gcreate(file_id, halo_name, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Gclose(group_id);
+  }
+  group_id = H5Gopen2(file_id, halo_name, H5P_DEFAULT);
+
+  // take the maximum dimension of the two blocks connected via this halo
+  int dim = MAX(halo->from->block->dims, halo->to->block->dims);
+
+  // printf("halo name %s, from name %s, to name %s\n",halo_name,
+  // halo->from->name, halo->to->name);
+  // attach attributes to halo
+  H5LTset_attribute_string(file_id, halo_name, "ops_type",
+                           "ops_halo"); // ops type
+  H5LTset_attribute_string(file_id, halo_name, "from_dat_name",
+                           halo->from->name); // from ops_dat (name)
+  H5LTset_attribute_string(file_id, halo_name, "to_dat_name",
+                           halo->to->name); // to ops_dat (name)
+  H5LTset_attribute_int(file_id, halo_name, "from_dat_index",
+                        &(halo->from->index), 1); // from_dat_index
+  H5LTset_attribute_int(file_id, halo_name, "to_dat_index", &(halo->to->index),
+                        1); // from_dat_index
+
+  H5LTset_attribute_int(file_id, halo_name, "iter_size", halo->iter_size,
+                        dim); // iteration size
+  H5LTset_attribute_int(file_id, halo_name, "from_base", halo->from_base,
+                        dim); // base from ops_dat
+  H5LTset_attribute_int(file_id, halo_name, "to_base", halo->to_base,
+                        dim); // base of to ops_dat
+  H5LTset_attribute_int(file_id, halo_name, "from_dir", halo->from_dir,
+                        dim); // copy from direction
+  H5LTset_attribute_int(file_id, halo_name, "to_dir", halo->to_dir,
+                        dim); // copy to direction
+  H5LTset_attribute_int(file_id, halo_name, "index", &(halo->index),
+                        1); // index
+
+  H5Gclose(group_id);
+  H5Pclose(plist_id);
+  H5Fclose(file_id);
+}
+
+/*******************************************************************************
+ * Routine to write an ops_dat to a named hdf5 file,
+ * if file does not exist, creates it
+ * if the data set does not exists in file creates data set
+ *******************************************************************************/
+void ops_fetch_dat_hdf5_file(ops_dat dat, char const *file_name) {
+  sub_block *sb = OPS_sub_block_list[dat->block->index];
+  if (sb->owned == 1) {
+    // fetch data onto the host ( if needed ) based on the backend
+    ops_get_data(dat);
+
+    // compute the number of elements that this process will write to the final
+    // file
+    // also compute the correct offsets on the final file that this process
+    // should begin from to write
+    sub_dat *sd = OPS_sub_dat_list[dat->index];
+    ops_block block = dat->block;
+
+    hsize_t disp[block->dims]; // global disps to compute the chunk data set
+    // dimensions
+    hsize_t l_disp[block->dims]; // local disps to remove MPI halos
+    hsize_t size[block->dims];   // local size to compute the chunk data set
+    // dimensions
+    hsize_t gbl_size[block->dims]; // global size to compute the chunk data set
+    // dimensions
+
+    int g_size[block->dims]; // global size of the dat attribute to write to
+    // hdf5 file
+    int g_d_m[block->dims]; // global size of the block halo (-) depth
+                            // attribute
+    // to write to hdf5 file
+    int g_d_p[block->dims]; // global size of the block halo (+) depth
+                            // attribute
+    // to write to hdf5 file
+
+    hsize_t count[block->dims];  // parameters for for hdf5 file chuck writing
+    hsize_t stride[block->dims]; // parameters for for hdf5 file chuck writing
+
+    for (int d = 0; d < block->dims; d++) {
+      // remove left MPI halo to get start disp from beginning of dat
+      // include left block halo
+      disp[d] = sd->decomp_disp[d] -
+                sd->gbl_d_m[d];    // global displacements of the data set
+      l_disp[d] = 0 - sd->d_im[d]; // local displacements of the data set (i.e.
+      // per MPI proc)
+      size[d] = sd->decomp_size[d]; // local size to compute the chunk data set
+      // dimensions
+      gbl_size[d] = sd->gbl_size[d]; // global size to compute the chunk data
+      // set dimensions
+
+      g_d_m[d] = sd->gbl_d_m[d]; // global halo depth(-) attribute to be written
+      // to hdf5 file
+      g_d_p[d] = sd->gbl_d_p[d]; // global halo depth(+) attribute to be written
+      // to hdf5 file
+      g_size[d] = sd->gbl_size[d] + g_d_m[d] -
+                  g_d_p[d]; // global size attribute to be written to hdf5 file
+
+      count[d] = 1;
+      stride[d] = 1;
+
+      // printf("l_disp[%d] = %d ",d,l_disp[d]);
+      // printf("disp[%d] = %d ",d,disp[d]);
+      // printf("size[%d] = %d ",d,size[d]);
+      // printf("dat->size[%d] = %d ",d,dat->size[d]);
+      // printf("gbl_size[%d] = %d \n",d,sd->gbl_size[d]);
+      // printf("g_size[%d] = %d ",d,g_size[d]);
+      // printf("dat->d_m[%d] = %d ",d,g_d_m[d]);
+      // printf("dat->d_p[%d] = %d ",d,g_d_p[d]);
+    }
+
+    hsize_t t_size = 1;
+    for (int d = 0; d < dat->block->dims; d++)
+      t_size *= size[d];
+    // printf("t_size = %d ",t_size);
+    char *data = (char *)ops_malloc(t_size * dat->elem_size);
+
+    // create new communicator
+    int my_rank, comm_size;
+    MPI_Comm OPS_MPI_HDF5_BLOCK_WORLD;
+    // use the communicator for MPI procs holding this block
+    MPI_Comm_dup(sb->comm1, &OPS_MPI_HDF5_BLOCK_WORLD);
+    MPI_Comm_rank(OPS_MPI_HDF5_BLOCK_WORLD, &my_rank);
+    MPI_Comm_size(OPS_MPI_HDF5_BLOCK_WORLD, &comm_size);
+
+    const int space_dim{dat->block->dims};
+    int *local_range{new int[2 * space_dim]};
+    int *range{new int[2 * space_dim]};
+    for (int d = 0; d < space_dim; d++) {
+      range[2 * d] = g_d_m[d];
+      range[2 * d + 1] = g_size[d] + g_d_p[d];
+    }
+    determine_local_range(dat, range, local_range);
+    copy_data_buf(dat, local_range, data);
+    delete[] range;
+    delete[] local_range;
+
+    // make sure we multiply by the number of data values per
+    // element (i.e. dat->dim) to get full size of the data
+    size[0] = size[0] * dat->dim;
+    disp[0] = disp[0] * dat->dim;
+    if (block->dims == 1) {
+      gbl_size[0] = gbl_size[0] * dat->dim; //-- this needs to be tested for 1D
+    } else if (block->dims == 2) {
+      // Jianping Meng: I found that growing the dim 0 rather than dim 1 can
+      // lead to a more consistent post-processing procedure for multi-dim data
+      //**note we are using [1] instead of [0] here !!
+      gbl_size[0] = gbl_size[0] * dat->dim;
+    } else if (block->dims == 3) {
+      gbl_size[0] =
+          gbl_size[0] * dat->dim; //**note that for 3D we are using [0] here !!
+    }
+
+    // MPI variables
+    MPI_Info info = MPI_INFO_NULL;
+
+    // HDF5 APIs definitions
+    hid_t file_id;   // file identifier
+    hid_t group_id;  // group identifier
+    hid_t dset_id;   // dataset identifier
+    hid_t filespace; // data space identifier
+    hid_t plist_id;  // property list identifier
+    hid_t memspace;  // memory space identifier
+
+    // hsize_t CHUNK_SIZE[block->dims];
+
+    // Set up file access property list with parallel I/O access
+    plist_id = H5Pcreate(H5P_FILE_ACCESS);
+    H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_BLOCK_WORLD, info);
+
+    if (file_exist(file_name) == 0) {
+      // MPI_Barrier(OPS_MPI_GLOBAL);
+      if (OPS_instance::getOPSInstance()->OPS_diags > 2)
+        ops_printf("File %s does not exist .... creating file\n", file_name);
+      // MPI_Barrier(OPS_MPI_HDF5_BLOCK_WORLD);
+      if (ops_is_root()) {
+        FILE *fp;
+        fp = fopen(file_name, "w");
+        fclose(fp);
+      }
+      // Create a new file collectively and release property list identifier.
+      file_id = H5Fcreate(file_name, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id);
+      H5Fclose(file_id);
+    }
+
+    file_id = H5Fopen(file_name, H5F_ACC_RDWR, plist_id);
+    H5Pclose(plist_id);
+
+    if (H5Lexists(file_id, block->name, H5P_DEFAULT) == 0) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: Error: ops_fetch_dat_hdf5_file: ops_block on which this "
+            "ops_dat "
+         << dat->name << " is declared does not exist in the file";
+      throw ex;
+    } else {
+      // open existing group -- an ops_block is a group
+      group_id = H5Gopen2(file_id, block->name, H5P_DEFAULT);
+      int overwriting = 0;
+
+      if (H5Lexists(group_id, dat->name, H5P_DEFAULT) == 0) {
+        if (OPS_instance::getOPSInstance()->OPS_diags > 2)
+          ops_printf(
+              "ops_fetch_dat_hdf5_file: ops_dat %s does not exists in the "
+              "ops_block %s ... creating ops_dat\n",
+              dat->name, block->name);
+
+        // transpose global size as on hdf5 file the dims are written transposed
+        hsize_t GBL_SIZE[block->dims];
+        if (block->dims == 1) {
+          GBL_SIZE[0] = gbl_size[0];
+        } else if (block->dims == 2) {
+          GBL_SIZE[0] = gbl_size[1];
+          GBL_SIZE[1] = gbl_size[0];
+        } else if (block->dims == 3) {
+          GBL_SIZE[0] = gbl_size[2];
+          GBL_SIZE[1] = gbl_size[1];
+          GBL_SIZE[2] = gbl_size[0];
+        }
+
+        // Create the dataspace for the dataset
+        filespace =
+            H5Screate_simple(block->dims, GBL_SIZE, NULL); // space in file
+
+        // Create a reasonable chunk size
+        /*int cart_dims[OPS_MAX_DIM], cart_periods[OPS_MAX_DIM],
+            cart_coords[OPS_MAX_DIM];
+        MPI_Cart_get(sb->comm, block->dims, cart_dims, cart_periods,
+                     cart_coords);
+
+        for (int i = 0; i < block->dims; i++) {
+          CHUNK_SIZE[i] = MAX((GBL_SIZE[i] / 10), 1); // need to have a constant
+        chinksize
+                                                      // regardless of the
+        number of mpi procs
+
+          printf("%s GBL_SIZE[%d] = %d, size[%d] = %d, cart_dims[%d] = %d, "
+                 "CHUNK_SIZE[%d] = %d, value[%d] = %lf\n",
+                 dat->name, i, GBL_SIZE[i], i, size[i], i, cart_dims[i], i,
+                 CHUNK_SIZE[i], i, GBL_SIZE[i] / (double)cart_dims[i]);
+        }*/
+
+        // Create chunked dataset
+        plist_id = H5Pcreate(H5P_DATASET_CREATE);
+        // H5Pset_chunk(plist_id, block->dims, GBL_SIZE); // chunk data set need
+        //  to be the same size
+        //  on each proc
+
+        // Create the dataset with default properties and close filespace.
+        dset_id = H5Dcreate(group_id, dat->name, h5_type(dat->type), filespace,
+                            H5P_DEFAULT, plist_id, H5P_DEFAULT);
+
+        H5Pclose(plist_id);
+        H5Sclose(filespace);
+        H5Dclose(dset_id);
+
+        // attach attributes to dat
+        H5LTset_attribute_string(group_id, dat->name, "ops_type",
+                                 "ops_dat"); // ops type
+        H5LTset_attribute_string(group_id, dat->name, "block",
+                                 block->name); // block
+        H5LTset_attribute_int(group_id, dat->name, "block_index",
+                              &(block->index), 1); // block index
+        H5LTset_attribute_int(group_id, dat->name, "dim", &(dat->dim),
+                              1); // dim
+        H5LTset_attribute_int(group_id, dat->name, "size", g_size,
+                              block->dims); // size
+        H5LTset_attribute_int(group_id, dat->name, "d_m", g_d_m,
+                              block->dims); // d_m
+        H5LTset_attribute_int(group_id, dat->name, "d_p", g_d_p,
+                              block->dims); // d_p
+        H5LTset_attribute_int(group_id, dat->name, "base", dat->base,
+                              block->dims); // base
+        H5LTset_attribute_string(group_id, dat->name, "type",
+                                 dat->type); // type
+      } else {
+        ops_printf("Dataset %s already found in file %s ... ", dat->name,
+                   file_name);
+        overwriting = 1;
+      }
+
+      //
+      // check attributes .. error if not equal
+      //
+      char read_ops_type[20];
+      if (H5LTget_attribute_string(group_id, dat->name, "ops_type",
+                                   read_ops_type) < 0) {
+        OPSException ex(OPS_HDF5_ERROR);
+        ex << "Error: ops_fetch_dat_hdf5_file: Attribute \"ops_type\" not "
+              "found in data set"
+           << dat->name;
+        throw ex;
+      } else {
+        if (strcmp("ops_dat", read_ops_type) != 0) {
+          OPSException ex(OPS_HDF5_ERROR);
+          ex << "Error: ops_fetch_dat_hdf5_file: ops_type of dat " << dat->name
+             << " is not ops_dat";
+          throw ex;
+        }
+      }
+
+      char read_block_name[30];
+      if (H5LTget_attribute_string(group_id, dat->name, "block",
+                                   read_block_name) < 0) {
+        OPSException ex(OPS_HDF5_ERROR);
+        ex << "Error: ops_decl_block_hdf5: Attribute \"block\" not found in "
+              "data set "
+           << dat->name;
+        throw ex;
+      } else {
+        if (strcmp(block->name, read_block_name) != 0) {
+          OPSException ex(OPS_HDF5_ERROR);
+          ex << "Error: ops_decl_block_hdf5: Attribute \"block\" mismatch "
+                "for data set "
+             << dat->name << "block name: " << block->name
+             << " read block name: " << read_block_name;
+          throw ex;
+        }
+      }
+
+      int read_block_index;
+      if (H5LTget_attribute_int(group_id, dat->name, "block_index",
+                                &read_block_index) < 0) {
+        OPSException ex(OPS_HDF5_ERROR);
+        ex << "Error: ops_decl_block_hdf5: Attribute \"block_index\" not "
+              "found in data set "
+           << dat->name;
+        throw ex;
+      } else {
+        if (block->index != read_block_index) {
+          OPSException ex(OPS_HDF5_ERROR);
+          ex << "Error: ops_decl_block_hdf5: Attribute \"block_index\" "
+                "mismatch for data set "
+             << dat->name << " read " << read_block_index
+             << " versus provided: " << block->index;
+          throw ex;
+        }
+      }
+
+      int read_dim;
+      if (H5LTget_attribute_int(group_id, dat->name, "dim", &read_dim) < 0) {
+        OPSException ex(OPS_HDF5_ERROR);
+        ex << "Error: ops_decl_block_hdf5: Attribute \"dim\" not found in "
+              "data set "
+           << dat->name;
+        throw ex;
+      } else {
+        if (dat->dim != read_dim) {
+          OPSException ex(OPS_HDF5_ERROR);
+          ex << "Error: ops_decl_block_hdf5: Attribute \"dim\" mismatch for "
+                "data set "
+             << dat->name << " read " << read_dim
+             << " versus provided: " << dat->dim;
+          throw ex;
+        }
+      }
+
+      int read_size[block->dims];
+      if (H5LTget_attribute_int(group_id, dat->name, "size", read_size) < 0) {
+        OPSException ex(OPS_HDF5_ERROR);
+        ex << "Error: ops_decl_block_hdf5: Attribute \"size\" not found in "
+              "data set "
+           << dat->name;
+        throw ex;
+      } else {
+        for (int d = 0; d < block->dims; d++) {
+          if (g_size[d] != read_size[d]) {
+            OPSException ex(OPS_HDF5_ERROR);
+            ex << "Error: ops_decl_block_hdf5: Attribute \"size\" mismatch "
+                  "for data set "
+               << dat->name << " read " << read_size[d]
+               << " versus provided: " << g_size[d] << " in dim " << d;
+            throw ex;
+          }
+        }
+      }
+
+      int read_d_m[block->dims];
+      if (H5LTget_attribute_int(group_id, dat->name, "d_m", read_d_m) < 0) {
+        OPSException ex(OPS_HDF5_ERROR);
+        ex << "Error: ops_decl_block_hdf5: Attribute \"d_m\" not found in "
+              "data set "
+           << dat->name;
+        throw ex;
+      } else {
+        for (int d = 0; d < block->dims; d++) {
+          if (g_d_m[d] != read_d_m[d]) {
+            OPSException ex(OPS_HDF5_ERROR);
+            ex << "Error: ops_decl_block_hdf5: Attribute \"d_m\" mismatch "
+                  "for data set "
+               << dat->name << " read " << read_d_m[d]
+               << " versus provided: " << g_d_m[d] << " in dim " << d;
+            throw ex;
+          }
+        }
+      }
+
+      int read_d_p[block->dims];
+      if (H5LTget_attribute_int(group_id, dat->name, "d_p", read_d_p) < 0) {
+        OPSException ex(OPS_HDF5_ERROR);
+        ex << "Error: ops_decl_block_hdf5: Attribute \"d_p\" not found in "
+              "data set "
+           << dat->name;
+        throw ex;
+      } else {
+        for (int d = 0; d < block->dims; d++) {
+          if (g_d_p[d] != read_d_p[d]) {
+            OPSException ex(OPS_HDF5_ERROR);
+            ex << "Error: ops_decl_block_hdf5: Attribute \"d_p\" mismatch "
+                  "for data set "
+               << dat->name << " read " << read_d_p[d]
+               << " versus provided: " << g_d_p[d] << " in dim " << d;
+            throw ex;
+          }
+        }
+      }
+
+      int read_base[block->dims];
+      if (H5LTget_attribute_int(group_id, dat->name, "base", read_base) < 0) {
+        OPSException ex(OPS_HDF5_ERROR);
+        ex << "Error: ops_decl_block_hdf5: Attribute \"base\" not found in "
+              "data set "
+           << dat->name;
+        throw ex;
+      } else {
+        for (int d = 0; d < block->dims; d++) {
+          if (dat->base[d] != read_base[d]) {
+            OPSException ex(OPS_HDF5_ERROR);
+            ex << "Error: ops_decl_block_hdf5: Attribute \"base\" mismatch "
+                  "for data set "
+               << dat->name << " read " << read_base[d]
+               << " versus provided: " << dat->base[d] << " in dim " << d;
+            throw ex;
+          }
+        }
+      }
+
+      char read_type[15];
+      if (H5LTget_attribute_string(group_id, dat->name, "type", read_type) <
+          0) {
+        OPSException ex(OPS_HDF5_ERROR);
+        ex << "Error: ops_decl_block_hdf5: Attribute \"type\" not found in "
+              "data set "
+           << dat->name;
+        throw ex;
+      } else {
+        if (strcmp(dat->type, read_type) != 0) {
+          OPSException ex(OPS_HDF5_ERROR);
+          ex << "Error: ops_decl_block_hdf5: Attribute \"type\" mismatch for "
+                "data set "
+             << dat->name << " read " << read_type
+             << " versus provided: " << dat->type;
+          throw ex;
+        }
+      }
+
+      // all good , overwrite the existing dataset
+      if (overwriting)
+        ops_printf("overwriting\n");
+
+      // open existing dat
+      dset_id = H5Dopen(group_id, dat->name, H5P_DEFAULT);
+
+      // Need to flip the dimensions to accurately write to HDF5 chunk
+      // decomposition
+      hsize_t DISP[block->dims];
+      hsize_t SIZE[block->dims];
+      if (block->dims == 1) {
+        DISP[0] = disp[0];
+        SIZE[0] = size[0];
+      } else if (block->dims == 2) {
+        DISP[0] = disp[1];
+        DISP[1] = disp[0];
+        SIZE[0] = size[1];
+        SIZE[1] = size[0];
+      } else if (block->dims == 3) {
+        DISP[0] = disp[2];
+        DISP[1] = disp[1]; // note how dimension 1 remains the same !!
+        DISP[2] = disp[0];
+        SIZE[0] = size[2];
+        SIZE[1] = size[1]; // note how dimension 1 remains the same !!
+        SIZE[2] = size[0];
+      }
+
+      memspace = H5Screate_simple(
+          block->dims, SIZE,
+          NULL); // block of memory to write to file by each proc
+
+      // Select hyperslab
+      filespace = H5Dget_space(dset_id);
+      H5Sselect_hyperslab(filespace, H5S_SELECT_SET, DISP, stride, count, SIZE);
+
+      // Create property list for collective dataset write.
+      plist_id = H5Pcreate(H5P_DATASET_XFER);
+      H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
+
+      // write data
+      hid_t datatype = h5_type(dat->type);
+      H5Dwrite(dset_id, datatype, memspace, filespace, plist_id, data);
+
+      MPI_Barrier(OPS_MPI_HDF5_BLOCK_WORLD);
+      free(data);
+
+      H5Sclose(filespace);
+      H5Pclose(plist_id);
+      H5Dclose(dset_id);
+      H5Sclose(memspace);
+
+      H5Gclose(group_id);
+      H5Fclose(file_id);
+      MPI_Comm_free(&OPS_MPI_HDF5_BLOCK_WORLD);
+    }
+  }
+  MPI_Barrier(OPS_MPI_GLOBAL); // wait for every rank to finish their I/O
+  return;
+}
+
+/*******************************************************************************
+ * Routine to read an ops_block from an hdf5 file
+ *******************************************************************************/
+ops_block ops_decl_block_hdf5(int dims, const char *block_name,
+                              char const *file_name) {
+  // create new communicator
+  int my_rank, comm_size;
+  MPI_Comm_dup(OPS_MPI_GLOBAL, &OPS_MPI_HDF5_WORLD);
+  MPI_Comm_rank(OPS_MPI_HDF5_WORLD, &my_rank);
+  MPI_Comm_size(OPS_MPI_HDF5_WORLD, &comm_size);
+
+  // MPI variables
+  MPI_Info info = MPI_INFO_NULL;
+
+  // HDF5 APIs definitions
+  hid_t file_id;  // file identifier
+  hid_t plist_id; // property list identifier
+
+  // open given hdf5 file .. if it exists
+  if (file_exist(file_name) == 0) {
+    MPI_Barrier(OPS_MPI_GLOBAL);
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_block_hdf5: file " << file_name << " does not exist";
+    throw ex;
+  }
+
+  // Set up file access property list with parallel I/O access
+  plist_id = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_WORLD, info);
+  file_id = H5Fopen(file_name, H5F_ACC_RDWR, plist_id);
+
+  // check if ops_block exists
+  if (H5Lexists(file_id, block_name, H5P_DEFAULT) == 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_block_hdf5: ops_block " << block_name
+       << " does not exist in the file";
+    throw ex;
+  }
+
+  // ops_block exists .. now check ops_type and dims
+  char read_ops_type[20];
+  if (H5LTget_attribute_string(file_id, block_name, "ops_type", read_ops_type) <
+      0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_block_hdf5: Attribute \"ops_type\" not found in "
+          "block "
+       << block_name;
+    throw ex;
+  } else {
+    if (strcmp("ops_block", read_ops_type) != 0) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_decl_block_hdf5: ops_type of block " << block_name
+         << " is not ops_block";
+      throw ex;
+    }
+  }
+  int read_dims;
+  if (H5LTget_attribute_int(file_id, block_name, "dims", &read_dims) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_block_hdf5: Attribute \"dims\" not found in block "
+       << block_name;
+    throw ex;
+  } else {
+    if (dims != read_dims) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_decl_block_hdf5: Unequal dims of block " << block_name
+         << ": dims on file " << read_dims << "dims specified " << dims;
+      throw ex;
+    }
+  }
+  int read_index;
+  if (H5LTget_attribute_int(file_id, block_name, "index", &read_index) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_block_hdf5: Attribute \"index\" not found in block "
+       << block_name;
+    throw ex;
+  }
+
+  // checks passed ..
+
+  H5Pclose(plist_id);
+  H5Fclose(file_id);
+
+  return ops_decl_block(read_dims, block_name);
+}
+
+/*******************************************************************************
+ * Routine to read an ops_stencil from an hdf5 file
+ *******************************************************************************/
+ops_stencil ops_decl_stencil_hdf5(int dims, int points,
+                                  const char *stencil_name,
+                                  char const *file_name) {
+  // create new communicator
+  int my_rank, comm_size;
+  MPI_Comm_dup(OPS_MPI_GLOBAL, &OPS_MPI_HDF5_WORLD);
+  MPI_Comm_rank(OPS_MPI_HDF5_WORLD, &my_rank);
+  MPI_Comm_size(OPS_MPI_HDF5_WORLD, &comm_size);
+
+  // MPI variables
+  MPI_Info info = MPI_INFO_NULL;
+
+  // HDF5 APIs definitions
+  hid_t file_id;  // file identifier
+  hid_t plist_id; // property list identifier
+
+  // open given hdf5 file .. if it exists
+  if (file_exist(file_name) == 0) {
+    MPI_Barrier(OPS_MPI_GLOBAL);
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: file " << file_name
+       << " does not exist";
+    throw ex;
+  }
+
+  // Set up file access property list with parallel I/O access
+  plist_id = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_WORLD, info);
+  file_id = H5Fopen(file_name, H5F_ACC_RDWR, plist_id);
+
+  // check if ops_stencil exists
+  if (H5Lexists(file_id, stencil_name, H5P_DEFAULT) == 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: ops_stencil " << stencil_name
+       << " not found in file";
+    throw ex;
+  }
+
+  // ops_stencil exists .. now check ops_type and dims
+  char read_ops_type[20];
+  if (H5LTget_attribute_string(file_id, stencil_name, "ops_type",
+                               read_ops_type) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: Attribute \"ops_type\" not found in "
+          "stencil "
+       << stencil_name;
+    throw ex;
+  } else {
+    if (strcmp("ops_stencil", read_ops_type) != 0) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_decl_stencil_hdf5: ops_type of stencil " << stencil_name
+         << " is not ops_stencil";
+      throw ex;
+    }
+  }
+  int read_dims;
+  if (H5LTget_attribute_int(file_id, stencil_name, "dims", &read_dims) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: Attribute \"dims\" not found in "
+          "stencil"
+       << stencil_name;
+    throw ex;
+  } else {
+    if (dims != read_dims) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_decl_stencil_hdf5: Unequal dims of stencil "
+         << stencil_name << " dims on file " << read_dims << ", dims specified "
+         << dims;
+      throw ex;
+    }
+  }
+  int read_points;
+  if (H5LTget_attribute_int(file_id, stencil_name, "points", &read_points) <
+      0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: Attribute \"points\" not found in "
+          "stencil"
+       << stencil_name;
+    throw ex;
+  } else {
+    if (points != read_points) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_decl_stencil_hdf5: Unequal points of stencil "
+         << stencil_name << " points on file " << read_points
+         << ", points specified " << points;
+      throw ex;
+    }
+  }
+  // checks passed ..
+
+  // get the strides
+  int read_stride[read_dims];
+  if (H5LTget_attribute_int(file_id, stencil_name, "stride", read_stride) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: Attribute \"stride\" not found in "
+          "stencil"
+       << stencil_name;
+    throw ex;
+  }
+
+  int read_sten[read_dims * read_points];
+  H5LTread_dataset_int(file_id, stencil_name, read_sten);
+  H5Pclose(plist_id);
+  H5Fclose(file_id);
+
+  // use decl_strided stencil for both normal and strided stencils
+  return ops_decl_strided_stencil(read_dims, read_points, read_sten,
+                                  read_stride, stencil_name);
+}
+
+/*******************************************************************************
+ * Routine to read an ops_halo from an hdf5 file
+ *******************************************************************************/
+ops_halo ops_decl_halo_hdf5(ops_dat from, ops_dat to, char const *file_name) {
+  // create new communicator
+  int my_rank, comm_size;
+  MPI_Comm_dup(OPS_MPI_GLOBAL, &OPS_MPI_HDF5_WORLD);
+  MPI_Comm_rank(OPS_MPI_HDF5_WORLD, &my_rank);
+  MPI_Comm_size(OPS_MPI_HDF5_WORLD, &comm_size);
+
+  // MPI variables
+  MPI_Info info = MPI_INFO_NULL;
+
+  // HDF5 APIs definitions
+  hid_t file_id;  // file identifier
+  hid_t plist_id; // property list identifier
+
+  // open given hdf5 file .. if it exists
+  if (file_exist(file_name) == 0) {
+    MPI_Barrier(OPS_MPI_GLOBAL);
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_halo_hdf5: file " << file_name << " does not exist";
+    throw ex;
+  }
+
+  // Set up file access property list with parallel I/O access
+  plist_id = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_WORLD, info);
+  file_id = H5Fopen(file_name, H5F_ACC_RDWR, plist_id);
+
+  // check if ops_halo exists
+  char halo_name[100]; // strlen(halo->from->name)+strlen(halo->to->name)];
+  sprintf(halo_name, "from_%s_to_%s", from->name, to->name);
+  if (H5Lexists(file_id, halo_name, H5P_DEFAULT) == 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: ops_halo " << halo_name
+       << " does not exist in the file";
+    throw ex;
+  }
+
+  // ops_stencil exists .. now check ops_type
+  char read_ops_type[20];
+  if (H5LTget_attribute_string(file_id, halo_name, "ops_type", read_ops_type) <
+      0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_halo_hdf5: Attribute \"ops_type\" not found in halo "
+       << halo_name;
+    throw ex;
+  } else {
+    if (strcmp("ops_halo", read_ops_type) != 0) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_decl_halo_hdf5: ops_type of halo " << halo_name
+         << " is not ops_halo";
+      throw ex;
+    }
+  }
+
+  // check whether dimensions are equal
+  if (from->block->dims != to->block->dims) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: dimensions of ops_dats connected by "
+          "halo"
+       << halo_name << " are not equal to each other";
+    throw ex;
+  }
+  int dim = from->block->dims;
+
+  // checks passed ..
+
+  // get the iter_size
+  int read_iter_size[dim];
+  if (H5LTget_attribute_int(file_id, halo_name, "iter_size", read_iter_size) <
+      0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: Attribute \"iter_size\" not found in "
+          "halo"
+       << halo_name;
+    throw ex;
+  }
+  // get the from_base
+  int read_from_base[dim];
+  if (H5LTget_attribute_int(file_id, halo_name, "from_base", read_from_base) <
+      0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: Attribute \"from_base\" not found in "
+          "halo"
+       << halo_name;
+    throw ex;
+  }
+  // get the to_base
+  int read_to_base[dim];
+  if (H5LTget_attribute_int(file_id, halo_name, "to_base", read_to_base) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: Attribute \"to_base\" not found in "
+          "halo"
+       << halo_name;
+    throw ex;
+  }
+  // get the from_dir
+  int read_from_dir[dim];
+  if (H5LTget_attribute_int(file_id, halo_name, "from_dir", read_from_dir) <
+      0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: Attribute \"from_dir\" not found in "
+          "halo"
+       << halo_name;
+    throw ex;
+  }
+  // get the to_dir
+  int read_to_dir[dim];
+  if (H5LTget_attribute_int(file_id, halo_name, "to_dir", read_to_dir) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_stencil_hdf5: Attribute \"to_dir\" not found in halo"
+       << halo_name;
+    throw ex;
+  }
+
+  H5Pclose(plist_id);
+  H5Fclose(file_id);
+
+  return ops_decl_halo(from, to, read_iter_size, read_from_base, read_to_base,
+                       read_from_dir, read_to_dir);
+}
+
+/*******************************************************************************
+ * Routine to read an ops_dat from an hdf5 file - only reads the meta data of
+ * the ops_dat the actual data is read later from within ops_partition()
+ *******************************************************************************/
+ops_dat ops_decl_dat_hdf5(ops_block block, int dat_dim, char const *type,
+                          char const *dat_name, char const *file_name) {
+  ops_read_dat_hdf5_dynamic = ops_read_dat_hdf5;
+
+  // create new communicator
+  int my_rank, comm_size;
+  MPI_Comm_dup(OPS_MPI_GLOBAL, &OPS_MPI_HDF5_WORLD);
+  MPI_Comm_rank(OPS_MPI_HDF5_WORLD, &my_rank);
+  MPI_Comm_size(OPS_MPI_HDF5_WORLD, &comm_size);
+
+  // MPI variables
+  MPI_Info info = MPI_INFO_NULL;
+
+  // HDF5 APIs definitions
+  hid_t file_id;  // file identifier
+  hid_t group_id; // group identifier
+  hid_t plist_id; // property list identifier
+
+  // open given hdf5 file .. if it exists
+  if (file_exist(file_name) == 0) {
+    MPI_Barrier(OPS_MPI_GLOBAL);
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_dat_hdf5: file " << file_name << " does not exist";
+    throw ex;
+  }
+
+  // Set up file access property list with parallel I/O access
+  plist_id = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_WORLD, info);
+  file_id = H5Fopen(file_name, H5F_ACC_RDWR, plist_id);
+
+  if (H5Lexists(file_id, block->name, H5P_DEFAULT) == 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: Error: ops_decl_dat_hdf5: ops_block on which this ops_dat "
+       << dat_name << " is declared does not exist in the file";
+    throw ex;
+  }
+
+  // open existing group -- an ops_block is a group
+  group_id = H5Gopen2(file_id, block->name, H5P_DEFAULT);
+
+  // check if ops_dat exists
+  if (H5Lexists(group_id, dat_name, H5P_DEFAULT) == 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: Error: ops_decl_dat_hdf5: ops_dat " << dat_name
+       << " does not exist in block " << block->name;
+    throw ex;
+  }
+
+  // ops_dat exists .. now check ops_type, block_index, type and dim
+  char read_ops_type[20];
+  if (H5LTget_attribute_string(group_id, dat_name, "ops_type", read_ops_type) <
+      0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_dat_hdf5: Attribute \"ops_type\" not found in data "
+          "set "
+       << dat_name;
+    throw ex;
+  } else {
+    if (strcmp("ops_dat", read_ops_type) != 0) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_decl_dat_hdf5: ops_type of dat " << dat_name
+         << " is not ops_dat";
+      throw ex;
+    }
+  }
+  int read_block_index;
+  if (H5LTget_attribute_int(group_id, dat_name, "block_index",
+                            &read_block_index) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_dat_hdf5: Attribute \"block_index\" not found in "
+          "data set "
+       << dat_name;
+    throw ex;
+  } else {
+    if (block->index != read_block_index) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_decl_dat_hdf5: Attribute \"block_index\" mismatch for "
+            "data set "
+         << dat_name << " read " << read_block_index
+         << " versus provided: " << block->index;
+      throw ex;
+    }
+  }
+  int read_dim;
+  if (H5LTget_attribute_int(group_id, dat_name, "dim", &read_dim) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_dat_hdf5: Attribute \"dim\" not found in data set "
+       << dat_name;
+    throw ex;
+  } else {
+    if (dat_dim != read_dim) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_decl_dat_hdf5: Attribute \"dim\" mismatch for data set "
+         << dat_name << " read " << read_dim << " versus provided: " << dat_dim;
+      throw ex;
+    }
+  }
+  char read_type[15];
+  if (H5LTget_attribute_string(group_id, dat_name, "type", read_type) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_dat_hdf5: Attribute \"type\" not found in data set "
+       << dat_name;
+    throw ex;
+  } else {
+    if (strcmp(type, read_type) != 0) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_decl_dat_hdf5: Attribute \"type\" mismatch for data "
+            "set "
+         << dat_name << " read " << read_type << " versus provided: " << type;
+      throw ex;
+    }
+  }
+
+  // checks passed .. now read in all other details of ops_dat from file
+
+  int read_size[block->dims];
+  if (H5LTget_attribute_int(group_id, dat_name, "size", read_size) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_dat_hdf5: Attribute \"size\" not found in data set "
+       << dat_name;
+    throw ex;
+  }
+
+  int read_d_m[block->dims];
+  if (H5LTget_attribute_int(group_id, dat_name, "d_m", read_d_m) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_dat_hdf5: Attribute \"d_m\" not found in data set "
+       << dat_name;
+    throw ex;
+  }
+
+  int read_d_p[block->dims];
+  if (H5LTget_attribute_int(group_id, dat_name, "d_p", read_d_p) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_dat_hdf5: Attribute \"d_p\" not found in data set "
+       << dat_name;
+    throw ex;
+  }
+
+  int read_base[block->dims];
+  if (H5LTget_attribute_int(group_id, dat_name, "base", read_base) < 0) {
+    OPSException ex(OPS_HDF5_ERROR);
+    ex << "Error: ops_decl_dat_hdf5: Attribute \"base\" not found in data set "
+       << dat_name;
+    throw ex;
+  }
+
+  // set type size
+  hid_t datatype = h5_type(read_type);
+  size_t type_size = H5Tget_size(datatype);
+
+  char *data = NULL;
+
+  int stride[] = {1, 1, 1, 1, 1};
+  ops_dat created_dat = ops_decl_dat_char(
+      block, dat_dim, read_size /*global dat size in each dimension*/,
+      read_base, read_d_m, read_d_p, stride, data /*null for now*/,
+      type_size /*size of(type)*/, type, dat_name); // TODO: multigrid stride
+
+  created_dat->is_hdf5 = 1;
+  created_dat->hdf5_file = copy_str(file_name);
+  created_dat->user_managed = 0;
+
+  H5Pclose(plist_id);
+  H5Gclose(group_id);
+  H5Fclose(file_id);
+  MPI_Comm_free(&OPS_MPI_HDF5_WORLD);
+
+  return created_dat;
+  /**
+    When ops_decomp_dats are encountered read the correct hyperslab chunk form
+    hdf5 file and pad the data with the correct mpi-halo depths
+    then attache it to the ops_dat->data of this ops_dat
+   **/
+}
+
+/*******************************************************************************
+ * Routine to do delayed read of data within ops_partition() from an hdf5 file
+ * only used with the MPI backends
+ *******************************************************************************/
+void ops_read_dat_hdf5(ops_dat dat) {
+  sub_block *sb = OPS_sub_block_list[dat->block->index];
+  if (sb->owned == 1) {
+    // compute the number of elements that this process will read from file
+    // also compute the correct offsets on the file that this process should
+    // begin from to read
+    sub_dat *sd = OPS_sub_dat_list[dat->index];
+    ops_block block = dat->block;
+    sub_block *sb = OPS_sub_block_list[dat->block->index];
+
+    hsize_t disp[block->dims]; // global disps to compute the chunk data set
+    // dimensions
+    hsize_t l_disp[block->dims]; // local disps to remove MPI halos
+    hsize_t size[block->dims];   // local size to compute the chunk data set
+    // dimensions
+    hsize_t size2[block->dims];    // local size - stored for later use
+    hsize_t gbl_size[block->dims]; // global size to compute the chunk data set
+    // dimensions
+
+    // int g_d_m[block->dims]; // global size of the block halo (-) depth
+    // attribute
+    // to read from hdf5 file
+    // int g_d_p[block->dims]; // global size of the block halo (+) depth
+    // attribute
+    // to read from hdf5 file
+
+    hsize_t count[block->dims];  // parameters for for hdf5 file chuck reading
+    hsize_t stride[block->dims]; // parameters for for hdf5 file chuck reading
+
+    for (int d = 0; d < block->dims; d++) {
+      // remove left MPI halo to get start disp from beginning of dat
+      // include left block halo
+      disp[d] = sd->decomp_disp[d] -
+                sd->gbl_d_m[d];    // global displacements of the data set
+      l_disp[d] = 0 - sd->d_im[d]; // local displacements of the data set (i.e.
+      // per MPI proc)
+      size[d] = sd->decomp_size[d]; // local size to compute the chunk data set
+      // dimensions
+      size2[d] = sd->decomp_size[d]; // local size - stored for later use
+      gbl_size[d] = sd->gbl_size[d]; // global size to compute the chunk data
+      // set dimensions
+
+      /*g_d_m[d] =
+        sd->gbl_d_m[d]; // global halo depth(-) to be read from hdf5 file
+      g_d_p[d] =
+        sd->gbl_d_p[d]; // global halo depth(+) to be read from hdf5 file
+      */
+
+      count[d] = 1;
+      stride[d] = 1;
+
+      // printf("l_disp[%d] = %d ",d,l_disp[d]);
+      // printf("disp[%d] = %d ",d,disp[d]);
+      // printf("size[%d] = %d ",d,size[d]);
+      // printf("dat->size[%d] = %d ",d,dat->size[d]);
+      // printf("gbl_size[%d] = %d ",d,gbl_size[d]);
+      // printf("dat->d_m[%d] = %d ",d,g_d_m[d]);
+      // printf("dat->d_p[%d] = %d ",d,g_d_p[d]);
+    }
+
+    hsize_t t_size = 1;
+    for (int d = 0; d < dat->block->dims; d++)
+      t_size *= size[d];
+    char *data = (char *)ops_malloc(t_size * dat->elem_size);
+    dat->mem = t_size * dat->elem_size;
+
+    // make sure we multiply by the number of
+    // data values per element (i.e. dat->dim) to get full size of the data
+    size[0] = size[0] * dat->dim;
+    disp[0] = disp[0] * dat->dim;
+
+    if (block->dims == 1)
+      gbl_size[0] = gbl_size[0] * dat->dim; //-- this needs to be tested for 1D
+    else if (block->dims == 2)
+      // Jianping Meng: It looks that growing the zeroth index  is better
+      gbl_size[0] = gbl_size[0] *
+                    dat->dim; //**note we are using [1] instead of [0] here !!
+    else if (block->dims == 3)
+      gbl_size[0] =
+          gbl_size[0] * dat->dim; //**note that for 3D we are using [0] here !!
+
+    // create new communicator
+    int my_rank, comm_size;
+    // use the communicator for MPI procs holding this block
+    MPI_Comm_dup(sb->comm1, &OPS_MPI_HDF5_WORLD);
+    MPI_Comm_rank(OPS_MPI_HDF5_WORLD, &my_rank);
+    MPI_Comm_size(OPS_MPI_HDF5_WORLD, &comm_size);
+
+    // MPI variables
+    MPI_Info info = MPI_INFO_NULL;
+
+    // HDF5 APIs definitions
+    hid_t file_id;   // file identifier
+    hid_t group_id;  // file identifier
+    hid_t dset_id;   // dataset identifier
+    hid_t filespace; // data space identifier
+    hid_t plist_id;  // property list identifier
+    hid_t memspace;  // memory space identifier
+
+    // open given hdf5 file .. if it exists
+    if (file_exist(dat->hdf5_file) == 0) {
+      MPI_Barrier(OPS_MPI_GLOBAL);
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: ops_read_dat_hdf5: file " << dat->hdf5_file
+         << " does not exist";
+      throw ex;
+    }
+
+    // Set up file access property list with parallel I/O access
+    plist_id = H5Pcreate(H5P_FILE_ACCESS);
+    H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_WORLD, info);
+    file_id = H5Fopen(dat->hdf5_file, H5F_ACC_RDWR, plist_id);
+    H5Pclose(plist_id);
+
+    if (H5Lexists(file_id, block->name, H5P_DEFAULT) == 0) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: Error: ops_decl_dat_hdf5: ops_block on which this ops_dat "
+         << dat->name << " is declared does not exist in the file";
+      throw ex;
+    }
+
+    // open existing group -- an ops_block is a group
+    group_id = H5Gopen(file_id, block->name, H5P_DEFAULT);
+
+    // check if ops_dat exists
+    if (H5Lexists(group_id, dat->name, H5P_DEFAULT) == 0) {
+      OPSException ex(OPS_HDF5_ERROR);
+      ex << "Error: Error: ops_decl_dat_hdf5: ops_dat " << dat->name
+         << " does not exist in block " << block->name;
+      throw ex;
+    }
+
+    dset_id = H5Dopen(group_id, dat->name, H5P_DEFAULT);
+
+    /*
+    hsize_t GBL_SIZE[block->dims];
+    if (block->dims == 1) {
+      GBL_SIZE[0] = gbl_size[0];
+    } else if (block->dims == 2) {
+      GBL_SIZE[0] = gbl_size[1];
+      GBL_SIZE[1] = gbl_size[0];
+    } else if (block->dims == 3) {
+      GBL_SIZE[0] = gbl_size[2];
+      GBL_SIZE[1] = gbl_size[1];
+      GBL_SIZE[2] = gbl_size[0];
+    }
+    */
+
+    // Need to flip the dimensions to accurately read from HDF5 chunk
+    // decomposition
+    hsize_t DISP[block->dims];
+    hsize_t SIZE[block->dims];
+    if (block->dims == 2) {
+      DISP[0] = disp[1];
+      DISP[1] = disp[0];
+      SIZE[0] = size[1];
+      SIZE[1] = size[0];
+    } else if (block->dims == 3) {
+      DISP[0] = disp[2];
+      DISP[1] = disp[1]; // note how dimension 1 remains the same !!
+      DISP[2] = disp[0];
+      SIZE[0] = size[2];
+      SIZE[1] = size[1]; // note how dimension 1 remains the same !!
+      SIZE[2] = size[0];
+    }
+
+    memspace = H5Screate_simple(
+        block->dims, size,
+        NULL); // block of memory to read from file by each proc
+
+    // Select hyperslab
+    filespace = H5Dget_space(dset_id);
+    H5Sselect_hyperslab(filespace, H5S_SELECT_SET, DISP, stride, count, SIZE);
+
+    // Create property list for collective dataset read.
+    plist_id = H5Pcreate(H5P_DATASET_XFER);
+    H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
+
+    // read data
+    hid_t datatype = h5_type(dat->type);
+    H5Dread(dset_id, datatype, memspace, filespace, plist_id, data);
+
+    ops_dat_set_data(dat, 0, data);
+
+    free(data);
+    H5Sclose(filespace);
+    H5Pclose(plist_id);
+    H5Dclose(dset_id);
+    H5Sclose(memspace);
+    H5Gclose(group_id);
+    H5Fclose(file_id);
+
+    MPI_Comm_free(&OPS_MPI_HDF5_WORLD);
+  }
+  return;
+}
+
+/*******************************************************************************
+ * Routine to dump all ops_blocks, ops_dats etc to a named
+ * HDF5 file
+ *******************************************************************************/
+// --- This routine is identical to the sequential routine in ops_hdf5.c
+void ops_dump_to_hdf5(char const *file_name) {
+  ops_dat_entry *item;
+  for (int n = 0; n < OPS_instance::getOPSInstance()->OPS_block_index; n++) {
+    printf("Dumping block %15s to HDF5 file %s\n",
+           OPS_instance::getOPSInstance()->OPS_block_list[n].block->name,
+           file_name);
+    ops_fetch_block_hdf5_file(
+        OPS_instance::getOPSInstance()->OPS_block_list[n].block, file_name);
+  }
+
+  TAILQ_FOREACH(item, &OPS_instance::getOPSInstance()->OPS_dat_list, entries) {
+    printf("Dumping dat %15s to HDF5 file %s\n", (item->dat)->name, file_name);
+    if (item->dat->e_dat !=
+        1) // currently cannot write edge dats .. need to fix this
+      ops_fetch_dat_hdf5_file(item->dat, file_name);
+  }
+
+  for (int i = 0; i < OPS_instance::getOPSInstance()->OPS_stencil_index; i++) {
+    printf("Dumping stencil %15s to HDF5 file %s\n",
+           OPS_instance::getOPSInstance()->OPS_stencil_list[i]->name,
+           file_name);
+    ops_fetch_stencil_hdf5_file(
+        OPS_instance::getOPSInstance()->OPS_stencil_list[i], file_name);
+  }
+
+  printf("halo index = %d \n", OPS_instance::getOPSInstance()->OPS_halo_index);
+  for (int i = 0; i < OPS_instance::getOPSInstance()->OPS_halo_index; i++) {
+    printf("Dumping halo %15s--%15s to HDF5 file %s\n",
+           OPS_instance::getOPSInstance()->OPS_halo_list[i]->from->name,
+           OPS_instance::getOPSInstance()->OPS_halo_list[i]->to->name,
+           file_name);
+    ops_fetch_halo_hdf5_file(OPS_instance::getOPSInstance()->OPS_halo_list[i],
+                             file_name);
+  }
+}
+
+/*******************************************************************************
+ * Routine to copy over an ops_dat to a user specified memory pointer
+ *******************************************************************************/
+extern "C" char *ops_fetch_dat_char(ops_dat dat, char *u_dat) {
+  sub_block *sb = OPS_sub_block_list[dat->block->index];
+  if (sb->owned == 1) {
+    // fetch data onto the host ( if needed ) based on the backend
+    ops_get_data(dat);
+
+    // compute the number of elements that this process will copy over to the
+    // user space
+    sub_dat *sd = OPS_sub_dat_list[dat->index];
+    ops_block block = dat->block;
+
+    hsize_t l_disp[block->dims]; // local disps to remove MPI halos
+    hsize_t size[block->dims];   // local size to compute the chunk data set
+    // dimensions
+
+    for (int d = 0; d < block->dims; d++) {
+      l_disp[d] = 0 - sd->d_im[d]; // local displacements of the data set (i.e.
+      // per MPI proc)
+      size[d] = sd->decomp_size[d]; // local size to compute the chunk data set
+      // dimensions
+    }
+
+    hsize_t t_size = 1;
+    for (int d = 0; d < dat->block->dims; d++)
+      t_size *= size[d];
+    u_dat = (char *)ops_malloc(t_size * dat->elem_size);
+
+    // create new communicator
+    int my_rank, comm_size;
+    // use the communicator for MPI procs holding this block
+    MPI_Comm_dup(sb->comm1, &OPS_MPI_HDF5_WORLD);
+    MPI_Comm_rank(OPS_MPI_HDF5_WORLD, &my_rank);
+    MPI_Comm_size(OPS_MPI_HDF5_WORLD, &comm_size);
+
+    remove_mpi_halos(dat, size, l_disp, u_dat, block->dims);
+  }
+  return u_dat;
+}
+
+typedef struct {
+  const char *type_str; // dataset type as string
+  hsize_t size;         // dataset size (first dimension)
+  hsize_t dim;          // element size (second dimension)
+  size_t elem_bytes;    // element byte-size
+} ops_hdf5_dataset_properties;
+
+const char *ops_hdf5_type_to_string(hid_t t);
+
+herr_t get_dataset_properties(hid_t dset_id,
+                              ops_hdf5_dataset_properties *dset_props) {
+  hid_t status;
+
+  if (dset_props == NULL) {
+    return -1;
+  }
+
+  // Get dimension and size:
+  hid_t dataspace = H5Dget_space(dset_id);
+  if (dataspace < 0) {
+    return -1;
+  }
+  int ndims = H5Sget_simple_extent_ndims(dataspace);
+  if (ndims == 0) {
+    dset_props->size = 0;
+    dset_props->dim = 0;
+    H5Sclose(dataspace);
+  } else {
+    hsize_t dims[ndims];
+    hsize_t maxdims[ndims];
+    status = H5Sget_simple_extent_dims(dataspace, dims, maxdims);
+    H5Sclose(dataspace);
+    if (status < 0) {
+      return -1;
+    }
+    dset_props->size = dims[0];
+    dset_props->dim = (ndims > 1) ? dims[1] : 1;
+  }
+
+  // Get type information:
+  hid_t t = H5Dget_type(dset_id);
+  if (t < 0) {
+    return -1;
+  }
+  dset_props->type_str = ops_hdf5_type_to_string(t);
+  dset_props->elem_bytes = H5Tget_size(t);
+  dset_props->elem_bytes *= dset_props->dim;
+
+  return 0;
+}
+
+/*******************************************************************************
+ * Routine to read in a constant from a named hdf5 file
+ *******************************************************************************/
+void ops_get_const_hdf5(char const *name, int dim, char const *type,
+                        char *const_data, char const *file_name) {
+  // create new communicator
+  int my_rank, comm_size;
+  MPI_Comm_dup(OPS_MPI_GLOBAL, &OPS_MPI_HDF5_WORLD);
+  MPI_Comm_rank(OPS_MPI_HDF5_WORLD, &my_rank);
+  MPI_Comm_size(OPS_MPI_HDF5_WORLD, &comm_size);
+
+  // MPI variables
+  MPI_Info info = MPI_INFO_NULL;
+
+  // HDF5 APIs definitions
+  hid_t file_id;  // file identifier
+  hid_t plist_id; // property list identifier
+  hid_t dset_id;  // dataset identifier
+  hid_t status;
+
+  if (file_exist(file_name) == 0) {
+    ops_printf("File %s does not exist .... aborting ops_get_const_hdf5()\n",
+               file_name);
+    MPI_Abort(OPS_MPI_HDF5_WORLD, 2);
+  }
+
+  // Set up file access property list with parallel I/O access
+  plist_id = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_WORLD, info);
+
+  file_id = H5Fopen(file_name, H5F_ACC_RDONLY, plist_id);
+  H5Pclose(plist_id);
+
+  // find dimension of this constant with available attributes
+  int const_dim = 0;
+  dset_id = H5Dopen(file_id, name, H5P_DEFAULT);
+  if (dset_id < 0) {
+    ops_printf("dataset with '%s' not found in file '%s' \n", name, file_name);
+    H5Fclose(file_id);
+    const_data = NULL;
+    return;
+  }
+
+  // Create property list for collective dataset read.
+  plist_id = H5Pcreate(H5P_DATASET_XFER);
+  H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
+
+  ops_hdf5_dataset_properties dset_props;
+  status = get_dataset_properties(dset_id, &dset_props);
+  if (status < 0) {
+    ops_printf("Could not get properties of dataset '%s' in file '%s'\n", name,
+               file_name);
+    MPI_Abort(OPS_MPI_HDF5_WORLD, 2);
+  }
+
+  const_dim = dset_props.size;
+  if (const_dim != dim) {
+    ops_printf(
+        "dim of constant %d in file %s and requested dim %d do not match\n",
+        const_dim, file_name, dim);
+    MPI_Abort(OPS_MPI_HDF5_WORLD, 2);
+  }
+
+  const char *typ = dset_props.type_str;
+  if (strcmp(typ, type) != 0) {
+    if (OPS_instance::getOPSInstance()->OPS_diags > 1)
+      ops_printf(
+          "type of constant %s in file %s and requested type %s do not match, "
+          "performing automatic type conversion\n",
+          typ, file_name, type);
+    typ = type;
+  }
+  H5Dclose(dset_id);
+
+  // open the dataset with default properties
+  dset_id = H5Dopen(file_id, name, H5P_DEFAULT);
+
+  char *data = nullptr;
+  hid_t datatype = h5_type(typ);
+  size_t type_size = H5Tget_size(datatype);
+  data = (char *)xmalloc(type_size * const_dim);
+  H5Dread(dset_id, datatype, H5S_ALL, H5S_ALL, plist_id, data);
+  memcpy((void *)const_data, (void *)data, type_size * const_dim);
+
+  free(data);
+
+  free((char *)dset_props.type_str);
+
+  H5Pclose(plist_id);
+  H5Dclose(dset_id);
+  H5Fclose(file_id);
+  MPI_Comm_free(&OPS_MPI_HDF5_WORLD);
+}
+
+/*******************************************************************************
+ * Routine to write a constant to a named hdf5 file
+ *******************************************************************************/
+void ops_write_const_hdf5(char const *name, int dim, char const *type,
+                          char *const_data, char const *file_name) {
+  // letting know that writing is happening ...
+  // ops_printf("Writing '%s' to file '%s'\n", name, file_name);
+
+  // create new communicator
+  int my_rank, comm_size;
+  MPI_Comm_dup(OPS_MPI_GLOBAL, &OPS_MPI_HDF5_WORLD);
+  MPI_Comm_rank(OPS_MPI_HDF5_WORLD, &my_rank);
+  MPI_Comm_size(OPS_MPI_HDF5_WORLD, &comm_size);
+
+  // MPI variables
+  MPI_Info info = MPI_INFO_NULL;
+
+  // HDF5 APIs definitions
+  hid_t file_id;   // file identifier
+  hid_t dset_id;   // dataset identifier
+  hid_t plist_id;  // property list identifier
+  hid_t dataspace; // data space identifier
+  htri_t status;   // status for checking return values
+
+  // Set up file access property list with parallel I/O access
+  plist_id = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_WORLD, info);
+
+  if (file_exist(file_name) == 0) {
+    if (OPS_instance::getOPSInstance()->OPS_diags > 3) {
+      ops_printf("File %s does not exist .... creating file\n", file_name);
+    }
+    file_id = H5Fcreate(file_name, H5F_ACC_EXCL, H5P_DEFAULT, plist_id);
+    H5Fclose(file_id);
+  }
+
+  /* Open the existing file. */
+  file_id = H5Fopen(file_name, H5F_ACC_RDWR, plist_id);
+  H5Pclose(plist_id);
+
+  // Check if const already exists in data set
+  status = H5Lexists(file_id, name, H5P_DEFAULT);
+  if (status > 0) {
+    ops_printf("Const dataset %s already found in file %s ... ", name,
+               file_name);
+
+    // Set up file access property list with parallel I/O access
+    plist_id = H5Pcreate(H5P_FILE_ACCESS);
+    H5Pset_fapl_mpio(plist_id, OPS_MPI_HDF5_WORLD, info);
+
+    // open existing data set
+    dset_id = H5Dopen(file_id, name, H5P_DEFAULT);
+
+    // find dimension of this constant with available attributes
+    int const_dim = 0;
+
+    // Create property list for collective dataset read/write.
+    plist_id = H5Pcreate(H5P_DATASET_XFER);
+    H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
+
+    ops_hdf5_dataset_properties dset_props;
+    status = get_dataset_properties(dset_id, &dset_props);
+    if (status < 0) {
+      ops_printf("Could not get properties of dataset '%s' in file '%s'\n",
+                 name, file_name);
+      MPI_Abort(OPS_MPI_HDF5_WORLD, 2);
+    }
+
+    const_dim = dset_props.size;
+    if (const_dim != dim) {
+      ops_printf(
+          "dim of constant %d in file %s and requested dim %d do not match\n",
+          const_dim, file_name, dim);
+      MPI_Abort(OPS_MPI_HDF5_WORLD, 2);
+    }
+
+    const char *typ = dset_props.type_str;
+    if (strcmp(typ, type) != 0) {
+      if (OPS_instance::getOPSInstance()->OPS_diags > 1)
+        ops_printf("type of constant %s in file %s and requested type %s do "
+                   "not match, performing automatic type conversion\n",
+                   typ, file_name, type);
+      typ = type;
+    }
+
+    // existing const attributes matches with const to be written .. overwriting
+    ops_printf(" overwriting\n");
+
+    dataspace = H5Dget_space(dset_id);
+
+    hid_t datatype = h5_type(type);
+    H5Dwrite(dset_id, datatype, H5S_ALL, dataspace, plist_id,
+               const_data);
+
+    H5Pclose(plist_id);
+    H5Sclose(dataspace);
+    H5Dclose(dset_id);
+    H5Fclose(file_id);
+    MPI_Comm_free(&OPS_MPI_HDF5_WORLD);
+    return;
+  }
+
+  if (OPS_instance::getOPSInstance()->OPS_diags > 2)
+    ops_printf(
+        "Const dataset '%s' not found in file '%s ... creating const' \n", name,
+        file_name);
+
+  // Create the dataspace for the dataset.
+  hsize_t dims_of_const = {(hsize_t)dim};
+  dataspace = H5Screate_simple(1, &dims_of_const, NULL);
+
+  // Create property list for collective dataset write.
+  plist_id = H5Pcreate(H5P_DATASET_XFER);
+  H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
+
+  hid_t datatype = h5_type(type);
+  dset_id = H5Dcreate(file_id, name, datatype, dataspace,
+      H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+  // write data
+  H5Dwrite(dset_id, datatype, H5S_ALL, dataspace, plist_id,
+      const_data);
+  H5Dclose(dset_id);
+
+  H5Pclose(plist_id);
+  H5Sclose(dataspace);
+
+  /*attach attributes to constant*/
+
+  // open existing data set
+  dset_id = H5Dopen(file_id, name, H5P_DEFAULT);
+  // create the data space for the attribute
+  dims_of_const = 1;
+  dataspace = H5Screate_simple(1, &dims_of_const, NULL);
+
+  // Create an int attribute - dimension
+  hid_t attribute = H5Acreate(dset_id, "dim", H5T_NATIVE_INT, dataspace,
+                              H5P_DEFAULT, H5P_DEFAULT);
+  // Write the attribute data.
+  H5Awrite(attribute, H5T_NATIVE_INT, &dim);
+  // Close the attribute.
+  H5Aclose(attribute);
+  H5Sclose(dataspace);
+
+  // Create a string attribute - type
+  dataspace = H5Screate(H5S_SCALAR);
+  hid_t atype = H5Tcopy(H5T_C_S1);
+
+  int attlen = strlen(type);
+  H5Tset_size(atype, attlen);
+  attribute =
+      H5Acreate(dset_id, "type", atype, dataspace, H5P_DEFAULT, H5P_DEFAULT);
+
+  if (strcmp(type, "double") == 0 ||
+      strcmp(type, "double precision") == 0 ||
+      strcmp(type, "real(8)") == 0 ||
+      strcmp(type, "real(kind=8)") == 0)
+  {
+    H5Awrite(attribute, atype, "double");
+  }
+  else if (strcmp(type, "float") == 0 ||
+           strcmp(type, "real") == 0 ||
+           strcmp(type, "real(4)") == 0 ||
+           strcmp(type, "real(kind=4)") == 0)
+  {
+    H5Awrite(attribute, atype, "float");
+  }
+  else if (strcmp(type, "int") == 0 ||
+           strcmp(type, "int(4)") == 0 ||
+           strcmp(type, "integer") == 0 ||
+           strcmp(type, "integer(4)") == 0 ||
+           strcmp(type, "integer(kind=4)") == 0)
+  {
+    H5Awrite(attribute, atype, "int");
+  }
+  else if (strcmp(type, "long") == 0)
+  {
+    H5Awrite(attribute, atype, "long");
+  }
+  else if (strcmp(type, "long long") == 0)
+  {
+    H5Awrite(attribute, atype, "long long");
+  }
+  else if (strcmp(type, "char") == 0)
+  {
+    H5Awrite(attribute, atype, "char");
+  }
+  else if (strcmp(type, "half") == 0)
+  {
+    H5Awrite(attribute, atype, "half");
+  }
+  else
+  {
+    ops_printf(
+        "Unknown type %s for constant %s: cannot write constant to file\n",
+        type, name);
+    MPI_Abort(OPS_MPI_HDF5_WORLD, 2);
+  }
+
+  H5Aclose(attribute);
+  H5Sclose(dataspace);
+  H5Dclose(dset_id);
+
+  H5Fclose(file_id);
+  MPI_Comm_free(&OPS_MPI_HDF5_WORLD);
+}
+
+// create a h5 file or open a h5 file if existing
+hid_t H5_file_handle(const MPI_Comm &mpi_comm, const char *file_name) {
+  int my_rank;
+  MPI_Comm_rank(mpi_comm, &my_rank);
+  MPI_Info info = MPI_INFO_NULL;
+  hid_t file_plist_id{H5Pcreate(H5P_FILE_ACCESS)};
+  H5Pset_fapl_mpio(file_plist_id, mpi_comm, info);
+  hid_t file_id;
+  if (file_exist(file_name) == 0) {
+    if (OPS_instance::getOPSInstance()->OPS_diags > 3)
+      ops_printf("File %s does not exist .... creating file\n", file_name);
+
+    // Create a new file collectively and release property list identifier.
+    file_id = H5Fcreate(file_name, H5F_ACC_TRUNC, H5P_DEFAULT, file_plist_id);
+  } else {
+    file_id = H5Fopen(file_name, H5F_ACC_RDWR, file_plist_id);
+  };
+  H5Pclose(file_plist_id);
+  return file_id;
+}
+
+void write_plane_buf_hdf5(const char *file_name, const char *data_name,
+                          const ops_dat dat, const int cross_section_dir,
+                          const int *local_range, const int *global_range,REAL_PRECISION real_precision,
+                          const char *buf) {
+  const sub_block *sb{OPS_sub_block_list[dat->block->index]};
+  int my_block_rank;
+  MPI_Comm PLANE_WORLD;
+  MPI_Comm BLOCK_WORLD{sb->comm1};
+  MPI_Comm_rank(BLOCK_WORLD, &my_block_rank);
+  int color{0};
+  if ((local_range[2 * cross_section_dir + 1] -
+       local_range[2 * cross_section_dir]) == 0) {
+    color = MPI_UNDEFINED;
+  }
+  MPI_Comm_split(BLOCK_WORLD, color, my_block_rank, &PLANE_WORLD);
+  if (color == 0) {
+    int my_plane_rank;
+    MPI_Comm_rank(PLANE_WORLD, &my_plane_rank);
+    MPI_Barrier(PLANE_WORLD);
+    const int space_dim{dat->block->dims};
+    const int data_dims{space_dim - 1};
+    const sub_dat *sd = OPS_sub_dat_list[dat->index];
+    hsize_t *local_data_size_c{new hsize_t[data_dims]};
+    hsize_t *local_data_size_f{new hsize_t[data_dims]};
+    hsize_t *global_data_size_c{new hsize_t[data_dims]};
+    hsize_t *global_data_size_f{new hsize_t[data_dims]};
+    hsize_t *global_data_disp_c{new hsize_t[data_dims]};
+    hsize_t *global_data_disp_f{new hsize_t[data_dims]};
+
+    {
+      int reduced_index{0};
+      for (int d = 0; d < space_dim; d++) {
+        if (d != cross_section_dir) {
+          local_data_size_c[reduced_index] =
+              local_range[2 * d + 1] - local_range[2 * d];
+          global_data_size_c[reduced_index] =
+              global_range[2 * d + 1] - global_range[2 * d];
+          global_data_disp_c[reduced_index] =
+              sd->decomp_disp[d] < 0 ? 0 : sd->decomp_disp[d];
+          reduced_index++;
+        }
+      }
+    }
+    local_data_size_c[0] *= (dat->dim);
+    global_data_size_c[0] *= (dat->dim);
+    global_data_disp_c[0] *= (dat->dim);
+
+    for (int d = 0; d < data_dims; d++) {
+      local_data_size_f[d] = local_data_size_c[data_dims - d - 1];
+      global_data_size_f[d] = global_data_size_c[data_dims - d - 1];
+      global_data_disp_f[d] = global_data_disp_c[data_dims - d - 1];
+    }
+
+    hid_t file_id{H5_file_handle(PLANE_WORLD, file_name)};
+
+    // space in file
+
+    hid_t file_space;
+
+    hid_t dataset_id;
+    std::vector<std::string> h5_name_list;
+    split_h5_name(data_name, h5_name_list);
+    std::vector<hid_t> groupid_list;
+    groupid_list.resize(h5_name_list.size() - 1);
+
+    if (real_precision != REAL_PRECISION::Undefined)
+      H5_dataset_space(file_id, data_dims, global_data_size_f, h5_name_list,
+                       dat->type, real_precision, groupid_list, dataset_id,
+                       file_space);
+    else
+      H5_dataset_space(file_id, data_dims, global_data_size_f, h5_name_list,
+                       dat->type, groupid_list, dataset_id, file_space);
+
+    // block of memory to write to file by each proc
+    hid_t memspace{H5Screate_simple(data_dims, local_data_size_f, NULL)};
+    hsize_t *stride{new hsize_t[data_dims]};
+    hsize_t *count{new hsize_t[data_dims]};
+    for (int d = 0; d < data_dims; d++) {
+      stride[d] = 1;
+      count[d] = 1;
+    }
+    H5Sselect_hyperslab(file_space, H5S_SELECT_SET, global_data_disp_f, stride,
+                        count, local_data_size_f);
+    // Create property list for collective dataset write.
+    hid_t xfer_data_plist_id = H5Pcreate(H5P_DATASET_XFER);
+    H5Pset_dxpl_mpio(xfer_data_plist_id, H5FD_MPIO_COLLECTIVE);
+
+    H5Dwrite(dataset_id, h5_type(dat->type), memspace, file_space,
+             xfer_data_plist_id, buf);
+    H5Pclose(xfer_data_plist_id);
+    H5Sclose(file_space);
+    H5Sclose(memspace);
+    H5Dclose(dataset_id);
+    for (int grp = groupid_list.size() - 1; grp >= 0;grp--){
+      H5Gclose(groupid_list[grp]);
+    }
+    H5Fclose(file_id);
+
+    delete[] count;
+    delete[] stride;
+    delete[] local_data_size_c;
+    delete[] local_data_size_f;
+    delete[] global_data_size_c;
+    delete[] global_data_size_f;
+    delete[] global_data_disp_c;
+    delete[] global_data_disp_f;
+    MPI_Comm_free(&PLANE_WORLD);
+  }
+}
+
+void write_plane_buf_hdf5(const char *file_name, const char *data_name,
+                          const ops_dat dat, const int cross_section_dir,
+                          const int *local_range, const int *global_range,
+                          const char *buf) {
+  write_plane_buf_hdf5(file_name, data_name, dat, cross_section_dir, local_range,
+                       global_range, REAL_PRECISION::Undefined, buf);
+}
+
+void write_slab_buf_hdf5(const char *file_name, const char *data_name,
+                         const ops_dat dat, const int *local_range,
+                         const int *global_range, REAL_PRECISION real_precision,const char *buf) {
+  const sub_block *sb{OPS_sub_block_list[dat->block->index]};
+  const int space_dim{dat->block->dims};
+  int my_block_rank;
+  MPI_Comm SLAB_WORLD;
+  MPI_Comm BLOCK_WORLD{sb->comm1};
+  MPI_Comm_rank(BLOCK_WORLD, &my_block_rank);
+  int color{0};
+  bool no_data{true};
+  for (int d = 0; d < space_dim; d++) {
+    if ((local_range[2 * d + 1] - local_range[2 * d]) != 0) {
+      no_data = false;
+    }
+  }
+  if (no_data){
+    color=MPI_UNDEFINED;
+  }
+
+  MPI_Comm_split(BLOCK_WORLD, color, my_block_rank, &SLAB_WORLD);
+  if (color == 0) {
+    int my_plane_rank;
+    MPI_Comm_rank(SLAB_WORLD, &my_plane_rank);
+    MPI_Barrier(SLAB_WORLD);
+
+
+    const sub_dat *sd = OPS_sub_dat_list[dat->index];
+    hsize_t *local_data_size_c{new hsize_t[space_dim]};
+    hsize_t *local_data_size_f{new hsize_t[space_dim]};
+    hsize_t *global_data_size_c{new hsize_t[space_dim]};
+    hsize_t *global_data_size_f{new hsize_t[space_dim]};
+    hsize_t *global_data_disp_c{new hsize_t[space_dim]};
+    hsize_t *global_data_disp_f{new hsize_t[space_dim]};
+
+    for (int d = 0; d < space_dim; d++) {
+
+      local_data_size_c[d] = local_range[2 * d + 1] - local_range[2 * d];
+      global_data_size_c[d] = global_range[2 * d + 1] - global_range[2 * d];
+      global_data_disp_c[d] = sd->decomp_disp[d] < 0 || (global_range[2 * d] > sd->decomp_disp[d])
+                                  ? 0
+                                  : (sd->decomp_disp[d] - global_range[2 * d]);
+      // printf("At slab Rank= %d disp[%d]=%d gb=%d ld=%d ls=%d\n",
+      // ops_my_global_rank,
+      //        d, sd->decomp_disp[d], global_data_disp_c[d],
+      //        local_range[2 * d],local_data_size_c[d]);
+    }
+
+    local_data_size_c[0] *= (dat->dim);
+    global_data_size_c[0] *= (dat->dim);
+    global_data_disp_c[0] *= (dat->dim);
+
+    for (int d = 0; d < space_dim; d++) {
+      local_data_size_f[d] = local_data_size_c[space_dim - d - 1];
+      global_data_size_f[d] = global_data_size_c[space_dim - d - 1];
+      global_data_disp_f[d] = global_data_disp_c[space_dim - d - 1];
+    }
+
+    hid_t file_id{H5_file_handle(SLAB_WORLD, file_name)};
+
+    // space in file
+
+    hid_t file_space;
+
+    hid_t dataset_id;
+    std::vector<std::string> h5_name_list;
+    split_h5_name(data_name, h5_name_list);
+    std::vector<hid_t> groupid_list;
+    groupid_list.resize(h5_name_list.size() - 1);
+
+    if (real_precision != REAL_PRECISION::Undefined)
+      H5_dataset_space(file_id, space_dim, global_data_size_f, h5_name_list,
+                     dat->type, real_precision, groupid_list, dataset_id,
+                     file_space);
+    else
+      H5_dataset_space(file_id, space_dim, global_data_size_f, h5_name_list,
+                     dat->type, groupid_list, dataset_id, file_space);
+
+    // block of memory to write to file by each proc
+    hid_t memspace{H5Screate_simple(space_dim, local_data_size_f, NULL)};
+    hsize_t *stride{new hsize_t[space_dim]};
+    hsize_t *count{new hsize_t[space_dim]};
+    for (int d = 0; d < space_dim; d++) {
+      stride[d] = 1;
+      count[d] = 1;
+    }
+    H5Sselect_hyperslab(file_space, H5S_SELECT_SET, global_data_disp_f, stride,
+                        count, local_data_size_f);
+    // Create property list for collective dataset write.
+    hid_t xfer_data_plist_id = H5Pcreate(H5P_DATASET_XFER);
+    H5Pset_dxpl_mpio(xfer_data_plist_id, H5FD_MPIO_COLLECTIVE);
+
+    H5Dwrite(dataset_id, h5_type(dat->type), memspace, file_space,
+             xfer_data_plist_id, buf);
+    H5Pclose(xfer_data_plist_id);
+    H5Sclose(file_space);
+    H5Sclose(memspace);
+    H5Dclose(dataset_id);
+    for (int grp = groupid_list.size() - 1; grp >= 0;grp--){
+      H5Gclose(groupid_list[grp]);
+    }
+    H5Fclose(file_id);
+
+    delete[] count;
+    delete[] stride;
+    delete[] local_data_size_c;
+    delete[] local_data_size_f;
+    delete[] global_data_size_c;
+    delete[] global_data_size_f;
+    delete[] global_data_disp_c;
+    delete[] global_data_disp_f;
+    MPI_Comm_free(&SLAB_WORLD);
+  }
+}
+
+void write_slab_buf_hdf5(const char *file_name, const char *data_name,
+                         const ops_dat dat, const int *local_range,
+                         const int *global_range, const char *buf) {
+  write_slab_buf_hdf5(file_name, data_name, dat, local_range, global_range,
+                      REAL_PRECISION::Undefined, buf);
+}
+
+void ops_write_plane_hdf5(const ops_dat dat, const int cross_section_dir,
+                          const int pos, char const *file_name,
+                          const char *data_name) {
+  if ((cross_section_dir >= 0) && (cross_section_dir <= dat->block->dims)) {
+    const sub_dat *sd{OPS_sub_dat_list[dat->index]};
+    if ((pos >= sd->gbl_base[cross_section_dir]) &&
+        (pos <= sd->gbl_size[cross_section_dir])) {
+      MPI_Barrier(OPS_MPI_GLOBAL);
+      sub_block *sb = OPS_sub_block_list[dat->block->index];
+      if (sb->owned == 1) {
+        const int space_dim{dat->block->dims};
+        int *global_range{new int[2 * space_dim]};
+        determine_plane_global_range(dat, cross_section_dir, pos, global_range);
+        int *local_range{new int[2 * space_dim]};
+        // TODO if the plane is out of global range, computer range will
+        // generate error
+        determine_local_range(dat, global_range, local_range);
+        size_t local_buf_size{(size_t)dat->elem_size};
+        for (int i = 0; i < space_dim; i++) {
+          local_buf_size *= (local_range[2 * i + 1] - local_range[2 * i]);
+        }
+        // if (local_buf_size > 0) {
+        char *local_buf = (char *)ops_malloc(local_buf_size);
+        copy_data_buf(dat, local_range, local_buf);
+        // if (local_buf_size>1){
+        //   double *data_p{(double *)local_buf};
+        //   printf("At rank %d data= %f %f %f %f\n", ops_my_global_rank,
+        //   data_p[0],
+        //          data_p[1], data_p[2], data_p[3]);
+        // }
+        write_plane_buf_hdf5(file_name, data_name, dat, cross_section_dir,
+                             local_range, global_range, local_buf);
+        free(local_buf);
+        //}
+        delete[] global_range;
+        delete[] local_range;
+      }
+    } else {
+      ops_printf("The dat %s doesn't have the specified plane = %d \n",
+                 dat->name, pos);
+      ops_printf("sd gbl range %d %d pos %d\n", sd->gbl_base[cross_section_dir],
+                 sd->gbl_size[cross_section_dir], pos);
+    }
+  } else {
+    ops_printf(
+        "The block %s doesn't have the specified cross section direction "
+        "%d\n",
+        dat->block->name, cross_section_dir);
+  }
+}
+
+void ops_write_data_slab_hdf5(const ops_dat dat, const int *range,
+                              const char *file_name, const char *data_name) {
+  MPI_Barrier(OPS_MPI_GLOBAL);
+  sub_block *sb = OPS_sub_block_list[dat->block->index];
+  if (sb->owned == 1) {
+    const int space_dim{dat->block->dims};
+    int *local_range{new int[2 * space_dim]};
+    // TODO if the plane is out of global range, computer range will generate
+    // error
+    determine_local_range(dat, range, local_range);
+    size_t local_buf_size{(size_t)dat->elem_size};
+    for (int i = 0; i < space_dim; i++) {
+      local_buf_size *= (local_range[2 * i + 1] - local_range[2 * i]);
+    }
+    // if (local_buf_size > 0) {
+    char *local_buf = (char *)ops_malloc(local_buf_size);
+    copy_data_buf(dat, local_range, local_buf);
+    // if (local_buf_size>1){
+    //   double *data_p{(double *)local_buf};
+    //   printf("At rank %d data= %f %f %f %f\n", ops_my_global_rank,
+    //   data_p[0],
+    //          data_p[1], data_p[2], data_p[3]);
+    // }
+    write_slab_buf_hdf5(file_name, data_name, dat, local_range, range,
+                        local_buf);
+    free(local_buf);
+    //}
+
+    delete[] local_range;
+  }
+}
+
+void ops_write_plane_group_hdf5(
+    const std::vector<std::pair<int, int>> &planes,
+    std::vector<std::string> &plane_names, const std::string &key,
+    const std::vector<std::vector<ops_dat>> &data_list) {
+  const size_t plane_num{planes.size()};
+  std::vector<std::string> plane_name_base{"I", "J", "K"};
+  if (plane_names.size() < plane_num) {
+    size_t current_size(plane_names.size());
+    plane_names.resize(planes.size());
+
+    for (size_t p = current_size; p < planes.size(); p++) {
+      plane_names[p] = plane_name_base[planes[p].first % OPS_MAX_DIM] +
+                       std::to_string(planes[p].second);
+    }
+  }
+
+  for (size_t p = 0; p < plane_num; p++) {
+    for (const auto &data_plane : data_list) {
+      for (const auto &data : data_plane) {
+        const int cross_section_dir{planes[p].first};
+        const int pos{planes[p].second};
+
+        std::string block_name{data->block->name};
+        std::string data_name{data->name};
+        std::string file_name{plane_names[p] + ".h5"};
+        std::string dataset_name{block_name + "/" + key + "/" + data_name};
+        ops_write_plane_hdf5(data, cross_section_dir, pos, file_name.c_str(),
+                             dataset_name.c_str());
+      }
+    }
+  }
+}
+
+void ops_write_plane_group_hdf5(
+    const std::vector<std::pair<int, int>> &planes, const std::string &key,
+    const std::vector<std::vector<ops_dat>> &data_list) {
+  const size_t plane_num{planes.size()};
+  std::vector<std::string> plane_names;
+  plane_names.resize(plane_num);
+  std::vector<std::string> plane_name_base{"I", "J", "K"};
+  for (size_t p = 0; p < plane_num; p++) {
+    plane_names[p] = plane_name_base[planes[p].first % OPS_MAX_DIM] +
+                     std::to_string(planes[p].second);
+  }
+  ops_write_plane_group_hdf5(planes, plane_names, key, data_list);
+}
+// controlled precision for real numbers
+void ops_write_plane_hdf5(const ops_dat dat, const int cross_section_dir,
+                          const int pos, char const *file_name,
+                          const char *data_name,REAL_PRECISION real_precision) {
+  if ((cross_section_dir >= 0) && (cross_section_dir <= dat->block->dims)) {
+    const sub_dat *sd{OPS_sub_dat_list[dat->index]};
+    if ((pos >= sd->gbl_base[cross_section_dir]) &&
+        (pos <= sd->gbl_size[cross_section_dir])) {
+      MPI_Barrier(OPS_MPI_GLOBAL);
+      sub_block *sb = OPS_sub_block_list[dat->block->index];
+      if (sb->owned == 1) {
+        const int space_dim{dat->block->dims};
+        int *global_range{new int[2 * space_dim]};
+        determine_plane_global_range(dat, cross_section_dir, pos, global_range);
+        int *local_range{new int[2 * space_dim]};
+        // TODO if the plane is out of global range, computer range will
+        // generate error
+        determine_local_range(dat, global_range, local_range);
+        size_t local_buf_size{static_cast<size_t>(dat->elem_size)};
+        for (int i = 0; i < space_dim; i++) {
+          local_buf_size *= (local_range[2 * i + 1] - local_range[2 * i]);
+        }
+        // if (local_buf_size > 0) {
+        char *local_buf = (char *)ops_malloc(local_buf_size);
+        copy_data_buf(dat, local_range, local_buf);
+        write_plane_buf_hdf5(file_name, data_name, dat, cross_section_dir,
+                             local_range, global_range, real_precision, local_buf);
+        free(local_buf);
+        //}
+        delete[] global_range;
+        delete[] local_range;
+      }
+    } else {
+      ops_printf("The dat %s doesn't have the specified plane = %d \n",
+                 dat->name, pos);
+      ops_printf("sd gbl range %d %d pos %d\n", sd->gbl_base[cross_section_dir],
+                 sd->gbl_size[cross_section_dir], pos);
+    }
+  } else {
+    ops_printf(
+        "The block %s doesn't have the specified cross section direction "
+        "%d\n",
+        dat->block->name, cross_section_dir);
+  }
+}
+
+void ops_write_data_slab_hdf5(const ops_dat dat, const int *range,
+                              const char *file_name, const char *data_name,REAL_PRECISION real_precision) {
+  MPI_Barrier(OPS_MPI_GLOBAL);
+  sub_block *sb = OPS_sub_block_list[dat->block->index];
+  if (sb->owned == 1) {
+    const int space_dim{dat->block->dims};
+    int *local_range{new int[2 * space_dim]};
+    // TODO if the plane is out of global range, computer range will generate
+    // error
+    determine_local_range(dat, range, local_range);
+    size_t local_buf_size{static_cast<size_t>(dat->elem_size)};
+    for (int i = 0; i < space_dim; i++) {
+      local_buf_size *= (local_range[2 * i + 1] - local_range[2 * i]);
+    }
+    // if (local_buf_size > 0) {
+    char *local_buf = (char *)ops_malloc(local_buf_size);
+    copy_data_buf(dat, local_range, local_buf);
+    // if (local_buf_size>1){
+    //   double *data_p{(double *)local_buf};
+    //   printf("At rank %d data= %f %f %f %f\n", ops_my_global_rank,
+    //   data_p[0],
+    //          data_p[1], data_p[2], data_p[3]);
+    // }
+    write_slab_buf_hdf5(file_name, data_name, dat, local_range, range,
+                        real_precision, local_buf);
+    free(local_buf);
+    //}
+
+    delete[] local_range;
+  }
+}
+
+void ops_write_plane_group_hdf5(
+    const std::vector<std::pair<int, int>> &planes,
+    std::vector<std::string> &plane_names, const std::string &key,
+    const std::vector<std::vector<ops_dat>> &data_list,REAL_PRECISION real_precision) {
+  const size_t plane_num{planes.size()};
+  std::vector<std::string> plane_name_base{"I", "J", "K"};
+  if (plane_names.size() < plane_num) {
+    size_t current_size(plane_names.size());
+    plane_names.resize(planes.size());
+
+    for (size_t p = current_size; p < planes.size(); p++) {
+      plane_names[p] = plane_name_base[planes[p].first % OPS_MAX_DIM] +
+                       std::to_string(planes[p].second);
+    }
+  }
+
+  for (size_t p = 0; p < plane_num; p++) {
+    for (const auto &data_plane : data_list) {
+      for (const auto &data : data_plane) {
+        const int cross_section_dir{planes[p].first};
+        const int pos{planes[p].second};
+
+        std::string block_name{data->block->name};
+        std::string data_name{data->name};
+        std::string file_name{plane_names[p] + ".h5"};
+        std::string dataset_name{block_name + "/" + key + "/" + data_name};
+        ops_write_plane_hdf5(data, cross_section_dir, pos, file_name.c_str(),
+                             dataset_name.c_str(), real_precision);
+      }
+    }
+  }
+}
+
+void ops_write_plane_group_hdf5(
+    const std::vector<std::pair<int, int>> &planes, const std::string &key,
+    const std::vector<std::vector<ops_dat>> &data_list,REAL_PRECISION real_precision) {
+  const size_t plane_num{planes.size()};
+  std::vector<std::string> plane_names;
+  plane_names.resize(plane_num);
+  std::vector<std::string> plane_name_base{"I", "J", "K"};
+  for (size_t p = 0; p < plane_num; p++) {
+    plane_names[p] = plane_name_base[planes[p].first % OPS_MAX_DIM] +
+                     std::to_string(planes[p].second);
+  }
+  ops_write_plane_group_hdf5(planes, plane_names, key, data_list, real_precision);
+}

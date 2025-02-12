@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.18)
+createtempdir()
+if(LIBTRID_PATH)
+  build_ops_c_sample(adi_burger_3D "NONE" "NONE" "NONE" "YES" "NONE")
+endif()
