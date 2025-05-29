@@ -48,6 +48,27 @@
 #define MPI_ROOT 0
 
 ///
+/// Structure for holding the decomposition details of an ops_dat particle structure
+typedef struct {
+  /// the decomposition is that for particle
+  ops_particle particle;
+
+
+  /// The total number of particle within the simulation
+  size_t nglobal;
+
+  /// Ghost particles linked to interior halos
+  size_t nfrom_int_halos;
+
+  // data structures describing forward/reverse communications in each direction
+  ops_int_particle_halos *particle_halos;
+  size_t bites_in_exchange; //number of bites per particles during data exchange
+
+  int nsend; //number of forward exchange iterations needed
+
+} sub_particle;
+
+///
 /// Struct for holding the decomposition details of a block on an MPI process
 ///
 typedef struct {
@@ -73,9 +94,13 @@ typedef struct {
   /// Group communicator for intra-block
   MPI_Group grp;
   int owned;
+
+  sub_particle *sb_particle_list;
 } sub_block;
 
 typedef sub_block *sub_block_list;
+
+
 
 ///
 /// Struct for holding the decomposition details of a dat on an MPI process
@@ -155,6 +180,23 @@ void ops_unpack(ops_dat dat, const int dest_offset, const char *__restrict src,
 char* OPS_realloc_fast(char *ptr, size_t old_size, size_t new_size);
 ops_dat ops_dat_copy_mpi_core(ops_dat orig_dat);
 ops_kernel_descriptor * ops_dat_deep_copy_mpi_core(ops_dat target, ops_dat orig_dat);
+
+
+void  ops_particle_pack(ops_dat dat, const int nlocal, char *__restrict  buffer,
+                        const int nsend, int &packing_loc);
+
+int ops_particle_pack_border_data(ops_dat data, char *__restrict dest,
+                                  const int *forward_list,
+                                  int ifirst, int nsend);
+
+void ops_particle_unpack(ops_dat dat, const int nlocal,
+                         const char *__restrict buffer, const int nrecv,
+                         int &nbuf_loc);
+
+int ops_particle_unpack_border(ops_dat dat, char *__restrict buffer,
+                               int nfirst, int nrecv);
+
+void ops_particle_setup_forward_comm(sub_particle &sub_part);
 
 /*******************************************************************************
 * Other External functions

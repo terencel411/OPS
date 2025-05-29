@@ -696,8 +696,7 @@ void ops_NaNcheck(ops_dat dat) {
   char buffer[1]={'\0'};
   // need to get data from GPU
   ops_get_data(dat);
-  int disp[OPS_MAX_DIM] = {0};
-  ops_NaNcheck_core(dat, buffer, disp, dat->d_m);
+  ops_NaNcheck_core(dat, buffer);
 }
 
 
@@ -714,6 +713,10 @@ void _ops_partition(OPS_instance *instance, const char *routine, std::map<std::s
 
 void ops_partition(const char *routine) {
   (void)routine;
+}
+
+bool ops_partitioned() {
+  return true;
 }
 
 void ops_partition_opts(const char *routine, std::map<std::string, void*>& opts) {
@@ -738,6 +741,7 @@ void _ops_exit(OPS_instance *instance) {
     if (instance->OPS_reduct_d!=NULL) ops_device_free(instance, (void**)&instance->OPS_reduct_d);
   }
 
+  ops_exit_particles(instance);
   ops_exit_core(instance);
   ops_exit_device(instance);
 }

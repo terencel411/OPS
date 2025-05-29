@@ -274,6 +274,7 @@ void ops_exit_core(OPS_instance *instance) {
     item = TAILQ_FIRST(&instance->OPS_dat_list);
   }
 
+
   // free storage and pointers for blocks
   for (int i = 0; i < instance->OPS_block_index; i++) {
     ops_free((char *)(instance->OPS_block_list[i].block->name));
@@ -334,6 +335,22 @@ void ops_exit_core(OPS_instance *instance) {
      instance->OPS_kern_max=0;
   }
 
+  for (int i = 0; i < instance->OPS_particle_halo_data_index; i++)
+    ops_free(instance->OPS_particle_halo_data_list[i]);
+  ops_free(instance->OPS_particle_halo_data_list);
+
+  for (int i = 0; i < instance->OPS_particle_halo_index; i++)
+    ops_free(instance->OPS_particle_halo_list[i]);
+  ops_free(instance->OPS_particle_halo_list);
+
+  for (int i = 0; i < instance->OPS_particle_halo_group_index; i++) {
+    for (int j = 0; j < instance->OPS_particle_halo_group_list[i]->nhalos;j++)
+      ops_free(instance->OPS_particle_halo_group_list[i]->halo_list[j]);
+    ops_free(instance->OPS_particle_halo_group_list[i]);
+  }
+  ops_free(instance->OPS_particle_halo_group_list);
+
+
   instance->is_initialised = 0;
 }
 
@@ -378,6 +395,8 @@ ops_block _ops_decl_block(OPS_instance *instance, int dims, const char *name) {
 
       OPS_block_list_new[i].num_datasets = instance->OPS_block_list[i].num_datasets;
 
+      //TODO: Check if assignment works fine
+      OPS_block_list_new[i].particle = instance->OPS_block_list[i].particle;
     }
     ops_free(instance->OPS_block_list);
     instance->OPS_block_list = OPS_block_list_new;
@@ -509,7 +528,38 @@ void ops_dat_init_metadata_core(
   // These quantities are computed differently for different backends
 }
 
+void ops_dat_realloc_core(ops_dat dat, int sizex) {
 
+  if (dat == nullptr) {
+    OPSException ex{OPS_RUNTIME_CONFIGURATION_ERROR};
+    ex << "Error: Reallocation of an empty ops_dat structure";
+    throw ex;
+  }
+
+   /* Reallocation only for particles */
+
+
+   if (!dat->is_particle)
+    return;
+
+   if (sizex < 1) {
+      OPSException ex{OPS_INVALID_ARGUMENT};
+      ex<<"Error: Invalid size";
+      throw ex;
+   }
+
+  /* Increase size of ops_dat structure */
+  dat->size[0] = sizex;
+  int bytes = dat->dim;
+  for (int i = 0; i < dat->block->dims; i++)
+    bytes *= dat->size[i];
+
+  if (dat->data == NULL) {
+    dat->data = (char *) ops_calloc(bytes, dat->type_size);
+  }
+  else
+    dat->data =(char *)ops_realloc(dat->data, dat->type_size * bytes);
+}
 /**
  * Allocate an ops_dat on a given ops_block and insert into internal linked lists.
  * Return the ops_dat.  The ops_dat has a valid index and block, but nothing else.
@@ -523,10 +573,10 @@ ops_dat ops_dat_alloc_core(ops_block block)
   }
 
   // This will memset(0) the entire ops_dat_core
-  ops_dat dat = new ops_dat_core();
+  ops_dat dat = new ops_dat_core;
   dat->index = block->instance->OPS_dat_index++;
   dat->block = block;
-
+  dat->is_particle = false;
   /* Create a pointer to an item in the ops_dats doubly linked list */
   ops_dat_entry *item;
 
@@ -558,6 +608,8 @@ ops_dat ops_decl_dat_core(ops_block block, int dim, int *dataset_size,
                           int type_size, char const *type, char const *name) 
 {
    ops_dat dat = ops_dat_alloc_core(block);
+
+   printf("Field %s: Dataset size = [%d %d %d]\n", name, dataset_size[0], dataset_size[1], dataset_size[2]);
    ops_dat_init_metadata_core(dat, dim, dataset_size, base, d_m, d_p, stride, data, type_size, type, name);
    return dat;
 }
@@ -1010,9 +1062,11 @@ ops_arg ops_arg_dat_core(ops_dat dat, ops_stencil stencil, ops_access acc) {
   arg.argtype = OPS_ARG_DAT;
   arg.dat = dat;
   arg.stencil = stencil;
-  if (acc == OPS_WRITE && stencil->points != 1) {
+  if (!dat->is_particle)
+    if (acc == OPS_WRITE && stencil->points != 1 ) {
       throw OPSException(OPS_INVALID_ARGUMENT, "Error: OPS does not support OPS_WRITE arguments with a non (0,0,0) stencil due to potential race conditions");
-  }
+    }
+
   if (dat != NULL) {
     arg.data = dat->data;
     arg.data_d = dat->data_d;
@@ -1022,6 +1076,31 @@ ops_arg ops_arg_dat_core(ops_dat dat, ops_stencil stencil, ops_access acc) {
   }
   arg.acc = acc;
   arg.opt = 1;
+  return arg;
+}
+
+/*---------------------------------------------------------*/
+/* For the moment assumed no stencil for particle data */
+/*---------------------------------------------------------*/
+ops_arg ops_arg_part_dat_core(ops_dat dat, ops_access acc) {
+  ops_arg arg;
+  memset(&arg, 0, sizeof(ops_arg));
+
+  arg.argtype = OPS_ARG_DAT_PARTICLE;
+
+  if (dat != NULL) {
+    arg.data = dat->data;
+    arg.data_d = dat->data_d;
+
+  }
+  else {
+    arg.data = NULL;
+    arg.data_d = NULL;
+  }
+
+  arg.acc = acc;
+  arg.opt = 1;
+
   return arg;
 }
 
@@ -1057,22 +1136,51 @@ ops_arg ops_arg_idx() {
 ops_arg ops_arg_dat(ops_dat dat, int dim, ops_stencil stencil, char const *type,
                     ops_access acc) {
     (void)type;
-  // return ops_arg_dat_core( dat, stencil, acc );
+
+    if (dat->is_particle)
+      throw OPSException(OPS_INVALID_ARGUMENT,"Error: ops_arg_dat_opt cannot be called for "
+                                              "particle_ops_dat structure");
+    // return ops_arg_dat_core( dat, stencil, acc );
   ops_arg temp = ops_arg_dat_core(dat, stencil, acc);
   (&temp)->dim = dim;
+
   return temp;
 }
 
 ops_arg ops_arg_dat_opt(ops_dat dat, int dim, ops_stencil stencil,
                         char const *type, ops_access acc, int flag) {
     (void)type;(void)dim;
+  if (dat->is_particle)
+    throw OPSException(OPS_INVALID_ARGUMENT,"Error: ops_arg_dat_opt cannot be called for "
+                                            "particle_ops_dat structure");
   ops_arg temp = ops_arg_dat_core(dat, stencil, acc);
   (&temp)->opt = flag;
   return temp;
 }
 
+ops_arg ops_arg_part_dat(ops_dat dat, int dim, char const * type, ops_access acc) {
+  (void) type;
+
+  if (!dat->is_particle)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Error, ops_arg_part_dat cannot be called for"
+                                             "grid ops_dat structure");
+
+  ops_arg temp = ops_arg_part_dat_core(dat, acc);
+
+  (&temp)->dim = dim;
+
+  return temp;
+}
+
 ops_arg ops_arg_gbl_char(char *data, int dim, int size, ops_access acc) {
   return ops_arg_gbl_core(data, dim, size, acc);
+}
+
+ops_arg ops_arg_particle_gbl_char(char *data, int dim, int size, ops_access acc) {
+  ops_arg temp = ops_arg_gbl_core(data, dim, size, acc);
+  (&temp)->argtype = OPS_ARG_GBL_PARTICLE;
+
+  return temp;
 }
 
 ops_reduction ops_decl_reduction_handle_core(OPS_instance *instance, int size, const char *type,
@@ -1648,10 +1756,7 @@ int ops_stencil_check_5d(int arg_idx, int idx0, int idx1, int idx2, int idx3, in
   return idx0 + dim0 * (idx1) + dim0 * dim1 * (idx2) + dim0 * dim1 * dim2 * idx3 + dim0 * dim1 * dim2 * dim3 * idx4;
 }
 
-void ops_NaNcheck_core(ops_dat dat, char *buffer, int *disp, int *d_m) {
-
- int indices[OPS_MAX_DIM] = {0};
-  ops_printf("ops_NaNcheck_core called for %s \n", dat->name);
+void ops_NaNcheck_core(ops_dat dat, char *buffer) {
 
   size_t prod[OPS_MAX_DIM+1];
   prod[0] = dat->size[0];
@@ -1663,42 +1768,36 @@ void ops_NaNcheck_core(ops_dat dat, char *buffer, int *disp, int *d_m) {
 
 #if OPS_MAX_DIM > 5
   for (int n = 0; n < dat->size[5]; n++) {
-    indices[5] = n + disp[5] + d_m[5];
 #else
   {
   int n = 0;
 #endif
   #if OPS_MAX_DIM > 4
     for (int m = 0; m < dat->size[4]; m++) {
-      indices[4] = m + disp[4] + d_m[4];
   #else
     {
     int m = 0;
   #endif
     #if OPS_MAX_DIM > 3
       for (int l = 0; l < dat->size[3]; l++) {
-        indices[3] = l + disp[3] + d_m[3];
     #else
       {
       int l = 0;
     #endif
       #if OPS_MAX_DIM > 2
         for (int k = 0; k < dat->size[2]; k++) {
-          indices[2] = k + disp[2] + d_m[2];
       #else
         {
         int k = 0;
       #endif
         #if OPS_MAX_DIM > 1
           for (int j = 0; j < dat->size[1]; j++) {
-            indices[1] = j + disp[1] + d_m[1];
         #else
           {
           int j = 0;
         #endif
           #if OPS_MAX_DIM > 0
             for (int i = 0; i < dat->size[0]; i++) {
-              indices[0] = i + disp[0] + d_m[0];
           #else
             {
             int i = 0;
@@ -1716,9 +1815,7 @@ void ops_NaNcheck_core(ops_dat dat, char *buffer, int *disp, int *d_m) {
                 {
                   if (  std::isnan(((double *)dat->data)[offset])  )
                   {
-                    printf("%sError: NaN detected at element dim:%d,index:(%d", buffer, d, indices[0]);
-                    for(int dim = 1; dim < dat->block->dims; dim++) printf(",%d",indices[dim]);
-                    printf(")\n");
+                    printf("%sError: NaN detected at element %zu\n", buffer, offset);
                     exit(2);
                   }
                 }
@@ -1729,9 +1826,7 @@ void ops_NaNcheck_core(ops_dat dat, char *buffer, int *disp, int *d_m) {
                 {
                   if (  std::isnan(((float *)dat->data)[offset])  )
                   {
-                    printf("%sError: NaN detected at element dim:%d,index:(%d", buffer, d, indices[0]);
-                    for(int dim = 1; dim < dat->block->dims; dim++) printf(",%d",indices[dim]);
-                    printf(")\n");
+                    printf("%sError: NaN detected at element %zu\n", buffer, offset);
                     exit(2);
                   }
                 }
@@ -2115,8 +2210,10 @@ void ops_cpHostToDevice(OPS_instance *instance, void **data_d, void **data_h, si
 
 void ops_H_D_exchanges_host(ops_arg *args, int nargs) {
   for (int n = 0; n < nargs; n++) {
+
+
     if (args[n].argtype == OPS_ARG_DAT &&
-        args[n].dat->locked_hd > 0) {
+        args[n].dat->locked_hd > 0 && args[n].dat) {
       OPSException ex(OPS_RUNTIME_ERROR, "ERROR: ops_par_loops involving datasets for which raw pointers have not been released are not allowed");
       throw ex;
     }

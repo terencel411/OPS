@@ -272,7 +272,7 @@ class OPS_instance {
  *                 in the future.
  */
     void partition(const char *routine);
-	void partition(const char *routine, std::map<std::string, void*>& opts);
+    void partition(const char *routine, std::map<std::string, void*>& opts);
 // #endif
 
 	/*******************************************************************************
@@ -291,6 +291,17 @@ class OPS_instance {
 	Double_linked_list OPS_dat_list;
 	ops_reduction *OPS_reduction_list;
 	
+
+	//Particle Data and halos
+	ops_particle_halo_data *OPS_particle_halo_data_list;
+	int OPS_particle_halo_data_max, OPS_particle_halo_data_index;
+
+	ops_particle_halo  *OPS_particle_halo_list;
+	int OPS_particle_halo_index, OPS_particle_halo_max;
+	ops_particle_halo_group *OPS_particle_halo_group_list;
+	int OPS_particle_halo_group_index, OPS_particle_halo_group_max;
+
+
 
 	// Checkpointing
  	int OPS_enable_checkpointing;

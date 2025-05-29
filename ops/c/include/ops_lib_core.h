@@ -52,6 +52,7 @@
 #include <stdint.h>
 #include <complex>
 #include <random>
+#include <vector>
 
 /** default byte alignment for allocations made by OPS */
 #ifndef OPS_ALIGNMENT
@@ -69,7 +70,6 @@
 /**
  * maximum number of spatial dimensions supported.
  * Can reduce to save on size of metadata
- * Declared in Fortran side as well, correct the number there if changed from 5
  */
 #define OPS_MAX_DIM 5
 
@@ -91,6 +91,8 @@
 #define OPS_ARG_GBL 0
 #define OPS_ARG_DAT 1
 #define OPS_ARG_IDX 2
+#define OPS_ARG_GBL_PARTICLE 3
+#define OPS_ARG_DAT_PARTICLE 4
 
 typedef std::complex<double> complexd;
 typedef std::complex<float> complexf;
@@ -98,97 +100,19 @@ typedef std::complex<float> complexf;
 #if (defined(__HIP_PLATFORM_HCC__) || defined(__HIP_PLATFORM_AMD__)) && !(defined(__HIP_PLATFORM_NVCC__) || defined(__HIP_PLATFORM_NVIDIA__))
 #include <hip/hip_fp16.h>
 #elif !(defined(__HIP_PLATFORM_HCC__) || defined(__HIP_PLATFORM_AMD__)) && (defined(__HIP_PLATFORM_NVCC__) || defined(__HIP_PLATFORM_NVIDIA__))
-#ifndef __HALF_DEFINED__
 #include <cuda_fp16.h>
-#endif
 #elif defined(__CUDA_ARCH__) || defined(__CUDACC__)
-#ifndef __HALF_DEFINED__
 #include <cuda_fp16.h>
-#endif
 typedef __half half;
 //#elif defined(__SYCL_DEVICE_ONLY__)
 #elif defined(__INTEL_SYCL__)
 #include <CL/sycl.hpp>
-typedef sycl::half half;
 #elif defined(__STDCPP_FLOAT16_T__) || defined(FLT16_MIN)
 typedef _Float16 half;
 #else
 typedef uint16_t half;
-//typedef _Float16 half;
 #endif
 
-/*#ifdef __CUDACC__
-__device__ inline half operator*(int lhs, const half& rhs) {
-    half lhs_half = __float2half(static_cast<float>(lhs));
-    return __hmul(lhs_half, rhs);
-}
-
-__device__ inline half operator*(const half& lhs, int rhs) {
-    half rhs_half = __float2half(static_cast<float>(rhs));
-    return __hmul(lhs, rhs_half);
-}
-
-__device__ inline half operator+(int lhs, const half& rhs) {
-    half lhs_half = __float2half(static_cast<float>(lhs));
-    return __hadd(lhs_half, rhs);
-}
-
-__device__ inline half operator+(const half& lhs, int rhs) {
-    half rhs_half = __float2half(static_cast<float>(rhs));
-    return __hadd(lhs, rhs_half);
-}
-
-__device__ inline half operator-(int lhs, const half& rhs) {
-    half lhs_half = __float2half(static_cast<float>(lhs));
-    return __hsub(lhs_half, rhs);
-}
-
-__device__ inline half operator-(const half& lhs, int rhs) {
-    half rhs_half = __float2half(static_cast<float>(rhs));
-    return __hsub(lhs, rhs_half);
-}
-
-__device__ inline half operator/(int lhs, const half& rhs) {
-    half lhs_half = __float2half(static_cast<float>(lhs));
-    return __hdiv(lhs_half, rhs);
-}
-
-__device__ inline half operator/(const half& lhs, int rhs) {
-    half rhs_half = __float2half(static_cast<float>(rhs));
-    return __hdiv(lhs, rhs_half);
-}
-
-__device__ inline half cos(const half& lhs) {
-    return (half)cos((float)lhs);
-}
-
-__device__ inline half sin(const half& lhs) {
-    return (half)sin((float)lhs);
-}
-
-
-__device__ inline half operator*(double lhs, const half& rhs) {
-    half lhs_half = __float2half(lhs);
-    return __hmul(lhs_half, rhs);
-}
-
-__device__ inline half operator*(const half& lhs, float rhs) {
-    half rhs_half = __float2half(rhs);
-    return __hmul(lhs, rhs_half);
-}
-
-__device__ inline half operator+(float lhs, const half& rhs) {
-    half lhs_half = __float2half(lhs);
-    return __hadd(lhs_half, rhs);
-}
-
-__device__ inline half operator+(const half& lhs, float rhs) {
-    half rhs_half = __float2half(rhs);
-    return __hadd(lhs, rhs_half);
-}
-
-#endif 
-*/
 /*
  * * zero constants
  * */
@@ -226,6 +150,8 @@ __device__ inline half operator+(const half& lhs, float rhs) {
 
 #define ZERO_complexf complexf(0,0)
 #define INFINITY_complexf complexf(FLT_MAX,FLT_MAX)
+
+#define BIG 1.0e10
 #endif
 
 /**
@@ -248,7 +174,7 @@ class ops_block_core;
 class ops_dat_core;
 struct ops_reduction_core;
 struct ops_arg;
-
+class ops_particle_core;
 
 /** Storage for OPS blocks */
 class ops_block_core {
@@ -383,7 +309,8 @@ class ops_dat_core {
                           *   base index */
   int stride[OPS_MAX_DIM];/**< stride[*] > 1 if this dat is a coarse dat under
                            *   multi-grid*/
-
+  bool is_particle;       /** Flag that indicates that ops_dat object linked to Lagrangian
+                              point */
 
   // Default constructor zeros out all data in the struct
   ops_dat_core() { memset(this, 0, sizeof(ops_dat_core)); }
@@ -561,6 +488,8 @@ class ops_dat_core {
 
 typedef ops_dat_core *ops_dat;
 
+
+
 /** Storage for OPS stencils */
 class ops_stencil_core {
 public:
@@ -605,7 +534,7 @@ struct ops_halo_core {
 typedef ops_halo_core *ops_halo;
 
 /** Storage for OPS halo groups */
-typedef struct ops_halo_group_core {
+typedef struct {
   int nhalos;                     /**< number of halos */
   ops_halo *halos;                /**< list of halos */
   int index;                      /**< index of halo group */
@@ -672,6 +601,13 @@ typedef ops_halo_group_core *ops_halo_group;
 OPS_FTN_INTEROP
 void ops_init(const int argc, const char *const argv[], const int diags_level);
 
+
+/**
+ * This function returns if the domain is partitioned or not. For non-MPI backends, the domain
+ * is assumed always partitioned.
+ */
+OPS_FTN_INTEROP
+bool ops_partitioned();
 /**
  * This routine must be called last to cleanly terminate the OPS computation.
  */
@@ -759,6 +695,7 @@ ops_dat ops_decl_dat(ops_block block, int data_size, int *block_size, int *base,
                      char const *name) {
 
   int stride[OPS_MAX_DIM];
+
   for (int i = 0; i < OPS_MAX_DIM; i++) stride[i] = 1;
   return ops_decl_dat_char(block, data_size, block_size, base, d_m, d_p,
                            stride, (char *)data, sizeof(T), type, name);
@@ -803,6 +740,23 @@ void ops_dat_deep_copy(ops_dat target, ops_dat orig_dat);
 OPS_FTN_INTEROP
 ops_arg ops_arg_dat(ops_dat dat, int dim, ops_stencil stencil, char const *type,
                     ops_access acc);
+
+/**
+ * Passes an accessor the values of a particle structure to the user kernel
+ *
+ * The ACCP<type>& reference and its operator has to be used to access data
+ *
+ * For the moment is assused that no stencil is used to access data (local operator)
+ *
+ * @param dat       dataset
+ * @param dim       size of data structure per particle
+ * @param type      string representing the type of data held in dataset
+ * @param acc       access type
+ *
+ * @return
+ */
+OPS_FTN_INTEROP
+ops_arg ops_arg_part_dat(ops_dat dat, int dim, char const * type, ops_access acc);
 
 /**
  * Passes an accessor to the value(s) at the current grid point to the user kernel if flag is true
@@ -866,7 +820,11 @@ ops_arg ops_arg_gbl(T *data, int dim, char const *type, ops_access acc) {
   return ops_arg_gbl_char((char *)data, dim, sizeof(T), acc);
 }
 
-
+template <class T>
+ops_arg ops_arg_particle_gbl(T *data, int dim, char const *type, ops_access acc) {
+     (void) type;
+  return ops_arg_particle_gbl_char((char *)data, dim, sizeof(T), acc);
+}
 
 #if !defined(OPS_CPP_API) || defined(OPS_INTERNAL_API)
 /**
@@ -947,7 +905,8 @@ ops_stencil ops_decl_prolong_stencil( int dims, int points, int *sten,
  * @param from       origin dataset
  * @param to         destination dataset
  * @param iter_size  defines an iteration size
- *                   (number of indices to iterate over in each direction)
+ *           char *p_a[N] =
+    {param_handler<param_remove_cvref_t<ParamType>>::construct(arguments, dim, ndim, start, block)...};          (number of indices to iterate over in each direction)
  * @param from_base  indices of starting point in @p from dataset
  * @param to_base    indices of starting point in @p to dataset
  * @param from_dir   direction of incrementing for @p from for each dimension
@@ -1011,7 +970,8 @@ template <class T> void ops_reduction_result(ops_reduction handle, T *ptr) {
  * @param name  a name used to identify the constant
  * @param dim   dimension of dataset (number of items per element)
  * @param type  the name of type used for output diagnostics
- *              (e.g. "double", "float")
+ *           char *p_a[N] =
+    {param_handler<param_remove_cvref_t<ParamType>>::construct(arguments, dim, ndim, start, block)...};     (e.g. "double", "float")
  * @param data  pointer to new values for constant of type @p T
  */
 template <class T>
@@ -1124,6 +1084,22 @@ void ops_print_dat_to_txtfile(ops_dat dat, const char *file_name);
  * Makes sure OPS has downloaded data from the device
  */
 void ops_get_data(ops_dat dat);
+
+
+/**
+ * Obtains particle data and makes the accessible from user defined functions
+ */
+template<typename T>
+T* ops_get_particle_data(ops_dat_core* dat) {
+
+  if (!dat->is_particle) {
+    OPSException ex(OPS_INTERNAL_ERROR);
+    ex << "Error: Function called for grid ops_dat structure";
+    throw ex;
+  }
+
+  return (T*)dat->data;
+}
 
 /**
  * Returns one one the root MPI process
@@ -1375,6 +1351,9 @@ void ops_fill_random_uniform(ops_dat dat);
 void ops_fill_random_normal(ops_dat dat);
 void ops_randomgen_exit();
 
+/* Declearation of particle data */
+#include <ops_particles_lib_core.h>
+
 
 /**
  * This class is an accessor to data stored in ops_dats. It is
@@ -1568,6 +1547,51 @@ private:
   int mdim;
 #endif
   T *__restrict__ ptr;
+};
+
+/**
+ * This class is an accessor to data stored in particle ops_dats .
+ * It is used in user kernel and functions called from user kernels.
+ * The user should never explicitly construct such an
+ * object, these are constucted by OPS and passed by reference to
+ * the user kernel.
+ *
+ * For particle ops_dat structures-datasets are stored as 1D arrays. An
+ * extra argument is used for datasets that have multiple values at each
+ * point. For e.g. (x,y,z) for the particle position
+ */
+
+template<typename T>
+class ACCP {
+public:
+  __host__ __device__
+  ACCP(T *_ptr) : ptr(_ptr) , mdim(0) , bin_address(0){}
+  __host__ __device__
+  ACCP(int _mdim, int _sizex, T *_ptr) :
+  ptr(_ptr), mdim(_mdim), bin_address(0) { }
+
+  __host__ __device__
+  const T& operator()(int xoff) const {return *(ptr + xoff);}
+
+  __host__ __device__
+  T& operator()(int xoff) { return *(ptr + xoff);}
+
+  __host__ __device__
+  T& operator()(int d, int xoff) const {
+    return *(ptr + d + mdim * xoff);
+  }
+
+  __host__ __device__
+  void next(int offset) {
+    ptr += offset;
+  }
+
+  int bin_address;
+
+
+private:
+  T *__restrict__ ptr;
+  int mdim;
 };
 
 #include <ops_internal2.h>

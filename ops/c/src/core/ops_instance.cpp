@@ -49,76 +49,85 @@ void OPS_instance::set_ostream(std::ostream &s) {
 
 void OPS_instance::init_globals() {
 
-  	//Blocks, Dats, Stencils Halos, Reductions
-	OPS_block_index=0; OPS_block_max=0; OPS_dat_index=0; OPS_dat_max=0;
-	OPS_halo_group_index=0; OPS_halo_group_max=0; OPS_halo_index=0; OPS_halo_max=0;
-	OPS_reduction_index=0; OPS_reduction_max=0; OPS_stencil_index=0; OPS_stencil_max=0;
-	OPS_block_list=NULL;
-	OPS_stencil_list=NULL;
-	OPS_halo_list=NULL;
-	OPS_halo_group_list=NULL;
-	OPS_reduction_list = NULL;
-	
-
-	// Checkpointing
-	OPS_enable_checkpointing=0;
-	OPS_checkpointing_time=0.0;
-	ops_thread_offload = 0;
-	ops_checkpoint_inmemory = 0;
-	ops_lock_file = 0;
-	backup_state=OPS_NONE;
-	OPS_dat_ever_written = 0;
-	OPS_dat_status=NULL;
-	OPS_ranks_per_node=0;
+  //Blocks, Dats, Stencils Halos, Reductions
+  OPS_block_index=0; OPS_block_max=0; OPS_dat_index=0; OPS_dat_max=0;
+  OPS_halo_group_index=0; OPS_halo_group_max=0; OPS_halo_index=0; OPS_halo_max=0;
+  OPS_reduction_index=0; OPS_reduction_max=0; OPS_stencil_index=0; OPS_stencil_max=0;
+  OPS_block_list=NULL;
+  OPS_stencil_list=NULL;
+  OPS_halo_list=NULL;
+  OPS_halo_group_list=NULL;
+  OPS_reduction_list = NULL;
 
 
-	// Debugging
-	OPS_curr_args = NULL;
-	OPS_curr_name = NULL;
+  // Checkpointing
+  OPS_enable_checkpointing=0;
+  OPS_checkpointing_time=0.0;
+  ops_thread_offload = 0;
+  ops_checkpoint_inmemory = 0;
+  ops_lock_file = 0;
+  backup_state=OPS_NONE;
+  OPS_dat_ever_written = 0;
+  OPS_dat_status=NULL;
+  OPS_ranks_per_node=0;
 
-	//Diagnostics
-	OPS_kern_max=0; OPS_kern_curr=0;
-	OPS_kernels=NULL;
-	ops_user_halo_exchanges_time = 0.0;
-	
-	//Tiling
-	ops_enable_tiling = 0;
-	ops_cache_size = 0;
-	ops_tiling_mpidepth = -1;
-	ops_tiled_halo_exchange_time=0.0;
-	tiling_instance=NULL;
-	checkpointing_instance=NULL;
-	tilesize_x=-1;
-	tilesize_y=-1;
-	tilesize_z=-1;
 
-	//Other runtime configuration args
-	OPS_realloc = 0;
-	OPS_soa=0;
-	OPS_diags=0;
+  // Debugging
+  OPS_curr_args = NULL;
+  OPS_curr_name = NULL;
 
-	// CUDA & OpenCL
-	OPS_hybrid_gpu=0; OPS_gpu_direct=0;
-	OPS_block_size_x = 32;
-	OPS_block_size_y = 4;
-	OPS_block_size_z = 1;
-	OPS_consts_h=NULL; OPS_consts_d=NULL; OPS_reduct_h=NULL; OPS_reduct_d=NULL;
-	OPS_consts_bytes = 0; OPS_reduct_bytes = 0;
-	OPS_cl_device=0;
-	ops_halo_buffer = NULL;
-	ops_halo_buffer_d = NULL;
-	ops_halo_buffer_size = 0;
-	OPS_gbl_changed = 1;
-	OPS_gbl_prev = NULL;
-	opencl_instance = NULL;
+  //Diagnostics
+  OPS_kern_max=0; OPS_kern_curr=0;
+  OPS_kernels=NULL;
+  ops_user_halo_exchanges_time = 0.0;
 
-	is_initialised = 1;
-	char buf[20];
-	int points[OPS_MAX_DIM] = {0};
-	for (int i = 0; i < OPS_MAX_DIM; i++) {
-		snprintf(buf, 20, "OPS_internal_0_%d\n", i+1);
-		OPS_internal_0[i] = this->decl_stencil(i+1, 1, points, buf);
-	}
+  //Tiling
+  ops_enable_tiling = 0;
+  ops_cache_size = 0;
+  ops_tiling_mpidepth = -1;
+  ops_tiled_halo_exchange_time=0.0;
+  tiling_instance=NULL;
+  checkpointing_instance=NULL;
+  tilesize_x=-1;
+  tilesize_y=-1;
+  tilesize_z=-1;
+
+  //Other runtime configuration args
+  OPS_realloc = 0;
+  OPS_soa=0;
+  OPS_diags=0;
+
+  // CUDA & OpenCL
+  OPS_hybrid_gpu=0; OPS_gpu_direct=0;
+  OPS_block_size_x = 32;
+  OPS_block_size_y = 4;
+  OPS_block_size_z = 1;
+  OPS_consts_h=NULL; OPS_consts_d=NULL; OPS_reduct_h=NULL; OPS_reduct_d=NULL;
+  OPS_consts_bytes = 0; OPS_reduct_bytes = 0;
+  OPS_cl_device=0;
+  ops_halo_buffer = NULL;
+  ops_halo_buffer_d = NULL;
+  ops_halo_buffer_size = 0;
+  OPS_gbl_changed = 1;
+  OPS_gbl_prev = NULL;
+  opencl_instance = NULL;
+
+  is_initialised = 1;
+  char buf[20];
+  int points[OPS_MAX_DIM] = {0};
+  for (int i = 0; i < OPS_MAX_DIM; i++) {
+    snprintf(buf, 20, "OPS_internal_0_%d\n", i+1);
+    OPS_internal_0[i] = this->decl_stencil(i+1, 1, points, buf);
+  }
+
+  OPS_particle_halo_data_list = NULL;
+  OPS_particle_halo_data_max = 0; OPS_particle_halo_data_index = 0;
+  /* Particle structures */
+  OPS_particle_halo_list = NULL;
+  OPS_particle_halo_max = 0; OPS_particle_halo_index = 0;
+
+  OPS_particle_halo_group_list = NULL;
+  OPS_particle_halo_group_max = 0; OPS_particle_halo_group_index = 0;
 }
 
 OPS_instance::OPS_instance(const int argc, const char * const argv[], const int diags_level, std::ostream &s) {
@@ -194,11 +203,6 @@ void OPS_instance::partition(const char *routine, std::map<std::string, void*>& 
 void OPS_instance::exit() {
   _ops_exit(this);
 }
-
-
-
-
-
 
 //Forwarding calls for ops_dat
 ops_dat_core::~ops_dat_core() {_ops_free_dat(this);}

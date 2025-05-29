@@ -63,8 +63,8 @@ void (*ops_read_dat_hdf5_dynamic)(ops_dat dat) = NULL;
 * backends
 */
 
-int ops_comm_global_size;
-int ops_my_global_rank;
+int ops_comm_global_size; //number of global processes
+int ops_my_global_rank; // my id in global processes
 int partitioned = 0;
 
 sub_block_list *OPS_sub_block_list; // pointer to list holding sub-block
@@ -80,12 +80,17 @@ int intersection(int range1_beg, int range1_end, int range2_beg,
  * Returns a CSR-like array, listing the processes assigned to each block and
  * describing their sub-dimensions
  * This one is just a really primitive initial implementation
+ *
  */
 void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
                           int **proc_sizes, int **proc_dimsplit, std::map<std::string, void*> &opts) {
   // partitioning strategy 1. many blocks, few MPI processes, no splitting, just
   // spread around
+  // Multi-block simulations may be of benefit for running AI sims
+
   if (ops_comm_global_size <= OPS_instance::getOPSInstance()->OPS_block_index) {
+
+    // It passed via reference in order to allocate within and update address
     *processes = (int *)ops_malloc(OPS_instance::getOPSInstance()->OPS_block_index * sizeof(int));
     *proc_offsets = (int *)ops_malloc((1 + OPS_instance::getOPSInstance()->OPS_block_index) * sizeof(int));
     *proc_disps =
@@ -96,14 +101,15 @@ void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
         (int *)ops_malloc(OPS_MAX_DIM * OPS_instance::getOPSInstance()->OPS_block_index * sizeof(int));
 
     for (int i = 0; i < OPS_instance::getOPSInstance()->OPS_block_index; i++) {
-      (*processes)[i] = i % ops_comm_global_size;
-      (*proc_offsets)[i] = i;
+      (*processes)[i] = i % ops_comm_global_size; //processes: Store which process owns the i-block
+      (*proc_offsets)[i] = i; //offsets of block i is set to i
       ops_block block = OPS_instance::getOPSInstance()->OPS_block_list[i].block;
       int max_sizes[OPS_MAX_DIM] = {0};
       ops_dat_entry *item, *tmp_item;
       for (item = TAILQ_FIRST(&(OPS_instance::getOPSInstance()->OPS_block_list[block->index].datasets));
            item != NULL; item = tmp_item) {
         tmp_item = TAILQ_NEXT(item, entries);
+        //TODO: Need to check how to not access particle ops_dat structures
         for (int d = 0; d < block->dims; d++)
           max_sizes[d] = MAX(item->dat->size[d] + item->dat->base[d] +
                                  item->dat->d_m[d] - item->dat->d_p[d],
@@ -112,14 +118,15 @@ void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
 
       for (int j = 0; j < OPS_MAX_DIM; j++) {
         (*proc_disps)[OPS_MAX_DIM * i + j] = 0;
-        (*proc_sizes)[OPS_MAX_DIM * i + j] = max_sizes[j];
-        (*proc_dimsplit)[OPS_MAX_DIM * i + j] = 1;
+        (*proc_sizes)[OPS_MAX_DIM * i + j] = max_sizes[j]; //size of biggest ops_dat structure owned by the block
+        //Q: is this the optimum process ??
+        (*proc_dimsplit)[OPS_MAX_DIM * i + j] = 1; //number of processes to which the block is split
       }
     }
     (*proc_offsets)[OPS_instance::getOPSInstance()->OPS_block_index] = OPS_instance::getOPSInstance()->OPS_block_index;
   } else { // partitioning strategy 2, few blocks, many MPI processes, split all
            // blocks into same number of pieces
-    //see if specified by user
+    //see if specified by user- Actually user can assign the number of processes assigned to each block
     int *processes_per_block = NULL;
     int nproc_total = (ops_comm_global_size / OPS_instance::getOPSInstance()->OPS_block_index) * 
                         OPS_instance::getOPSInstance()->OPS_block_index; // leftovers will be idle!;
@@ -144,9 +151,10 @@ void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
 
     *processes =
         (int *)ops_malloc(nproc_total * sizeof(int));
-    *proc_offsets = (int *)ops_malloc((1 + OPS_instance::getOPSInstance()->OPS_block_index) * sizeof(int));
-    *proc_disps = (int *)ops_malloc(OPS_MAX_DIM * nproc_total * sizeof(int));
-    *proc_sizes = (int *)ops_malloc(OPS_MAX_DIM * nproc_total * sizeof(int));
+
+    *proc_offsets = (int *)ops_malloc((1 + OPS_instance::getOPSInstance()->OPS_block_index) * sizeof(int)); //map of processes into each block
+    *proc_disps = (int *)ops_malloc(OPS_MAX_DIM * nproc_total * sizeof(int)); //Displacement for each block owned by each process
+    *proc_sizes = (int *)ops_malloc(OPS_MAX_DIM * nproc_total * sizeof(int)); // Size of blocks owned by each process
     *proc_dimsplit =
         (int *)ops_malloc(OPS_MAX_DIM * OPS_instance::getOPSInstance()->OPS_block_index * sizeof(int));
 
@@ -154,12 +162,16 @@ void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
     int blockdims = OPS_instance::getOPSInstance()->OPS_block_list[0].block->dims;
     for (int i = 0; i < OPS_instance::getOPSInstance()->OPS_block_index; i++) {
       ops_block block = OPS_instance::getOPSInstance()->OPS_block_list[i].block;
-      (*proc_offsets)[i] = process_count_accumulator;
+      (*proc_offsets)[i] = process_count_accumulator; //offset for each block: States which is the first process that owns part of the block
       for (int j = 0; j < processes_per_block[i]; j++)
         (*processes)[(*proc_offsets)[i] + j] = process_count_accumulator + j;
       process_count_accumulator += processes_per_block[i];
 
+//proc_offset: which run rank owns the given
+
       // Use MPI_Dims_create to split the block along different dimensions
+
+      // Force the decomposition in each block number of process in each block
       int ndim = block->dims;
       int pdims[OPS_MAX_DIM] = {0};
       if (OPS_instance::getOPSInstance()->ops_force_decomp_x.size()>0 ||
@@ -172,7 +184,8 @@ void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
           } else if (OPS_instance::getOPSInstance()->ops_force_decomp_x.size()==1)
             pdims[0] = OPS_instance::getOPSInstance()->ops_force_decomp_x[0];
           else
-            pdims[2] = 0;
+            pdims[0] = 0; //It was zero please
+
           if (OPS_instance::getOPSInstance()->ops_force_decomp_y.size()>1) {
             if ((int)OPS_instance::getOPSInstance()->ops_force_decomp_y.size() != OPS_instance::getOPSInstance()->OPS_block_index)
               throw OPSException(OPS_RUNTIME_CONFIGURATION_ERROR, "Error: when using OPS_FORCE_DECOMP, number of arguments has to be 1 or the number of blocks used");
@@ -204,9 +217,11 @@ void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
       if (prod > processes_per_block[i]) throw OPSException(OPS_RUNTIME_CONFIGURATION_ERROR, "Error: force_decomp requested more processes than available for the block");
       
       //printf("requesting %dx%d for %d processes\n", pdims[0], pdims[1], processes_per_block[i]);
+
+      //Generates the number of processes in each direction
       MPI_Dims_create(processes_per_block[i], ndim, pdims);
       for (int d = 0; d < ndim; d++)
-        (*proc_dimsplit)[i * OPS_MAX_DIM + d] = pdims[d];
+        (*proc_dimsplit)[i * OPS_MAX_DIM + d] = pdims[d]; //number of process per direction for each block
 //        (*proc_dimsplit)[i * OPS_MAX_DIM + d] = pdims[ndim-d-1];
       for (int d = ndim; d < OPS_MAX_DIM; d++)
         (*proc_dimsplit)[i * OPS_MAX_DIM + d] = 1;
@@ -217,6 +232,7 @@ void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
       for (item = TAILQ_FIRST(&(OPS_instance::getOPSInstance()->OPS_block_list[block->index].datasets));
            item != NULL; item = tmp_item) {
         tmp_item = TAILQ_NEXT(item, entries);
+        if (item->dat->is_particle) continue;
         for (int d = 0; d < block->dims; d++)
           max_sizes[d] = MAX(item->dat->size[d] + item->dat->base[d] +
                                  item->dat->d_m[d] - item->dat->d_p[d],
@@ -254,6 +270,16 @@ void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
   }
 }
 
+
+/* Generating block decomposition
+ *
+ * \param[in] block  block of the given array
+ * \param[in] num_proc   number of processes to decompose the given block
+ * \param[in] proc_disps displacements for first point for each process within each block
+ * \param[in] proc_size  size of data (max) owned by each process
+ * \param[in] proc_dimsplit number of processes per direction
+*/
+
 void ops_decomp(ops_block block, int num_proc, int *processes, int *proc_disps,
                 int *proc_sizes, int *proc_dimsplit) {
 
@@ -289,8 +315,9 @@ void ops_decomp(ops_block block, int num_proc, int *processes, int *proc_disps,
   }
   MPI_Group global;
   MPI_Comm_group(OPS_MPI_GLOBAL, &global);
-  MPI_Group_incl(global, num_proc, processes, &(sb->grp));
-  MPI_Comm_create(OPS_MPI_GLOBAL, sb->grp, &(sb->comm1));
+  MPI_Group_incl(global, num_proc, processes, &(sb->grp)); //Needed for processes within the grid
+  MPI_Comm_create(OPS_MPI_GLOBAL, sb->grp, &(sb->comm1)); // Needed for getting a communication
+                                                          // world only for owned processes
   if (sb->owned)
     MPI_Cart_create(sb->comm1, ndim, pdims, periodic, 0, &(sb->comm));
 
@@ -349,6 +376,67 @@ void ops_decomp(ops_block block, int num_proc, int *processes, int *proc_disps,
   ops_free(periodic);
 }
 
+void ops_decomp_particle(ops_block block, sub_block  *sb) {
+
+  //Get particle structure
+  ops_particle *particle = OPS_instance::getOPSInstance()->OPS_block_list[block->index].particle;
+  int no_particle_lists = OPS_instance::getOPSInstance()->OPS_block_list[block->index].no_particle_structures;
+
+  if (!sb->owned || no_particle_lists == 0) return;
+
+  sb->sb_particle_list = (  sub_particle *) ops_malloc(sizeof(sub_particle) * no_particle_lists);
+
+  for (int idef = 0; idef < no_particle_lists; idef++) {
+    sb->sb_particle_list[idef].particle = particle;
+    sb->sb_particle_list[idef].nglobal = 0;
+    sb->sb_particle_list[idef].particle_halos
+      = (ops_int_particle_halos *) ops_malloc(block->dims * sizeof(ops_int_particle_halos));
+
+
+
+    //compute number of bites per each particle
+    sb->sb_particle_list[idef].bites_in_exchange = particle[idef]->particle_pos_dat->elem_size;
+    if (particle[idef]->particle_envelope != nullptr)
+      sb->sb_particle_list[idef].bites_in_exchange += particle[idef]->particle_envelope->elem_size;
+
+    for (auto &dat : particle[idef]->particle_data)
+      sb->sb_particle_list[idef].bites_in_exchange += dat->elem_size;
+
+    //And allocate basic structures
+
+    // Set internal halos */
+    for (int idir = 0; idir <block->dims; idir++) {
+      sb->sb_particle_list[idef].particle_halos[idir].nswaps = 0;
+      sb->sb_particle_list[idef].particle_halos[idir].dir = idir;
+
+      //Set to zero
+      sb->sb_particle_list[idef].particle_halos[idir].nforward_pos = 0;
+      sb->sb_particle_list[idef].particle_halos[idir].nforward_neg = 0;
+
+      sb->sb_particle_list[idef].particle_halos[idir].nalloc_max_pos = 100;
+      sb->sb_particle_list[idef].particle_halos[idir].nalloc_max_neg = 100;
+
+      if (sb->id_m[idir] > -1)
+        sb->sb_particle_list[idef].particle_halos[idir].particle_send_neg
+        = (int *) ops_malloc(sizeof(int) * 100);
+
+      if (sb->id_p[idir] >  -1)
+        sb->sb_particle_list[idef].particle_halos[idir].particle_send_pos
+        = (int *) ops_malloc(sizeof(int) * 100);
+
+      //The remaining of data structures allocated after computing build structure
+    }
+  }
+
+}
+
+/*-------------------------------------------------------------------------------------------------*/
+/* Decomposing ops_dats
+ *
+ *
+ *
+ */
+
 void ops_decomp_dats(sub_block *sb) {
   ops_block block = sb->block;
   ops_dat_entry *item, *tmp_item;
@@ -356,7 +444,10 @@ void ops_decomp_dats(sub_block *sb) {
        item != NULL; item = tmp_item) {
     tmp_item = TAILQ_NEXT(item, entries);
     ops_dat dat = item->dat;
-    sub_dat *sd = OPS_sub_dat_list[dat->index];
+
+    if (dat->is_particle) return;
+    sub_dat *sd = OPS_sub_dat_list[dat->index]; //TODO: Do we need to add particle dat lists to the
+    //structures
 
     // aggregate size and prod array
     size_t *prod_t = (size_t *)ops_malloc((sb->ndim + 1) * sizeof(size_t));
@@ -454,20 +545,12 @@ void ops_decomp_dats(sub_block *sb) {
       continue;
     }
 
-    int init_deviceptr = 1;
-    // Allocate datasets
+    // Allocate datasets for ops_dat
+    //TODO: Need to include an extra set for particle data structures
     if (dat->data == NULL){
       if (dat->is_hdf5 == 0) {
-//      dat->data = (char *)ops_calloc(prod[sb->ndim-1]*dat->elem_size, 1);
-        dat->data = (char *)ops_malloc(prod[sb->ndim-1]*dat->elem_size*1);
-        if (dat->block->instance->OPS_hybrid_gpu == 0) // CPU-only target
-            ops_init_zero(dat->data, prod[sb->ndim-1]*dat->elem_size*1);
-        else {
-            ops_device_malloc(dat->block->instance, (void **)&(dat->data_d), prod[sb->ndim-1]*dat->elem_size*1);
-            ops_device_memset(dat->block->instance, (void **)&(dat->data_d), 0, prod[sb->ndim-1]*dat->elem_size*1);
-            init_deviceptr = 0; // When device ptr initialized to zero, no need to call HostToDevice copy
-            dat->dirty_hd = 2;  // device dirty bit set to true to trigger DeviceToHost copy
-        }
+        //dat->data = (char *)ops_calloc(prod[sb->ndim-1]*dat->elem_size,1);
+        dat->data = (char *)ops_malloc(prod[sb->ndim - 1] * dat->elem_size * 1);
         dat->hdf5_file = "none";
         dat->mem =
             prod[sb->ndim - 1] * dat->elem_size; // this includes the halo sizes
@@ -489,7 +572,7 @@ void ops_decomp_dats(sub_block *sb) {
     }
 
     // Compute offset in bytes to the base index
-    dat->base_offset = 0;
+    dat->base_offset = 0; //TODO: First element to access in the list
     size_t cumsize = 1;
     for (int i = 0; i < block->dims; i++) {
       dat->base_offset += (OPS_instance::getOPSInstance()->OPS_soa ? dat->type_size : dat->elem_size)
@@ -498,9 +581,8 @@ void ops_decomp_dats(sub_block *sb) {
       cumsize *= dat->size[i];
     }
 
-    if(init_deviceptr)
-      ops_cpHostToDevice(dat->block->instance, (void **)&(dat->data_d), (void **)&(dat->data),
-                         prod[sb->ndim-1]*dat->elem_size);
+    ops_cpHostToDevice(dat->block->instance, (void **)&(dat->data_d), (void **)&(dat->data),
+                       prod[sb->ndim - 1] * dat->elem_size);
 
     // TODO: halo exchanges should not include the block halo part for
     // partitions that are on the edge of a block
@@ -858,7 +940,7 @@ void ops_partition_halos(int *processes, int *proc_offsets, int *proc_disps,
     // receive each
     for (int j = 0; j < mpi_group->nhalos; j++) {
       for (int k = 0; k < mpi_group->mpi_halos[j]->nproc_from; k++) {
-        int halo_size = std::min(mpi_group->mpi_halos[j]->halo->to->elem_size, mpi_group->mpi_halos[j]->halo->from->elem_size);
+        int halo_size = mpi_group->mpi_halos[j]->halo->from->elem_size;
         for (int d = 0; d < OPS_MAX_DIM; d++)
           halo_size *=
               mpi_group->mpi_halos[j]->local_iter_size[k * OPS_MAX_DIM + d];
@@ -868,7 +950,7 @@ void ops_partition_halos(int *processes, int *proc_offsets, int *proc_disps,
            k < mpi_group->mpi_halos[j]->nproc_from +
                    mpi_group->mpi_halos[j]->nproc_to;
            k++) {
-        int halo_size = std::min(mpi_group->mpi_halos[j]->halo->to->elem_size,mpi_group->mpi_halos[j]->halo->from->elem_size);
+        int halo_size = mpi_group->mpi_halos[j]->halo->to->elem_size;
         for (int d = 0; d < OPS_MAX_DIM; d++)
           halo_size *=
               mpi_group->mpi_halos[j]->local_iter_size[k * OPS_MAX_DIM + d];
@@ -946,6 +1028,8 @@ void _ops_partition(OPS_instance *instance, const char *routine, std::map<std::s
 
   // Distribute blocks amongst processes
   int *processes, *proc_offsets, *proc_disps, *proc_sizes, *proc_dimsplit;
+
+  /* Part-I: Split blocks */
   ops_partition_blocks(&processes, &proc_offsets, &proc_disps, &proc_sizes,
                        &proc_dimsplit, opts);
 
@@ -961,6 +1045,8 @@ void _ops_partition(OPS_instance *instance, const char *routine, std::map<std::s
                &proc_dimsplit[OPS_MAX_DIM * b]);
 
     sub_block *sb = OPS_sub_block_list[block->index];
+
+    ops_decomp_particle(block, sb); //pass pointer by reference
 
     // decompose dats defined on this block
     ops_decomp_dats(sb);
@@ -1150,4 +1236,8 @@ int compute_ranges(ops_arg* args, int nargs, ops_block block, int* range, int* s
     end[n] = starti + length;
   }
   return 1;
+}
+
+bool ops_partitioned() {
+   return partitioned;
 }
