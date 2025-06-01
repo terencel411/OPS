@@ -54,7 +54,7 @@
 
 #if __cplusplus >= 201103L
 #include <utility>
-#if __cplusplus >= 201402L
+/*#if __cplusplus >= 201402L
 // after c++14 use built in types.
 template <size_t... I> using indices = std::index_sequence<I...>;
 template <size_t Num> using build_indices = std::make_index_sequence<Num>;
@@ -66,47 +66,32 @@ template <size_t N, size_t... Is>
 struct build_indices : public build_indices<N - 1, N - 1, Is...> {};
 template <size_t... Is> struct build_indices<0, Is...> : indices<Is...> {};
 #endif
+*/
 
+int find_offset(ops_arg arg, int *iprev, int elem, int insert_elem) {
+  int offs{0};
+  if (   arg.argtype==OPS_ARG_DAT_PARTICLE) {
+    ops_dat dat = arg.dat;
+    if (!dat->is_particle)
+      throw OPSException(OPS_INVALID_ARGUMENT, "ops_dat structure is not "
+                                               "related to a particle structure");
+    offs = (elem - (*iprev)) * dat->dim; //TODO: Check if I need bytes
 
-template <typename T> struct param_remove_cvref {
-  using type =
-      typename std::remove_cv<typename std::remove_reference<T>::type>::type;
-};
+  //  printf("elem = %d Offs = %d iprev = %d dim = %d\n", elem , offs, *iprev, dat->dim);
 
-// helper struct to get the underlying type of pointer kernel parameters
-// e.g. const int * to int *
-template <typename T> struct param_remove_cvref<T *> {
-  using type = typename std::add_pointer<typename std::remove_cv<
-      typename std::remove_reference<T>::type>::type>::type; // remove_reference may be wrong here..
-};
-
-template <typename T>
-using param_remove_cvref_t = typename param_remove_cvref<T>::type;
-
-/*---------------------------------------------------------------------------------------*/
-/* Introduce data to particle lists
- */
-template<typename ParamT>
-struct param_handler {
-  static ParamT *get_data(ops_arg &arg, int ientry, int ip, int Nins) {
-    if (arg.argtype == OPS_ARG_GBL_PARTICLE) {
-      ParamT *data =(ParamT *)arg.data;
-      int nelems = arg.dim / Nins;
-      return (data != nullptr) ? data + ip * nelems : nullptr;
-    }
-    else if (arg.argtype == OPS_ARG_DAT_PARTICLE) {
-      ParamT *data = (ParamT *)arg.data;
-      return (data != nullptr) ? data + ientry * arg.dim : nullptr;
-    }
-
-    return nullptr;
+    (*iprev) = elem;
+  }
+  else if ( arg.argtype == OPS_ARG_GBL_PARTICLE) {
+    offs = (insert_elem - (*iprev)) * arg.dim;
+    (*iprev) = elem; //TODO: Vrf that it must be elem
   }
 
-};
+  return offs;
+}
 
 template <typename... ParamType, typename... OPSARG, size_t... J>
-void ops_particle_insert_impl(indices<J...>, int (*kernel_decide)(int , double* ,
-                              double* , double*, double *),
+void ops_particle_insert_impl(indices<J...>,
+                              int (*kernel_decide)(int , double* , double* , double*, double *),
                               void (*kernel)(ParamType... ),
                               char const *name, ops_particle particle, int flag, int dim, int Nins,
                               double *xCrds, double *shape, OPSARG... arguments)
@@ -119,59 +104,196 @@ void ops_particle_insert_impl(indices<J...>, int (*kernel_decide)(int , double* 
 #endif
   constexpr int N = sizeof...(OPSARG);
   int count[OPS_MAX_DIM] = {0};
-  ops_arg args[N] = {arguments...};
-
   BoundingBox *boxBlock = particle->box_block;
-
   double xmin[dim], xmax[dim];
-
   boxBlock->getLocalMaxMin(xmin, xmax);
 
-  /* Loop over all insert particles */
+  ops_block block = particle->block;
+  int ndim = particle->block->dims;
+
+  /* First loop identify particles to insert */
+  int Nmax{10};
+  int Ninsert{0};
+  int *inserting_particles = nullptr;
+  int ilast{0};
+  inserting_particles = (int *) ops_malloc(sizeof(int) * Nmax);
+
   for (int i = 0; i < Nins; i++) {
-    double *x_local = (xCrds + dim * i);
-    double *r_shape = (shape != nullptr) ? shape + i : nullptr; //TODO: Expand
+    double *x_loc = (xCrds + dim * i);
+    double *rShape = (shape != nullptr) ? shape + i : nullptr;
 
-    int decide = kernel_decide(dim, xmin, xmax, x_local, r_shape); //TODO:Add decide
-
-    int ielem = 0;
+    int decide = kernel_decide(dim, xmin, xmax, x_loc, rShape);
     if (decide) {
-      int ientry = particle->no_particles;
-
-      if (flag) {
-        particle->no_particles +=1;
-        ielem = particle->no_particles - 1;
-      }
-      else {
-        ielem++;
-        if (ielem > particle->no_particles)
-          particle->no_particles++;
+      Ninsert++;
+      if (Ninsert > Nmax) {
+        Nmax += 10;
+        inserting_particles = (int *)ops_realloc(inserting_particles, sizeof(int) * Nmax);
       }
 
-      ops_particle_realloc_data(particle);
-
-      //TODO: Insert functions //Get right data point
-      _ops_particle_add_elem(dim, x_local + dim * i, particle->particle_pos_dat[0],
-                             (flag) ? particle->no_particles - 1 : ielem - 1);
-
-      /* Shifting particles to entry point */
-      //kernel(... );
-      kernel((param_handler<param_remove_cvref_t<ParamType>>::get_data(args[J], ielem, i, Nins))...);
+      inserting_particles[Ninsert-1] = i;
+      ilast = i;
     }
   }
+
+
+  /* Inserting at the front or at the back */
+  if (flag) particle->no_particles = 0;
+
+  /* Update number of particles */
+  particle->no_particles += Ninsert;
+  ops_particle_realloc_data(particle);
+
+  ilast = 0;
+
+  int iprev[N];
+  for (int i = 0; i < N; i++)
+    iprev[i] = 0;
+
+  /* Get additional elements to access data structures */
+
+  ops_arg args[N] = {arguments...};
+
+  char *p_a[N] =
+    {particle_param_handler<param_remove_cvref_t<ParamType>>::construct(arguments, dim, ndim, block,
+                                                                        NULL, particle->no_particles)...};
+
+  /* Inserting particles in the loop */
+  int elem = (flag) ? 0 : particle->no_particles - Ninsert;
+  for (int i = 0; i < Ninsert; i++) {
+    double *x_local = (xCrds + dim * inserting_particles[i]);
+    _ops_particle_add_elem(dim, x_local, particle->particle_pos_dat, elem);
+    elem++;
+
+    int offs[N] = {find_offset(arguments, &iprev[J], i, inserting_particles[i])...};
+
+    (void) std::initializer_list<int>{(
+        particle_param_handler<param_remove_cvref_t<ParamType>>::shift_arg(arguments, p_a[J], offs[J]), 0)...}; //TODO-Debug but before add
+
+    (void) std::initializer_list<int>{(
+        particle_param_handler<param_remove_cvref_t<ParamType>>::shift_address(arguments, p_a[J], offs[J]), 0)...};
+
+    kernel((particle_param_handler<param_remove_cvref_t<ParamType>>::get(p_a[J]))...);
+  }
+
+  /* Enforce rebuild on particle lists */
+  if (Ninsert > 0)
+   for (auto &mapping : particle->mapping_list) {
+     mapping->decide = true;
+   }
+
 }
+template <typename... ParamType, typename... OPSARG, size_t... J>
+void   ops_particle_user_delete_impl(indices<J...>,  int (*kernel)(ParamType... ),
+                                     char const *name, ops_particle particle,
+                                     int dim, OPSARG... arguments) {
+#ifdef OPS_MPI
+  ops_block = particle->block;
+  sub_block_list sb = OPS_sub_block_list[block->index];
+  if (!sb->owned) return;
+#endif
+  constexpr int N = sizeof...(OPSARG);
+  int *markForDeletion = particle->mark_deletion;
+
+  ops_block block = particle->block;
+  int ndim = particle->block->dims;
+
+  ops_arg args[N] = {arguments...};
+
+  char *p_a[N] =
+    {particle_param_handler<param_remove_cvref_t<ParamType>>::construct(arguments, dim, ndim, block,
+                                                                        NULL, particle->no_particles)...};
+
+  int iprev[N];
+  for (int i = 0; i < N; i++)
+   iprev[i] = 0;
+
+  size_t nParticles = particle->no_particles;
+  int imarked{0};
+  for (size_t i = 0; i < nParticles; i++) {
+    int offs[N] = {find_offset(arguments, &iprev[J], i,  i)...};
+
+    (void) std::initializer_list<int>{(
+        particle_param_handler<param_remove_cvref_t<ParamType>>::shift_arg(arguments, p_a[J], offs[J]), 0)...}; //TODO-Debug but before add
+
+    (void) std::initializer_list<int>{(
+        particle_param_handler<param_remove_cvref_t<ParamType>>::shift_address(arguments, p_a[J], offs[J]), 0)...};
+
+    if (markForDeletion[i] == 1) continue;
+
+    markForDeletion[i] = kernel((particle_param_handler<param_remove_cvref_t<ParamType>>::get(p_a[J]))...);
+
+  }
+
+// Enforce list build if not requested
+  for (auto &map : particle->mapping_list)
+    if (map->decide) return;
+
+  int enforce{0};
+  for (size_t i = 0; i < nParticles; i++) {
+    if (markForDeletion[i]==1) {
+      enforce = 1; break;
+    }
+
+  }
+
+  for (auto &map : particle->mapping_list)
+    map->decide = true;
+
+  //TODO: Shift into MPI
+
+}
+
+/*------------------------------------------------------------------------------------------------*/
+/* \brief Function for inserting particles in the simulation
+ *
+ * \param[in] kernel           Pointer to function for adding/initializing particle data structures
+ * \param[in] kernel_decide    Pointer to function for deciding if a particle will be inserted in
+ *                             the simulation
+ * \param[in] flag             Flag for inserting particles at the front (1) or at the back (0) of
+ *                             the particle list
+ * \param[in] dim              size of the spatial space
+ * \param[in] Nins             number of particles to be inserted in the list
+ * \param[in] xcrds            array containing the coordinates of the particles to be inserted
+ * \param[in] shape            array containing the shape of the particles to be inserted
+ * \param[in] args             user defined arguments for inserting particle data into the lists
+ */
 
 template <typename... ParamType, typename... OPSPARG>
 void ops_particle_insert(void (*kernel)(ParamType...), char const *name,
                          int (*kernel_decide)(int, double*, double*,double *, double *),
-                         ops_particle particle, int  dim, int Nins, double *xCrds,
+                         ops_particle particle, int flag, int  dim, int Nins, double *xCrds,
                          double *shape, OPSPARG... args) {
   static_assert(sizeof...(ParamType) == sizeof...(OPSPARG),
            "Number of inserting kernel parameters should match the number ops_parg");
-  ops_particle_insert_impl(build_indices<sizeof...(ParamType)>{}, kernel, kernel_decide, particle,
-                           dim, Nins, xCrds, shape, args...);
+  ops_particle_insert_impl(build_indices<sizeof...(ParamType)>{}, kernel_decide,  kernel, name,
+                           particle, flag, dim, Nins, xCrds, shape, args...);
 }
 
+/*---------------------------------------------------------------------------------------------*/
+/* \brief Function for removing particles based on user defined criteria
+ *
+ * \param[in] kernel         Pointer to function for removing particles from the block
+ *                           The particular function must be called after
+ *                           ops_particle_update_map_lists
+ * \param[in] name           Name of the kernel function
+ * \param[in] particle       ops_particle_structure of a given block
+ * \param[in] dim            size of the spatial space
+ * \param[in] args           used defined arguments for deleting particles for the list
+ *
+ */
+/*---------------------------------------------------------------------------------------------*/
+
+template <typename... ParamType, typename...OPSPARG>
+void ops_particle_user_delete(int (*kernel)( ParamType...), char const *name,
+                              ops_particle particle, int dim,
+                              OPSPARG... args) {
+  static_assert(sizeof...(ParamType) == sizeof...(OPSPARG),
+                "Number of user kernel parameters do not match the number of ops_parg params");
+
+  ops_particle_user_delete_impl(build_indices<sizeof...(ParamType)>{}, kernel, name,
+                                particle, dim,  args...);
+
+}
 void ops_particle_remove(ops_particle particle);
 void ops_particle_init_mark_deletion(ops_particle particle);
 #endif //C++ 2011

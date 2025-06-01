@@ -93,6 +93,9 @@ OPS_FTN_INTEROP
 ops_arg ops_arg_gbl_char(char *data, int dim, int size, ops_access acc);
 
 OPS_FTN_INTEROP
+ops_arg ops_arg_particle_gbl_char(char *data, int dim, int size, ops_access acc);
+
+OPS_FTN_INTEROP
 ops_dat_core* ops_decl_dat_char(ops_block_core *, int, int *, int *, int *, int *, int *, char *,
                           int, char const *, char const *);
 template <typename T> void ops_decl_const2(char const *, int, char const *, T *);

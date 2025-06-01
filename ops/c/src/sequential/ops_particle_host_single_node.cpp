@@ -45,6 +45,36 @@
 #include <limits>
 #include <vector>
 
+void BoundingBox::partitionBoundingBox(ops_block block) {
+
+  if (owned) return;
+
+  if (coords != nullptr) {
+    int dim_dat = coords->block->dims;
+    if (dim_dat != dim && coords->dim != dim)
+      throw OPSException(OPS_RUNTIME_ERROR, "Dimensions of data structure not consisted "
+                         "with dimensions");
+
+    double xmin[OPS_MAX_DIM], xmax[OPS_MAX_DIM];
+
+    _ops_construct_local_box_from_dat(coords, dx, dim, xmin, xmax);
+
+    //Now set local and mininum
+    setBoundingBoxLocalBound(xmin, xmax);
+    setBoundingBoxGlobalBound(xmin, xmax);
+
+    owned = true;
+  }
+  else {
+    ops_point xmin, xmax;
+    xmax = getGlobalMax();
+    xmin = getGlobalMin();
+    setBoundingBoxLocalBound(xmin, xmax);
+    owned = true;
+  }
+}
+
+
 
 void _ops_get_max_min(double &minv, double &maxv, const double* dat, const size_t size) {
   
@@ -94,7 +124,7 @@ int _ops_coord_to_bin(const int dim, const ops_point xmin,const  ops_point xmax,
                       const double *dx, const int *Ngrid, const double *xp) {
   int ix{-1}, iy{-1}, iz{-1};
 
-  if ((xp[0] <= xmax.x) && (xp[0] >= xmax.x))
+  if ((xp[0] >= xmin.x) && (xp[0] <= xmax.x))
     ix = floor((xp[0] - xmin.x) / dx[0]);
   
   if ((xp[1] >= xmin.y) && (xp[1] <= xmax.y))
@@ -107,7 +137,6 @@ int _ops_coord_to_bin(const int dim, const ops_point xmin,const  ops_point xmax,
   else
     iz = 0;
   
-
   return (dim == 2) ? ix + iy * Ngrid[0] : ix + iy * Ngrid[0] + iz * Ngrid[0] * Ngrid[1];                    
 }
 
@@ -118,7 +147,7 @@ int _ops_particle_moved_outside(ops_particle particle) {
   size_t nParticles = particle->no_particles;
   int dim = particle->block->dims;
   BoundingBox *box = particle->box_block;
-  double *xlocal = (double *) particle->particle_pos_dat[0]->data;
+  double *xlocal = (double *) particle->particle_pos_dat->data;
   for (size_t i = 0; i < nParticles; i++) {
     ops_point point{xlocal[dim * i], xlocal[dim * i + 1],
                     (dim == 3) ? xlocal[dim * i + 2] : 0.0};
@@ -203,10 +232,14 @@ void _ops_build_uniform_dats(const int init, const int dim, const ops_dat grid,
 
   /* Map particles to grid */
   double *xp_data = (double *)xp->data;
-  for (size_t i = Np - 1; i >= 0; i++) {
+
+  for (long int i = Np - 1; i >= 0; i--) {
     int ibin = _ops_coord_to_bin(dim, xmin, xmax, dx, size, xp_data + 3 * i);
     //TODO: Add separation between local and not local elements
-    if (ibin < 0) continue;
+    if (ibin < 0) {
+      ops_printf("WARNING: Non-positiove value");
+      continue;
+    }
     bin_data[i] = binhead_data[ibin];
     binhead_data[ibin] = i;
   }
@@ -258,6 +291,21 @@ void  _ops_compute_uniform_dx(ops_dat grid, const int dims,double *dx) {
             - *(   grid_points + imin[0] + imin[1] * size[0]
                  + imin[2] * size[0] * size[1] + 2 * size[0] * size[1] * size[2]);
     }
+    else {
+      dx[0] = *(  grid_points + dims * (imin[0] + 1) + dims * size[0] * imin[1]
+                 + dims * size[0] * size[1] * imin[2])
+            - *(  grid_points + dims * imin[0] + dims * size[0] * imin[1]
+                 + dims * size[0] * size[1] * imin[2]);
+
+      dx[1] = *(  grid_points + 1 + dims * imin[0] + (imin[1] + 1) * dims * size[0]
+                 + dims * size[0] * size[1] * imin[2])
+            - *(  grid_points + 1 + dims * imin[0] + imin[1] * size[0] * dims
+                 + dims * size[0] * size[1] * imin[2]);
+      dx[2] = *(  grid_points  + 2 + dims * imin[0] + imin[1] * dims * size[0]
+                 + dims * size[0] * size[1] * (imin[2] + 1))
+            - *(  grid_points + 2 + dims * imin[0] + dims * imin[1] * size[0]
+                 + dims * size[0] * size[1] * imin[2]);
+    }
   }
 }
 
@@ -273,7 +321,7 @@ void _ops_get_grid_size_per_node(const int dims, const ops_dat grid, const ops_p
   for (int i = 0; i < dims; i++)  {
     imin[i] = (size_t) -grid->d_m[i];
     size[i] = (size_t) grid->size[i];
-    imax[i] = (size_t) (grid->size[i] = grid->d_p[i]);
+    imax[i] = (size_t) (grid->size[i] - grid->d_p[i]);
   }
 
   OPS_instance *instance = grid->block->instance;
@@ -574,7 +622,7 @@ void _ops_particle_to_non_uniform_grid_intersection(const int init, const int di
 /* Finds the box of each process based on an ops_dat structure for non-MPI backend code-assume a uniform grid
  * TODO: Expand to non-uniform
  */
-void _ops_construct_local_box_from_dat(ops_dat coords, double grid_size, int dim, double *xmin, double *xmax) {
+void _ops_construct_local_box_from_dat(ops_dat coords, double *grid_size, int dim, double *xmin, double *xmax) {
   /* Get minimum lowerbound */
   int imin[OPS_MAX_DIM], imax[OPS_MAX_DIM];
   int size[OPS_MAX_DIM];
@@ -665,8 +713,8 @@ void _ops_construct_local_box_from_dat(ops_dat coords, double grid_size, int dim
 
   /* Uniform assumption for the moment */
   for (int i = 0; i < dim ; i++) {
-    xmin[i] -= 0.5 * grid_size;
-    xmax[i] += 0.5 *grid_size;
+    xmin[i] -= 0.5 * grid_size[i];
+    xmax[i] += 0.5 *grid_size[i];
   }
 }
 
@@ -709,6 +757,9 @@ int _ops_particle_mapping_decide(ops_particle_mapping map, ops_particle particle
   if (enforce)
     return 1;
 
+  if (map->decide)
+    return 1;
+
   /*1.  Particle structure changed */
   return _ops_particle_moved_outside(particle);
 
@@ -716,12 +767,12 @@ int _ops_particle_mapping_decide(ops_particle_mapping map, ops_particle particle
   //TODO: Expand to three different structures
 
   /* 2. Particles moved substantially */
-  double *x = (double *)particle->particle_pos_dat[0]->data;
+  double *x = (double *)particle->particle_pos_dat->data;
   double *x_old =(double *)map->pos_old->data;
 
   double *rad = (double *)map->Rp->data;
   double *rad_old
-  = (map->particle_changes== ops_particle_mapping_core::ops_shape_change::change) ?
+  = (map->particle_changes== OPS_EVOLV_SHAPE) ?
       (double *) map->Rp_old->data : nullptr;
 
   int dim = particle->block->dims;
@@ -732,12 +783,12 @@ int _ops_particle_mapping_decide(ops_particle_mapping map, ops_particle particle
       dx[isou] = x[isou + dim * i] - x_old[isou + dim * i];
       dx_sq += dx[isou] * dx[isou];
 
-      if (map->particle_changes== ops_particle_mapping_core::ops_shape_change::change)
+      if (map->particle_changes== OPS_EVOLV_SHAPE)
         dr = rad[i] - rad_old[i];
     }
 
     //Case I: Particle of fixed envelope
-    if (map->particle_changes== ops_particle_mapping_core::ops_shape_change::constant) {
+    if (map->particle_changes== OPS_EVOLV_SHAPE) {
       if (dx_sq > map->skin * map->skin) {
         flag = 1;
         break; //TODO: Check if it works
@@ -753,12 +804,54 @@ int _ops_particle_mapping_decide(ops_particle_mapping map, ops_particle particle
     //TODO: Add radius
 
   }
+
+  if (flag) map->decide = true;
+  else
+    map->decide = false;
+
   if (flag)
     return 1;
 
   //TODO: Need to verify that also the grid hash't changed as well
 
   return 0;
+}
+
+void _ops_build_particle_to_grid(const size_t nParticles, const ops_dat bin,
+                                 const ops_dat binhead, ops_dat part_to_grid) {
+  if (nParticles < 0)
+    throw OPSException(OPS_RUNTIME_ERROR, "Non-positive number of particles\n");
+
+  if (!bin->is_particle)
+    throw OPSException(OPS_RUNTIME_ERROR, "ops_dat bin is not a particle ops_dat"
+                                          "structure");
+
+  if (binhead->is_particle)
+    throw OPSException(OPS_RUNTIME_ERROR, "ops_dat binhead is defined for particle data");
+
+  if (!part_to_grid->is_particle)
+    throw OPSException(OPS_RUNTIME_ERROR, "ops_dat part_to_grid must be set"
+                       "for grid data");
+
+  int *binheads = (int *)binhead->data;
+  int *bins = (int *)bin->data;
+  int *par_grid = (int *)part_to_grid->data;
+
+  int dims = bin->block->dims;
+  int sizeL{1};
+  for (int i = 0; i < dims; i++)
+    sizeL*= binhead->size[i];
+
+  for (int  iGrid = 0; iGrid < sizeL; iGrid++) {
+    int ip = binheads[iGrid];
+    if (ip == -1) continue;
+
+    par_grid[ip] = iGrid;
+    while (ip != -1) {
+      ip = bins[ip];
+      if (ip != -1) par_grid[ip] = iGrid;
+    }
+  }
 }
 
 void  _ops_particle_build_local_uniform(ops_particle_mapping map, ops_particle particle) {
@@ -768,7 +861,12 @@ void  _ops_particle_build_local_uniform(ops_particle_mapping map, ops_particle p
   //TODO: Allocate local structures
   map->nParticles = Np;
   /* Reallocate particle lists */
-  ops_realloc(map->bin->data, Np * map->bin->elem_size * Np);
+  if (Np > map->Nmax) {
+    map->Nmax += 100;
+    map->bin->data = (char *)ops_realloc(map->bin->data,
+                      map->bin->elem_size * map->Nmax);
+  }
+
 
   ops_point xmin = particle->box_block->getLocalMin();
   ops_point xmax = particle->box_block->getLocalMax();
@@ -777,9 +875,17 @@ void  _ops_particle_build_local_uniform(ops_particle_mapping map, ops_particle p
 
   /* Get grid size the structure */
   _ops_compute_uniform_dx(map->grid, particle->block->dims, dx);
+
   /* Build bins based on an ops_dat structure */
-  _ops_build_uniform_dats(1, particle->block->dims, map->grid, particle->particle_pos_dat[0],
+  _ops_build_uniform_dats(1, particle->block->dims, map->grid, particle->particle_pos_dat,
                           Np, dx, xmin, xmax, map->binhead, map->bin);
+
+  _ops_build_particle_to_grid(map->nParticles, map->bin, map->binhead,
+                              map->parts_to_grid);
+
+}
+
+void _ops_particle_exchange(ops_particle particle) {
 
 }
 
@@ -791,15 +897,22 @@ void _ops_particle_build_local_non_uniform(ops_particle_mapping map, ops_particl
   
   //Reallocate all lists if needed 
   size_t Np = particle->no_particles;
-  if (map->nParticles != Np) { //TODO-Shift to Nmax
-    map->nParticles = Np; 
-    ops_realloc(map->bin->data, Np * map->bin->elem_size * Np);
+  map->nParticles = Np;
+
+  if (Np > map->Nmax)  {
+    map->Nmax+=100;
+    map->bin->data = (char *) ops_realloc(map->bin->data, map->bin->elem_size * particle->Nmax);
+    map->parts_to_grid->data = (char *) ops_realloc(map->parts_to_grid->data,
+                                                    map->parts_to_grid->elem_size *
+                                                         particle->Nmax);
   }
 
   /* Get particle positions */
-  double *xp = (double *)particle->particle_pos_dat[0]->data;
+  double *xp = (double *)particle->particle_pos_dat->data;
   const ops_point xmin = particle->box_block->getLocalMin();
   const ops_point xmax = particle->box_block->getLocalMax();
+
+
 
   /* Get grid details */
   int size[OPS_MAX_DIM];
@@ -916,7 +1029,8 @@ void _ops_particle_build_local_non_uniform(ops_particle_mapping map, ops_particl
                                                    xp, Np, multi_dx + 3 * i, multi_dx, binhead, size, bin);
 
   }
-     
+
+  _ops_build_particle_to_grid(map->nParticles, map->bin, map->binhead, map->parts_to_grid);
   ops_free(binhead_particles_tmp);
   ops_free(bin_particles_tmp);
   ops_free(grid_size);
@@ -944,8 +1058,8 @@ void _ops_particle_set_exchange_border_zone(OPS_instance *instance,
   BoundingBox *sendingBox = halo->particle_from->box_block;
   BoundingBox *recvBox = halo->particle_from->box_block;
   if (!sendingBox->getOwnership() || !recvBox->getOwnership()) {
-    throw OPSException(OPS_RUNTIME_ERROR, "Particle halo must be set after Bounding Boxes"
-                                          "are set");
+    throw OPSException(OPS_RUNTIME_ERROR, "Particle halo must be set after the bounding "
+                       "sets are defined");
   }
 
   /* Get local boxes */
@@ -955,31 +1069,17 @@ void _ops_particle_set_exchange_border_zone(OPS_instance *instance,
   recvBox->getLocalMaxMin(x_recv_min, x_recv_max);
   sendingBox->getLocalMaxMin(xmin, xmax);
 
-  /* Look if local to global info are set */
-  int a1_rot{0}, ihalo;
-  for (int i = 0; i < halo->nhalos; i++) {
-    if (halo->dat[i]->orient == OPS_PART_POSITION) {
-      //Ensure that size of data are dim
-      if (dim != halo->dat[i]->from->dim)
-        throw OPSException(OPS_RUNTIME_ERROR, "Size of particle ops_dat structures in "
-                                              "position related halo is not equal to "
-                                              "spatial dimension");
 
-      a1_rot = 1;
-      ihalo = i;
-      break;
-    }
-  }
-  double xtranslate[dim];
-  for (int i = 0; i < dim; i++)
-    xtranslate[i] = (a1_rot) ? halo->dat[ihalo]->translate[i] : 0.0;
+  double *xtranslate = halo->translate;
+
 
   double xrecv_act_min[dim], xrecv_act_max[dim];
   for (int i = 0; i < dim ; i++) {
-    int isend_dir = (a1_rot) ? halo->dat[ihalo]->from_dir[i] : i;
-    int irecv_dir = (a1_rot) ? halo->dat[ihalo]->from_dir[i] : i; //TODO Vrf
-    xrecv_act_min[isend_dir] = x_recv_min[irecv_dir] + xtranslate[isend_dir];
-    xrecv_act_max[isend_dir] = x_recv_max[irecv_dir] + xtranslate[isend_dir];
+    int isend_dir =  halo->dir_from[i];
+    int irecv_dir = halo->dir_to[i];
+
+    xrecv_act_min[isend_dir] = x_recv_min[irecv_dir] - xtranslate[isend_dir];
+    xrecv_act_max[isend_dir] = x_recv_max[irecv_dir] - xtranslate[isend_dir];
   }
 
   /* Search for intersection box */
@@ -990,13 +1090,30 @@ void _ops_particle_set_exchange_border_zone(OPS_instance *instance,
         xsend_max[j] = xmax[j];
       }
 
-      xsend_min[i] = (iswap == 0) ? -0.5 * std::numeric_limits<double>::max() : xmax[i] - halo->dx[i];
-      xsend_max[i] = (iswap == 0) ? 0.5 * std::numeric_limits<double>::max() : xmin[i] + halo->dx[i];
+//      xsend_min[i] = (iswap == 0) ? -0.5 * std::numeric_limits<double>::max() : xmax[i] - halo->dx[i];
+//      xsend_max[i] = (iswap == 0) ? 0.5 * std::numeric_limits<double>::max() : xmin[i] + halo->dx[i];
 
-      halo->sendBox = ops_find_send_box_projection(i, dim, xsend_min, xsend_max, xrecv_act_min,
-                                                   xrecv_act_max);
+      //TODO: We modiftied the table
+      xsend_min[i] = (iswap == 0) ? xmin[i] - 0.5 * BIG : xmax[i] -  halo->dx[i]; //Keep it this way for the mome
+      //TODO: Removing the 0.5 consider whole elements
+      xsend_max[i] = (iswap == 0) ? xmin[i] + halo->dx[i] : xmax[i] + 0.5 * BIG;
 
-      if (halo->sendBox != nullptr) goto endline;
+
+//      halo->sendBox = ops_find_send_box_projection(i, dim, xsend_min, xsend_max, xrecv_act_min,
+//                                                   xrecv_act_max);
+
+      int a1 = ops_check_box_intersection(dim, xsend_min, xsend_max,
+                                          xrecv_act_min, xrecv_act_max);
+
+      if (a1 == 1) {
+        for (int j = 0; j < dim; j++) {
+          xsend_min[j] = (i == j) ? xsend_min[j] : -BIG;
+          xsend_max[j] = (i == j) ? xsend_max[j] : BIG;
+        }
+
+        halo->sendBox = new BoundingBox(dim, xsend_min, xsend_max);
+        goto endline;
+      }
 
     }
   }
@@ -1021,43 +1138,50 @@ void  _ops_particle_set_exchange_zone(OPS_instance *instance,
   recvBox->getLocalMaxMin(x_recv_min, x_recv_max);
   sendingBox->getLocalMaxMin(xmin, xmax);
 
-  /* Loop over halo transformations to obtain global data with respect to local */
-  int a1_rot{0}, iloc;
-  for (int ihalo = 0; ihalo < halo->nhalos; ihalo++) {
-    ops_particle_halo_data halo_data = halo->dat[ihalo];
-    if (halo_data->orient == OPS_PART_POSITION && halo_data->from->dim == dim) {
-      a1_rot = 1;
-      iloc = ihalo;
-      break;
-    }
-  }
-
-  double xtranslate[dim];
-  for (int i = 0; i < dim; i++)
-    xtranslate[i] = (a1_rot) ? halo->dat[iloc]->translate[i] : 0.0;
-
+  /* Shift bounding box of receiving block to the local coordinate system of
+   * sending block */
   double xrecv_act_min[dim], xrecv_act_max[dim];
   for (int i = 0; i < dim ; i++) {
-    int isend_dir = (a1_rot) ? halo->dat[iloc]->from_dir[i] : i;
-    int irecv_dir = (a1_rot) ? halo->dat[iloc]->from_dir[i] : i; //TODO Vrf
-    xrecv_act_min[isend_dir] = x_recv_min[irecv_dir] + xtranslate[isend_dir];
-    xrecv_act_max[isend_dir] = x_recv_max[irecv_dir] + xtranslate[isend_dir];
+    int irecv_dir =  halo->dir_to[i];
+    int isend_dir =  halo->dir_from[i];
+    xrecv_act_min[isend_dir] = x_recv_min[irecv_dir] - halo->translate[isend_dir];
+    xrecv_act_max[isend_dir] = x_recv_max[irecv_dir] - halo->translate[isend_dir];
   }
 
-  for (int i = 0; i < dim; i++) {
-    for (int iswap = 0; iswap < 2; iswap++) {
-      for (int j = 0; j < dim ; j++) {
-        xsend_min[j] = xmin[j];
-        xsend_max[j] = xmax[j];
+ /* Checking for intersection region */
+  int intersect = ops_check_box_intersection(dim, xmin, xmax,
+                                            xrecv_act_min, xrecv_act_max);
+
+  if (intersect == 1) {
+    for (int i = 0; i < dim; i++) {
+      for (int iswap = 0; iswap < 2; iswap++) {
+        for (int j = 0; j < dim ; j++) {
+          xsend_min[j] = xmin[j];
+          xsend_max[j] = xmax[j];
+        }
+
+        xsend_min[i] = (iswap == 0) ? xmin[i] : xmax[i] - 0.5 * std::numeric_limits<double>::max();
+        xsend_max[i] = (iswap == 0) ? xmin[i] : xmax[i] + 0.5 * std::numeric_limits<double>::max();
+
+
+        xsend_min[i] = (iswap == 0) ? xmin[i] - 0.5 * BIG : xmax[i];
+        xsend_max[i] = (iswap == 0) ? xmin[i] : xmax[i] + 0.5 * BIG;
+
+
+        int a1 = ops_check_box_intersection(dim, xsend_min, xsend_max,
+                                            xrecv_act_min, xrecv_act_max);
+
+        if (a1 == 1) {
+
+          //Modify region to ensure that all particles will be exchanged within this region
+          for (int j = 0; j < dim; j++) {
+            xsend_min[j] = (i == j) ? xsend_min[j] : -BIG;
+            xsend_max[j] = (i == j) ? xsend_max[j] : BIG;
+          }
+          halo->sendBox = new BoundingBox(dim, xsend_min, xsend_max);
+          goto endline;
+        }
       }
-
-      xsend_min[i] = (iswap == 0) ? xmin[i] - 0.5 * std::numeric_limits<double>::max() : xmax[i];
-      xsend_max[i] = (iswap == 0) ? xmin[i] : xmax[i] + 0.5 * std::numeric_limits<double>::max();
-
-      halo->sendBox = ops_find_send_box_projection(i, dim, xsend_min, xsend_max,
-                                                   xrecv_act_min, xrecv_act_max);
-
-      if (halo->sendBox != nullptr) goto endline;
     }
   }
 
@@ -1085,7 +1209,14 @@ void _ops_particle_setup_border_comm(OPS_instance *instance,
   /* Loop over all halos to define exchange zone */
   for (int ihalos = 0; ihalos < halo_grp->nhalos; ihalos++) {
     ops_particle_halo halo = halo_grp->halo_list[ihalos];
-    _ops_particle_set_exchange_border_zone(instance, halo); //TODO
+    _ops_particle_set_exchange_border_zone(instance, halo);
+
+    if (halo->sendBox != nullptr) {
+      printf("Sending Box = [%e %e]x[%e %e] x[%e %e]\n", halo->sendBox->getLocalMin().x,
+             halo->sendBox->getLocalMax().x, halo->sendBox->getLocalMin().y,
+             halo->sendBox->getLocalMax().y, halo->sendBox->getLocalMin().z,
+             halo->sendBox->getLocalMax().z);
+    }
   }
 }
 
@@ -1132,32 +1263,35 @@ void _ops_particle_halo_exchange_transfer(OPS_instance *instance,
     ops_particle particle_from = halo->particle_from;
     int dim = particle_from->block->dims;
 
-    double *xlocal = (double *)particle_from->particle_pos_dat[0]->data;
+    double *xlocal = (double *)particle_from->particle_pos_dat->data;
 
     BoundingBox *box = halo->sendBox;
+
+    if (box == nullptr) continue;
     info->nsend = 0;
+    int no_particles = particle_from->no_particles;
+    for (int i = 0; i < no_particles; i++) {
 
-    for (int i = 0; i < particle_from->no_particles; i++) {
+      if (particle_from->mark_deletion[i] == 1) {
 
-      if (particle_from->mark_deletion[i] == 1) continue;
 
-      ops_point point{xlocal[dim * i], xlocal[dim * i + 1],
-                      (dim == 3) ? xlocal[dim * i + 2] : 0.0};
-      bool decide = box->isCoordinateInBoundingBox(point);
+        ops_point point{xlocal[dim * i], xlocal[dim * i + 1],
+                        (dim == 3) ? xlocal[dim * i + 2] : 0.0};
+        bool decide = box->isCoordinateInBoundingBox(point);
 
-      if (decide) {
-        //mark particle for deletion now or shift it later
-        particle_from->mark_deletion[i] = 1; //TO-Delete
-
-        info->nsend++;
-        if (info->nsend * halo->nbites > instance->ops_halo_buffer_size) {
-          instance->ops_halo_buffer_size += 10 * halo->nbites;
-          buff = (char *)ops_realloc(buff, instance->ops_halo_buffer_size
+        if (decide) {
+          //mark particle for deletion now or shift it later
+          info->nsend++;
+          if (info->nsend * halo->nbites > instance->ops_halo_buffer_size) {
+            instance->ops_halo_buffer_size += 10 * halo->nbites;
+            buff = (char *)ops_realloc(buff, instance->ops_halo_buffer_size
                                            * sizeof(char));
-        }
+          }
 
-        _ops_particle_pack_halo_data(buff + halo->nbites * (info->nsend - 1),
+          particle_from->mark_deletion[i] = 2; //particle is exchanged
+         _ops_particle_pack_halo_data(buff + halo->nbites * (info->nsend - 1),
                                      halo->dat,halo->nhalos, i);
+        }
       }
     }
 
@@ -1166,15 +1300,25 @@ void _ops_particle_halo_exchange_transfer(OPS_instance *instance,
     int nrecv = info->nrecv = info->nsend;
     int ifirst = particle_to->no_particles;
 
+    particle_to->no_particles += nrecv;
+    if (particle_to->no_particles >= particle_to->Nmax)
+      ops_particle_realloc_data(particle_to);
+
+    double *particle_crds = (double *)particle_to->particle_pos_dat->data;
+
+    for (int i = 0; i < nrecv; i++)
+
     for (int i = 0; i < nrecv; i++) {
       int ielem = ifirst + i;
-      particle_to->no_particles++;
-      if (particle_to->no_particles > particle_to->Nmax)
-        ops_particle_realloc_data(particle_to);
-
 
       _ops_particle_unpack_halo_data(buff + halo->nbites * i, halo->dat,
                                      halo->nhalos, ielem);
+
+      //If particle within mark as actual
+      ops_point xpoint{particle_crds[dim * ielem], particle_crds[dim * ielem + 1], 0.0};
+      if (dim == 3) xpoint.z = particle_crds[dim * ielem + 2];
+      bool a1 =  particle_to->box_block->isCoordinateInBoundingBox(xpoint);
+      particle_to->mark_deletion[ielem] = (a1) ? 0 : 1;
     }
 
   }
@@ -1198,7 +1342,7 @@ void _ops_particle_halo_border_transfer(OPS_instance  *instance,
 
     ops_particle particle_from = halo->particle_from;
     int dim = particle_from->block->dims;
-    double *xlocal = (double *)particle_from->particle_pos_dat[0]->data;
+    double *xlocal = (double *)particle_from->particle_pos_dat->data;
 
     int imin =  (halo_grp->loop_type != OPS_PART_LOOP_VIRTUAL) ?
         0 : particle_from->no_particles + particle_from->no_virtual;
@@ -1329,4 +1473,8 @@ void _ops_particle_halo_reverse_transfer(OPS_instance *instance,
                                      halo->nhalos, ipart); //TODO: Shift + DATA OR add another array.
     }
   }
+}
+
+void ops_particle_setup_partition() {
+
 }

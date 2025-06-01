@@ -68,11 +68,27 @@
 #define OPS_PART_LOOP_LOCAL 1
 #define OPS_PART_LOOP_VIRTUAL 2
 
+#define OPS_UNIFORM_GRID 0
+#define OPS_NON_UNIFORM_GRID 1
+
+#define OPS_CONST_SHAPE 0
+#define OPS_EVOLV_SHAPE 1
+
+#define OPS_WITH_VIRTUAL 0
+#define OPS_NO_VIRTUAL   1
+
+
+
 #include <ops_exceptions.h>
 
 typedef int ops_part_orient;
 typedef int ops_part_halo_grp_type;
 typedef int ops_part_loop_type;
+
+/* Mapping definitions */
+typedef int ops_grid_type;
+typedef int ops_shape_evolve;
+typedef int ops_with_virtual;
 
 
 class BoundingBox;
@@ -95,7 +111,7 @@ class BoundingBox {
   public:
    BoundingBox(const ops_block block, int dim, ops_point minCrd,
                ops_point maxCrd);
-   BoundingBox(const ops_dat coords, const double grid_size, int dim);
+   BoundingBox(const ops_dat coords, const double *grid_size, int dim);
    BoundingBox(int dim);
    BoundingBox(int dim, double *xmin, double *xmax);
    ~BoundingBox();
@@ -104,13 +120,21 @@ class BoundingBox {
    const ops_point& getLocalMax() const;
    const ops_point& getGlobalMax() const;
    const ops_point& getGlobalMin() const;
+   double getDx(int idir) { if (idir < dim) return dx[idir];
+                            return 0.0;}
    void getLocalMaxMin(double *xmin, double* xmax);
-   bool isCoordinateInBoundingBox(const ops_point& point);
+   double getGlobalMax(int idir);
+   double getGlobalMin(int idir);
+   bool isCoordinateInBoundingBox(ops_point& point);
+   bool isCoordinateInBoundingBox(const double *point);
    bool isCoordinateInGlobalBoundingBox(const ops_point& point);
    void setBoundingBoxLocalBound(const ops_point &xlow, const ops_point &xmax);
    void setBoundingBoxLocalBound(const double* xlow, const double* xmax);
    void setBoundingBoxGlobalBound(const ops_point &xlow, const ops_point &xmax);
    void setBoundingBoxGlobalBound(double* xlow, double* xmax);
+   void setBoundingBoxLocalBound(const double *boxregion);
+
+   void partitionBoundingBox(ops_block block);
 
    void setOwnership(bool flag) {owned = flag;}
    bool getOwnership() {return owned;};
@@ -118,6 +142,8 @@ class BoundingBox {
 //   void setBoundingBox(ops_point xmin, ops_point xmax); //TODO
 //   void setBoundingBox(ops_dat dat); //TODO
    inline int getDim() const { return dim;}
+   double getMinCoordDir(int dir);
+   double getMaxCoordDir(int dir);
 #ifdef OPS_MPI
    void generateLocalBoundingBox(/*TODO: */);
 #endif
@@ -128,6 +154,9 @@ class BoundingBox {
 
    std::array<ops_point,2> boundingBox; /* bounding box owned by this rank */
    std::array<ops_point,2> globalBoundingBox; /* Global dimensions of box-bound */
+   double dx[OPS_MAX_DIM];
+   ops_dat coords;
+   //TODO: Pass a  pointer an ops_dat structure for setting up the info
 };
 
 /** Particle decleration lists */
@@ -137,15 +166,18 @@ public:
    //TODO: Is size_t the right size for developing this list
   size_t no_particles; /**<number of particles owned by the block */
   size_t no_virtual;  /* Number of virtual particles assigned to the block */
-  size_t nRemoved; /* Number of particles removed from the block */
   size_t global_particles; /* Global number of particles */
+
+  size_t nRemoved; /* Number of particles removed from the block */
+
   ops_block block;
+
   std::vector<ops_dat> particle_data;
   std::vector<ops_dat> mapping_to_grid; /**<Particle mapping to multiple grids **/
 
   ops_dat particle_envelope; /* Envelope of particle shape */
 
-  std::vector<ops_dat> particle_pos_dat;
+  ops_dat particle_pos_dat;
 
   std::vector<int> local_to_remove; /* Particles marked for removal */
   std::vector<int> local_to_exchange; /* Particles mapped for forward and reverse communications */
@@ -162,7 +194,7 @@ public:
   BoundingBox *box_block; //TODO-C
 
   std::vector<ops_particle_mapping_core*> mapping_list;
-
+  int index; //particle stored in particle list
   //TODO: Add a constructor
 
   //ADD also functionalities for creating a block
@@ -221,8 +253,10 @@ struct ops_particle_halo_core {
 
   BoundingBox* sendBox;
   double dx[OPS_MAX_DIM];
+  int dir_from[OPS_MAX_DIM];
+  int dir_to[OPS_MAX_DIM];
   int index;
-
+  double translate[OPS_MAX_DIM];
   int nbites; //number of bites per particle (point) to be send
 
   //TODO: Add in case of reverse-mapping
@@ -245,9 +279,6 @@ typedef ops_particle_halo_group_core *ops_particle_halo_group;
 class ops_particle_mapping_core {
   public:
 
-    enum ops_mapping_type{ actual_only = 0, with_virtual = 1, error_type = -1};
-    enum ops_grid_type{ uniform_grid =0, non_uniform = 1};
-    enum ops_shape_change{constant =0, change = 1};
 
     double skin;      /* Distance prior to list rebuild */
 
@@ -258,15 +289,18 @@ class ops_particle_mapping_core {
     ops_dat binhead;       /* Data structure containing the first element in a grid cell*/
     ops_dat bin;           /* Particle joining list ptr to next particle in grid cell */
     size_t nParticles;
+    size_t Nmax;
     ops_dat mapping_grid; /* Pointer to ops_dat structure for mapping particles */
+    ops_dat parts_to_grid; /* Parts to grid */
 
     int     Ngrids;   /* Number of grid for building the particle-grid list */
 
-    ops_mapping_type mapping_type; /* Mapping actual or actual-virtual particles */
-
+    /* Flags for building mapping structures */
+    ops_with_virtual mapping_type; /* Mapping actual or actual-virtual particles */
     ops_grid_type grid_type; /* Grid type uniform and non-uniform grid */
+    ops_shape_evolve particle_changes; /* Mapping function for changing size */
+    ops_stencil  mapping_stencil; /* Stencil for mapping particles-extend grid to that */
 
-    ops_shape_change particle_changes; /* Mapping function for changing size */
     bool decide{true};            /* Building or not mapping list */
 
     //TODO: Consider mapping on non-uniform spacing
@@ -308,6 +342,14 @@ BoundingBox* ops_find_send_box_projection(int idef,int dim,double *xbox1_low,
                                           double * xbox1_max, double *xbox2_min,
                                           double *xbox2_max);
 
+BoundingBox* ops_find_intersection_region(BoundingBox *box, double *region, int &a1);
+
+int ops_check_box_intersection(int dim, double *xbox1_lo,
+                               double *xbox1_hi, double *xbox2_lo,
+                               double *xbox2_hi);
+
+void ops_build_bounding_box(ops_particle particle );
+
 
 /*-------------------------------------------------------------------------------------
  * Auxiliary functions for particle handling into various functions
@@ -324,7 +366,7 @@ template<typename T>
 ops_arg ops_arg_gbl_particle(T *data, int dim, char const *type, ops_access acc) {
   (void)type;
   ops_arg temp = ops_arg_gbl_char((char *)data, dim, sizeof(T), acc);
-  (&temp)->argtype = OPS_ARG_DAT_PARTICLE;
+  (&temp)->argtype = OPS_ARG_GBL_PARTICLE;
   return temp;
 }
 
@@ -373,13 +415,11 @@ ops_dat ops_decl_particle_dat(ops_particle particle, int data_size, int *base,
 /*------------------------------------------------------------------------------------*/
 
 template<class T>
-ops_dat ops_decl_particle_envelope(ops_particle particle, int *base, double *data,
+ops_dat ops_decl_particle_envelope(ops_particle particle, int *base, T *data,
                                    char const *type, char const *name) {
-  if (particle == nullptr) {
-    ops_printf("Empty ops_particle structure. Please define ops_particle_dat structure "
-               "first.\n");
-    exit(-1);
-  }
+  if (particle == nullptr)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Particle ops_dat structure must be defined before"
+                                             "ops_particle definition");
 
   int block_size[OPS_MAX_DIM], d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM], stride[OPS_MAX_DIM];
 
@@ -398,7 +438,7 @@ ops_dat ops_decl_particle_envelope(ops_particle particle, int *base, double *dat
                                            d_m, d_p, stride, (char *)data, sizeof(T),
                                            type, name);
   particle_dat->is_particle = true;
-
+  particle->particle_envelope = particle_dat;
   return particle_dat;
 }
 template <class T>
@@ -419,29 +459,9 @@ ops_dat ops_decl_particle_pos_dat(ops_particle particle, int data_size, int* bas
     exit(-1);
   }
 
-  /* Verify that positional data are not defined */
-  if (particle->particle_pos_dat.size() ==1) {
-    if (particle->particle_pos_dat.at(0)->dim == dim) {
-       ops_printf("Particle position ops structure is already defined\n");
-       exit(-1);
-
-    }
-  }
-  else if (particle->particle_pos_dat.size() == dim) {
-     ops_printf("Particle position data structures are already defined\n");
-     exit(-1);
-  }
-  else {
-     int int_dim = 0;
-     for (auto x : particle->particle_pos_dat)
-        int_dim += x->dim;
-
-     if (int_dim >= dim) {
-       ops_printf("Particle positions are defined. Please check your settings via "
-                  " non uniform structures\n");
-       exit(-1);
-     }
-  }
+ if (particle->particle_pos_dat != NULL)
+   throw OPSException(OPS_INVALID_ARGUMENT, "Particle position ops dat sturcture is already"
+                                            "defined\n");
 
   int block_size[OPS_MAX_DIM], d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM], stride[OPS_MAX_DIM];
 
@@ -462,12 +482,12 @@ ops_dat ops_decl_particle_pos_dat(ops_particle particle, int data_size, int* bas
   particle_dat->is_particle = true;
 
   /* Add the new ops structure to list */
-  particle->particle_pos_dat.push_back(particle_dat);
+  particle->particle_pos_dat = particle_dat;
   return particle_dat;
 }
 
 /* Rellaocation data for particle ops_dat structures */
-void ops_particle_realloc_data(ops_particle particle);
+void ops_particle_realloc_data(ops_particle particle, int no_alloc = 0);
 
 void ops_particles_insert(ops_particle particle, int Np);
 
@@ -486,7 +506,12 @@ void ops_particles_insert_data(ops_particle particle, ops_dat data, T* insert, i
   }
 }
 
+/* Functions for particle deletion */
+void ops_particle_mark_for_del(ops_particle particle);
 
+void ops_particle_remove_marked(ops_particle particle);
+
+void ops_particle_setup_partition();
 
 /*-------------------------------------------------------------------------------------*
  *  Particle halo and particle halo definitions
@@ -494,13 +519,15 @@ void ops_particles_insert_data(ops_particle particle, ops_dat data, T* insert, i
 
 ops_particle_halo_data ops_particle_decl_data_halo(ops_dat from, ops_dat to,
                                                    int *dir_from,
-                                                   int dir_to, double *translate,
+                                                   int* dir_to, double *translate,
                                                    ops_part_orient orient_flag);
 
 
 ops_particle_halo ops_particle_decl_halo(ops_particle from, ops_particle to,
                                          ops_particle_halo_data particle_halos[],
-                                         int  nhalos, double *crit_length = NULL);
+                                         int  nhalos, double* critical_length,
+                                         int *dir_from, int *dir_to,
+                                         double *translate);
 
 ops_particle_halo_group ops_particle_decl_halo_group(ops_particle_halo particle_halos[],
                                                      int nhalos,
@@ -515,26 +542,45 @@ void ops_particle_set_halo_group(ops_particle_halo_group halo_grp); //TODO:
 void ops_particle_halo_transfer_group(ops_part_halo_grp_type exchange_type);
 
 void ops_particle_halo_transfer(ops_particle_halo_group halo_grp);
+
 /*--------------------------------------------------------------------------------------*/
 /* Neighbor build function declerations
  *--------------------------------------------------------------------------------------*/
 
 ops_particle_mapping  ops_decl_mapping(ops_particle particle, ops_dat grid, ops_dat Rp,
-                                       int uniform_grid, int include_virtual,
-                                       int particle_changes, int grid_type,
+                                       ops_stencil   stencil,
+                                       ops_with_virtual include_virtual,
+                                       ops_shape_evolve particle_changes,
+                                       ops_grid_type grid_type,
                                        double epsilon,
                                        double crit_length, int Ng = 1);
 
 int _ops_particle_mapping_decide(ops_particle_mapping map, ops_particle particle,
                                  bool enforce);
 
-void ops_particle_list_build(ops_particle particle, ops_particle_mapping map,
-                             bool enforce = false);
+void ops_particle_map_decide_and_build(ops_particle particle, ops_particle_mapping map,
+                                       bool enforce = false);
+
+void ops_particle_map_decide(ops_particle particle, ops_particle_mapping map,
+                             bool enforce = false); //OK
+
+void ops_particle_map_build(ops_particle particle, ops_particle_mapping map);
+
 
 void  _ops_particle_build_local_uniform(ops_particle_mapping map, ops_particle particle);
 
+void  _ops_build_particle_to_grid(const size_t nParticles, const ops_dat bin,
+                                  const ops_dat binhead, ops_dat parts_to_grid);
+
 void _ops_particle_build_local_non_uniform(ops_particle_mapping map, ops_particle particle);
 
+/*----------------------------------------------------------------------------------------*/
+/* Functions for deciding and building maps for all particle mappings to uniform grids    */
+/*----------------------------------------------------------------------------------------*/
+
+bool ops_particle_update_map_lists(ops_particle particle);
+
+void ops_particle_build_maps(ops_particle particle);
 
 /*----------------------------------------------------------------------------------------*/
 /* Auxiliarry functions to be moved
@@ -543,6 +589,7 @@ void _ops_particle_build_local_non_uniform(ops_particle_mapping map, ops_particl
 void _ops_particle_swap_data(char *data, int i, int j, int elems);
 
 int _ops_particle_owned_dat(ops_particle particle, ops_dat dat); //TODO: Move
+
 
 #include <ops_particle_internal.h>
 

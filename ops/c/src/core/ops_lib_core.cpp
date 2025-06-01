@@ -528,7 +528,7 @@ void ops_dat_init_metadata_core(
   // These quantities are computed differently for different backends
 }
 
-ops_dat ops_dat_realloc_core(ops_dat dat, int sizex) {
+void ops_dat_realloc_core(ops_dat dat, int sizex) {
 
   if (dat == nullptr) {
     OPSException ex{OPS_RUNTIME_CONFIGURATION_ERROR};
@@ -540,7 +540,7 @@ ops_dat ops_dat_realloc_core(ops_dat dat, int sizex) {
 
 
    if (!dat->is_particle)
-    return dat;
+    return;
 
    if (sizex < 1) {
       OPSException ex{OPS_INVALID_ARGUMENT};
@@ -554,15 +554,11 @@ ops_dat ops_dat_realloc_core(ops_dat dat, int sizex) {
   for (int i = 0; i < dat->block->dims; i++)
     bytes *= dat->size[i];
 
-  bytes *= dat->elem_size;
-
-  if (dat->data == nullptr)
+  if (dat->data == NULL) {
     dat->data = (char *) ops_calloc(bytes, dat->type_size);
+  }
   else
-    ops_realloc(dat->data, dat->type_size * bytes);
-
-  return dat;
-
+    dat->data =(char *)ops_realloc(dat->data, dat->type_size * bytes);
 }
 /**
  * Allocate an ops_dat on a given ops_block and insert into internal linked lists.
@@ -612,6 +608,8 @@ ops_dat ops_decl_dat_core(ops_block block, int dim, int *dataset_size,
                           int type_size, char const *type, char const *name) 
 {
    ops_dat dat = ops_dat_alloc_core(block);
+
+   printf("Field %s: Dataset size = [%d %d %d]\n", name, dataset_size[0], dataset_size[1], dataset_size[2]);
    ops_dat_init_metadata_core(dat, dim, dataset_size, base, d_m, d_p, stride, data, type_size, type, name);
    return dat;
 }
@@ -1064,9 +1062,11 @@ ops_arg ops_arg_dat_core(ops_dat dat, ops_stencil stencil, ops_access acc) {
   arg.argtype = OPS_ARG_DAT;
   arg.dat = dat;
   arg.stencil = stencil;
-  if (acc == OPS_WRITE && stencil->points != 1) {
+  if (!dat->is_particle)
+    if (acc == OPS_WRITE && stencil->points != 1 ) {
       throw OPSException(OPS_INVALID_ARGUMENT, "Error: OPS does not support OPS_WRITE arguments with a non (0,0,0) stencil due to potential race conditions");
-  }
+    }
+
   if (dat != NULL) {
     arg.data = dat->data;
     arg.data_d = dat->data_d;
@@ -1076,6 +1076,31 @@ ops_arg ops_arg_dat_core(ops_dat dat, ops_stencil stencil, ops_access acc) {
   }
   arg.acc = acc;
   arg.opt = 1;
+  return arg;
+}
+
+/*---------------------------------------------------------*/
+/* For the moment assumed no stencil for particle data */
+/*---------------------------------------------------------*/
+ops_arg ops_arg_part_dat_core(ops_dat dat, ops_access acc) {
+  ops_arg arg;
+  memset(&arg, 0, sizeof(ops_arg));
+
+  arg.argtype = OPS_ARG_DAT_PARTICLE;
+
+  if (dat != NULL) {
+    arg.data = dat->data;
+    arg.data_d = dat->data_d;
+
+  }
+  else {
+    arg.data = NULL;
+    arg.data_d = NULL;
+  }
+
+  arg.acc = acc;
+  arg.opt = 1;
+
   return arg;
 }
 
@@ -1111,22 +1136,51 @@ ops_arg ops_arg_idx() {
 ops_arg ops_arg_dat(ops_dat dat, int dim, ops_stencil stencil, char const *type,
                     ops_access acc) {
     (void)type;
-  // return ops_arg_dat_core( dat, stencil, acc );
+
+    if (dat->is_particle)
+      throw OPSException(OPS_INVALID_ARGUMENT,"Error: ops_arg_dat_opt cannot be called for "
+                                              "particle_ops_dat structure");
+    // return ops_arg_dat_core( dat, stencil, acc );
   ops_arg temp = ops_arg_dat_core(dat, stencil, acc);
   (&temp)->dim = dim;
+
   return temp;
 }
 
 ops_arg ops_arg_dat_opt(ops_dat dat, int dim, ops_stencil stencil,
                         char const *type, ops_access acc, int flag) {
     (void)type;(void)dim;
+  if (dat->is_particle)
+    throw OPSException(OPS_INVALID_ARGUMENT,"Error: ops_arg_dat_opt cannot be called for "
+                                            "particle_ops_dat structure");
   ops_arg temp = ops_arg_dat_core(dat, stencil, acc);
   (&temp)->opt = flag;
   return temp;
 }
 
+ops_arg ops_arg_part_dat(ops_dat dat, int dim, char const * type, ops_access acc) {
+  (void) type;
+
+  if (!dat->is_particle)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Error, ops_arg_part_dat cannot be called for"
+                                             "grid ops_dat structure");
+
+  ops_arg temp = ops_arg_part_dat_core(dat, acc);
+
+  (&temp)->dim = dim;
+
+  return temp;
+}
+
 ops_arg ops_arg_gbl_char(char *data, int dim, int size, ops_access acc) {
   return ops_arg_gbl_core(data, dim, size, acc);
+}
+
+ops_arg ops_arg_particle_gbl_char(char *data, int dim, int size, ops_access acc) {
+  ops_arg temp = ops_arg_gbl_core(data, dim, size, acc);
+  (&temp)->argtype = OPS_ARG_GBL_PARTICLE;
+
+  return temp;
 }
 
 ops_reduction ops_decl_reduction_handle_core(OPS_instance *instance, int size, const char *type,
@@ -2156,8 +2210,10 @@ void ops_cpHostToDevice(OPS_instance *instance, void **data_d, void **data_h, si
 
 void ops_H_D_exchanges_host(ops_arg *args, int nargs) {
   for (int n = 0; n < nargs; n++) {
+
+
     if (args[n].argtype == OPS_ARG_DAT &&
-        args[n].dat->locked_hd > 0) {
+        args[n].dat->locked_hd > 0 && args[n].dat) {
       OPSException ex(OPS_RUNTIME_ERROR, "ERROR: ops_par_loops involving datasets for which raw pointers have not been released are not allowed");
       throw ex;
     }

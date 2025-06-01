@@ -54,7 +54,7 @@
  */
 BoundingBox::BoundingBox(const ops_block block, int dim,
                          ops_point minCrd, ops_point maxCrd) :
-    dim(dim){
+    dim(dim), coords(nullptr){
 
   if (dim < 2 && dim > 3) {
     ops_printf("Error: OPS-bounding box is defined only for 2D and 3D "
@@ -93,70 +93,51 @@ BoundingBox::BoundingBox(const ops_block block, int dim,
   }
 
 
-  /* Copy local to global box */
-  ops_bounding_box_global_to_local(block, dim, globalBoundingBox, boundingBox);
-
+  for (int i = 0 ; i < dim; i++)
+    dx[i] = 0.0;
+ // /* Copy local to global box */
+ // ops_bounding_box_global_to_local(block, dim, globalBoundingBox, boundingBox);
+ owned = false;
 }
 
-BoundingBox::BoundingBox(int dim) : dim(dim) {
+BoundingBox::BoundingBox(int dim) : dim(dim) , coords(nullptr) {
   if (dim < 2 && dim > 3) {
     ops_printf("Bounding box defined only for 2D and 3D spaces\n");
     exit(-1);
   }
 }
 
-BoundingBox::BoundingBox(const ops_dat coords, const double grid_size,
-                         int dim) : dim(dim) {
+BoundingBox::BoundingBox(const ops_dat coords, const double *Deltax,
+                         int dim) : dim(dim) , coords(coords) {
 
   if (dim < 2 && dim > 3) {
     ops_printf("A bounding box is defined only for 2D and 3D spaces\n");
     exit(-1);
   }
 
+  for (int i = 0; i < dim; i++)
+    dx[i] = Deltax[i];
   /* For generating an object with the given function requires domain
-   * partition
-   */
+   * partition */
 
-  if (!ops_partitioned()) {
-    printf("Bounding box based on ops function cannot be constructed prior "
-           "to domain partition");
-    exit(-1);
-  }
+}
 
-  double xmin[3], xmax[3];
-  for (int i = 0; i < 3; i++) {
-    xmin[i] = INFINITY_double;
-    xmax[i] = -INFINITY_double;
-  }
+BoundingBox::BoundingBox(int dim, double *xmin, double *xmax) : dim{dim} , coords(nullptr) {
 
+  if (dim < 2 && dim > 3)
+    throw OPSException(OPS_RUNTIME_ERROR,"A bounding box is defined only for "
+                       "2D and 3D spaces\n");
 
-  _ops_construct_local_box_from_dat(coords, grid_size, dim, xmin, xmax); //TODO
+  /* Setting local bounding boxes */
+  globalBoundingBox[0].x = xmin[0];
+  globalBoundingBox[0].y = xmin[1];
+  globalBoundingBox[0].z = (dim == 3) ? xmin[2] : 0.0;
 
-  /* Assign to bounding box */
-  boundingBox[0].x = xmin[0];
-  boundingBox[0].y = xmin[1];
+  globalBoundingBox[1].x = xmax[0];
+  globalBoundingBox[1].y = xmax[1];
+  globalBoundingBox[1].z = (dim == 3) ? xmax[2] : 0.0;
 
-  boundingBox[1].x = xmax[0];
-  boundingBox[1].y = xmax[1];
-
-  if (dim == 3) {
-    boundingBox[0].z = xmin[2];
-    boundingBox[1].z = xmax[2];
-  }
-
-  double xglb_max[3], xglb_min[3];
-  owned = ops_get_bounding_box_local_to_global(coords->block, xmin, xmax, xglb_min, xglb_max);
-
-  globalBoundingBox[0].x = xglb_min[0];
-  globalBoundingBox[0].y = xglb_min[1];
-
-  globalBoundingBox[1].x = xglb_max[0];
-  globalBoundingBox[1].y = xglb_max[1];
-
-  if (dim == 3) {
-    globalBoundingBox[0].z = xglb_min[2];
-    globalBoundingBox[1].z = xglb_max[2];
-  }
+  owned = false;
 
 }
 
@@ -239,6 +220,32 @@ void BoundingBox::setBoundingBoxLocalBound(const double* xlow, const double* xma
   }
 }
 
+void BoundingBox::setBoundingBoxLocalBound(const double *boxregion) {
+
+  if (boxregion[0] > boxregion[1] || boxregion[2] > boxregion[3]) {
+    ops_printf("Error: Defined bounding box of non-positive volume");
+    exit(-1);
+  }
+
+  boundingBox[0].x = boxregion[0];
+  boundingBox[0].y = boxregion[2];
+
+  boundingBox[1].x = boxregion[1];
+  boundingBox[1].y = boxregion[3];
+
+  if (dim == 3) {
+    if (boxregion[4] > boxregion[5]) {
+      ops_printf("Error: Defined bounding of non-positive volume");
+      exit(-1);
+    }
+
+    boundingBox[0].z = boxregion[4];
+    boundingBox[1].z = boxregion[5];
+  }
+
+}
+
+
 void BoundingBox::setBoundingBoxGlobalBound(const ops_point &xlow, const ops_point &xmax) {
   if (xmax.x <= xlow.x || xmax.y <= xlow.y) {
     ops_printf("Error: Defined global bounding box of non-positive volume.");
@@ -288,7 +295,7 @@ void BoundingBox::setBoundingBoxGlobalBound(double* xlow,  double* xmax) {
 /* Function used to vrf that a particle is within the local box
  * NOTE: We need to ask for ownership
  */
-bool BoundingBox::isCoordinateInBoundingBox(const ops_point &point) {
+bool BoundingBox::isCoordinateInBoundingBox(ops_point &point) {
 
   if (!owned)
     return false;
@@ -305,6 +312,25 @@ bool BoundingBox::isCoordinateInBoundingBox(const ops_point &point) {
   }
 
   return true;
+}
+
+bool BoundingBox::isCoordinateInBoundingBox(const double *point) {
+  if (!owned)
+    false;
+
+  if (boundingBox[0].x > point[0] || boundingBox[1].x < point[0])
+    return false;
+
+  if (boundingBox[0].y > point[1] || boundingBox[1].y < point[1])
+    return false;
+
+  if (dim == 3) {
+    if (boundingBox[0].z > point[2] || boundingBox[1].z < point[2])
+      return false;
+  }
+
+  return true;
+
 }
 
 /*-----------------------------------------------------------------------*/
@@ -329,11 +355,89 @@ bool BoundingBox::isCoordinateInGlobalBoundingBox(const ops_point &point) {
   return true;
 }
 
+double BoundingBox::getMinCoordDir(int dir) {
+
+  switch (dir) {
+  case 0:
+    return boundingBox[0].x;
+    break;
+  case 1:
+    return boundingBox[0].y;
+    break;
+  case 2:
+    return boundingBox[0].z;
+    break;
+  default:
+    return -1;
+  }
+
+  return -1;
+}
+
+double BoundingBox::getGlobalMin(int idir) {
+  switch (idir) {
+  case 0:
+    return globalBoundingBox[0].x;
+    break;
+  case 1:
+    return globalBoundingBox[0].y;
+    break;
+  case 2:
+    return globalBoundingBox[0].z;
+    break;
+  default:
+    return -1;
+  }
+
+  return -1;
+}
+
+double BoundingBox::getGlobalMax(int idir) {
+  switch (idir) {
+  case 0:
+    return globalBoundingBox[1].x;
+    break;
+  case 1:
+    return globalBoundingBox[1].y;
+    break;
+  case 2:
+    return globalBoundingBox[1].z;
+    break;
+  default:
+    return -1;
+  }
+
+  return -1;
+}
+
+double BoundingBox::getMaxCoordDir(int dir) {
+  switch (dir) {
+  case 0:
+    return boundingBox[1].x;
+    break;
+  case 1:
+    return boundingBox[1].y;
+    break;
+  case 2:
+    return boundingBox[1].z;
+    break;
+  default:
+    return -1;
+  }
+
+  return -1;
+}
+
 /*-----------------------------------------------------------------------------*
  * Local functions
  *-----------------------------------------------------------------------------*/
 
-/* Computes the intersection in a given direction  */
+/* Computes the intersection in a given direction
+ *
+ * return 1 for intersection or 0 when no overlap is found in the given
+ *          direction
+ */
+
 static int _compute_intersection_region(double xbox1_low, double xbox1_hi,
                                         double xbox2_low, double xbox2_hi,
                                         double *xbox_int_low, double *xbox_int_hi) {
@@ -349,9 +453,30 @@ static int _compute_intersection_region(double xbox1_low, double xbox1_hi,
     *xbox_int_hi = MIN(xbox1_hi, xbox2_hi);
     return 1;
   }
+
+  printf("Enerting into computing intersection");
   return 0;
 }
 
+
+static int _check_box_intersection(const int dim, double *xbox1_lo, double *xbox1_hi,
+                                   double *xbox2_lo, double* xbox2_hi) {
+  int a1{1};
+
+  int i{0};
+
+  while (a1 == 1 && i < dim) {
+    double hA = 0.5 * (xbox1_lo[i] + xbox1_hi[i]);
+    double hB = 0.5 * (xbox2_lo[i] + xbox1_lo[i]);
+
+    double rA = 0.5 * fabs(xbox1_hi[i] - xbox1_lo[i]);
+    double rB = 0.5 * fabs(xbox2_hi[i] - xbox2_lo[i]);
+
+    if (fabs(hB-hA) > rA + rB) a1 = 0;
+  }
+
+  return a1;
+}
 
 /******************************************************************************
  * Bounding Box API functions
@@ -489,6 +614,7 @@ BoundingBox* ops_find_send_box_projection(int idef,int dim,double *xbox1_low,
     if (i != idef)
      a1 = _compute_intersection_region(xbox1_low[i], xbox1_hi[i], xbox2_min[i],
                                        xbox2_max[i], xproj_low + i, xproj_hi + i);
+    if (a1 == 0) break;
   }
 
   if (a1 == 0) return nullptr;
@@ -502,7 +628,99 @@ BoundingBox* ops_find_send_box_projection(int idef,int dim,double *xbox1_low,
 
 }
 
+/*-------------------------------------------------------------------------------------*/
+/* Search for overlapping between the region of a bounding box and a user defined
+ * region given as [xmin xmax ymin ymax zmin zmax]. The intersection is stored in
+ * intersection as [xmin xmax ymin ymax zmin zmax]
+ *
+ * return 0: region overlap
+ *        1: overlap equal to region owned by box
+ *        2: no overlap found
+ */
+/*-------------------------------------------------------------------------------------*/
 
+BoundingBox* ops_find_intersection_region(BoundingBox *box, double *region, int &a1) {
+
+  int dim = box->getDim();
+  a1 = 0;
+
+  ops_point xmin = box->getLocalMin();
+  ops_point xmax = box->getLocalMax();
+
+  double xbox_hi[dim], xbox_lo[dim];
+  double xreg_lo[dim], xreg_hi[dim];
+
+  /* Get elements TODO: Shift into also into points */
+  xbox_hi[0] = xmax.x; xbox_hi[1] = xmax.y;
+  xbox_lo[0] = xmin.x; xbox_lo[1] =xmin.y;
+
+  if (dim == 3) {
+    xbox_hi[2] = xmax.z; xbox_lo[2] = xmin.z;
+  }
+
+  for (int i = 0; i < dim; i++) {
+    xreg_lo[i] = region[2 * i];
+    xreg_hi[i] = region[2 * i + 1];
+  }
+
+  double inters[2 * dim];
+  for (int i = 0; i < dim; i++) {
+    inters[2 * i] = xbox_lo[i];
+    inters[2 * i + 1] = xbox_hi[i];
+  }
+  int overlp{0};
+  for (int i = 0; i < dim; i++) {
+    int overlp = _compute_intersection_region(xbox_lo[i], xbox_hi[i], xreg_lo[i],
+                                              xreg_hi[i],  inters + 2 * i,
+                                              inters + 2 * i + 1);
+
+    if (overlp == 0) {
+      a1 = 2;
+      return nullptr;
+    } //return immediately no-overlapping
+  }
+  //Check that box bound not equal to  intersection region
+
+
+  BoundingBox* intersection = new BoundingBox(dim);
+  intersection->setBoundingBoxLocalBound(inters);
+
+  int iel =0;
+  for (int i = 0; i < dim;i++)  {
+    iel +=  (xbox_lo[i] == intersection->getMinCoordDir(i)) ? 0 : 1;
+    iel +=  (xbox_hi[i] == intersection->getMaxCoordDir(i)) ? 0 : 1;
+    if (iel < 2 * dim) return intersection;
+
+  }
+
+  a1 = 1;
+  return intersection;
+
+}
+
+/*-------------------------------------------------------------------------------*/
+
+int ops_check_box_intersection(int dim, double *xbox1_lo,
+                               double *xbox1_hi, double *xbox2_lo,
+                               double* xbox2_hi) {
+  int a1{1};
+
+  int i{0};
+
+  while (a1 == 1 && i < dim) {
+    double hA = 0.5 * (xbox1_lo[i] + xbox1_hi[i]);
+    double hB = 0.5 * (xbox2_lo[i] + xbox2_hi[i]);
+
+    double rA = 0.5 * fabs(xbox1_hi[i] - xbox1_lo[i]);
+    double rB = 0.5 * fabs(xbox2_hi[i] - xbox2_lo[i]);
+
+    if (fabs(hB-hA) > rA + rB) a1 = 0;
+
+    i++;
+  }
+
+  return a1;
+}
 
 /*******************************************************************************/
 /* Particle hanlding functions                                                 *
@@ -536,11 +754,23 @@ ops_particle  _ops_decl_particle(OPS_instance *instance, ops_block block,
   particle->global_particles = particle->no_particles;
   particle->block = block;
   particle->box_block = box;
-  particle->Nmax = 100;
+  particle->Nmax = 10;
 
+  particle->mark_deletion  =(int *) ops_malloc(sizeof(int) * particle->Nmax);
+
+  particle->particle_pos_dat = NULL;
   /* Assign particle to the correct list */
-  instance->OPS_block_list[block->index].particle = particle;
 
+  instance->OPS_block_list[block->index].no_particle_structures++;
+  instance->OPS_block_list[block->index].particle
+     = (ops_particle_core **)ops_realloc(instance->OPS_block_list[block->index].particle,
+                                         instance->OPS_block_list[block->index].no_particle_structures
+                                              * sizeof(ops_particle_core *));
+
+
+  int index = instance->OPS_block_list[block->index].no_particle_structures - 1;
+  instance->OPS_block_list[block->index].particle[index] = particle; //TODO: single particle
+  particle->index = index;
   return particle;
 }
 
@@ -562,8 +792,6 @@ ops_particle _ops_free_particle(ops_particle particle) {
     particle->particle_data.clear();
 
   /* Remove ops_dat (pointer) from list */
-  if (!particle->particle_pos_dat.empty())
-    particle->particle_pos_dat.clear();
 
   if (!particle->mapping_to_grid.empty())
     particle->mapping_to_grid.empty();
@@ -578,28 +806,27 @@ ops_particle _ops_free_particle(ops_particle particle) {
 /*---------------------------------------------------------------------------------------*/
 /* Function for the allocation of ops_dat structures associated with particles           */
 /*---------------------------------------------------------------------------------------*/
-void ops_particle_realloc_data(ops_particle particle) {
+void ops_particle_realloc_data(ops_particle particle, int noalloc) {
 
-  if (particle->no_particles < particle->Nmax)
+  if (particle->no_particles + noalloc < particle->Nmax)
     return;
 
   /* Reallocate the ops_dat structures */
-  particle->Nmax += 100;
+  particle->Nmax += noalloc + 100;
 
 
   particle->mark_deletion = (int *) ops_realloc(particle->mark_deletion,
                                                 particle->Nmax * sizeof(int));
   /* Reallocate ops_dat structures */
-  particle->particle_data[0] =
-      ops_dat_realloc_core(particle->particle_data[0],particle->Nmax);
+ // particle->particle_data[0] =
+      ops_dat_realloc_core(particle->particle_pos_dat,particle->Nmax);
   //TODO: Add shape directly
 
-  if (particle->particle_envelope != NULL)
-    particle->particle_envelope =
+  if (particle->particle_envelope != NULL) {
        ops_dat_realloc_core(particle->particle_envelope, particle->Nmax);
-
+  }
   for (ops_dat &dat : particle->particle_data) {
-    dat = ops_dat_realloc_core(dat, particle->Nmax);
+    ops_dat_realloc_core(dat, particle->Nmax);
   }
 
 }
@@ -612,7 +839,7 @@ int _ops_particle_owned_dat(ops_particle particle, ops_dat dat) {
   if (dat == NULL)
     throw OPSException(OPS_RUNTIME_ERROR, "Error: Empty ops_dat structure");
 
-  if (strcmp(particle->particle_pos_dat[0]->name, dat->name) == 0)
+  if (strcmp(particle->particle_pos_dat->name, dat->name) == 0)
     return 1;
 
   if (particle->particle_envelope != NULL) {
@@ -660,6 +887,7 @@ void ops_particles_insert(ops_particle particle, int Np) {
   /* Update number of particles */
   particle->no_particles += Np;
 
+
   int re_alloc{0};
   if (particle->no_particles > particle->Nmax)
     re_alloc = 1;
@@ -667,26 +895,104 @@ void ops_particles_insert(ops_particle particle, int Np) {
   if (re_alloc) {
     particle->Nmax = particle->no_particles + 100;
     //TODO: See if I can shift into & x : pos_dta
-    for (std::size_t i = 0; i < particle->particle_pos_dat.size(); i++)
-       particle->particle_pos_dat[i] = ops_dat_realloc_core(particle->particle_data[i],
-                                                            particle->Nmax);
+ //   for (std::size_t i = 0; i < particle->particle_pos_dat.size(); i++)
+ //     ops_dat_realloc_core(particle->particle_data[i], particle->Nmax);
   }
 
 }
+
+/*-------------------------------------------------------------------------------*/
+/* \brief Marking particles for deletion and forward exchange                    *
+ *
+ * \param[in]  particle an ops_particle structure
+ */
+/*-------------------------------------------------------------------------------*/
+
+void ops_particle_mark_for_del(ops_particle particle) {
+
+  if (particle == nullptr)
+    throw OPSException(OPS_RUNTIME_ERROR, "Error: Empty ops_particle structure");
+
+  BoundingBox *box = particle->box_block;
+  if (box == nullptr)
+    throw OPSException(OPS_RUNTIME_ERROR, "Error: Empty BoundingBox structure");
+
+
+  int dim = particle->block->dims;
+
+  long int no_particles = (long int)particle->no_particles;
+
+  for (long int i = 0; i < no_particles; i++) {
+    particle->mark_deletion[i] = 0;
+  }
+
+
+
+  double *xpos = (double *) particle->particle_pos_dat->data;
+  for (long int i = 0; i < no_particles; i++) {
+    ops_point xlocal{xpos[dim * i], xpos[dim * i + 1],
+                     (dim == 3) ? xpos[dim *i + 2] : 0.0};
+    bool is_in = box->isCoordinateInBoundingBox(xlocal);
+    if (!is_in) particle->mark_deletion[i] = 1; //particle marked for deletion and exchange
+  }
+}
+
+
+/* Removing marked particles from the system */
+void ops_particle_remove_marked(ops_particle particle) {
+
+  if (particle->no_particles == 0)
+    return;
+
+  int dim = particle->block->dims;
+  long int Nlocal = particle->no_particles;
+  long int Ndel{0};
+
+  int i = 0;
+  while ( i < Nlocal) {
+    int imark = particle->mark_deletion[i];
+
+    if (imark == 1) {
+      _ops_particle_swap_data(particle->particle_pos_dat->data, i, Nlocal - 1,
+                              dim * sizeof(double));
+      if (particle->particle_envelope != nullptr) {
+        _ops_particle_swap_data(particle->particle_envelope->data, i, Nlocal - 1,
+                                particle->particle_envelope->elem_size);
+      }
+
+      for (ops_dat &dat : particle->particle_data) {
+        _ops_particle_swap_data(dat->data, i, Nlocal-1, dat->elem_size);
+      }
+
+      Nlocal--;
+    }
+    else i++;
+  }
+
+  particle->no_particles = Nlocal;
+}
+
 
 /***************************************************************************************/
 /*  Definitions of particle halo and halo groups                                       *
  ***************************************************************************************/
 
-void _ops_particle_init_halo_info(ops_particle_halo_exchange halo_info) {
+ops_particle_halo_exchange _ops_particle_init_halo_info() {
+
+  ops_particle_halo_exchange halo_info = nullptr;
+
+  halo_info = (ops_particle_halo_exchange)
+      ops_calloc(1, sizeof(OPS_particle_halo_exchange_info_core));
+
 
   halo_info->nsend = 0;
   halo_info->nrecv =0;
   halo_info->nmax = 10;
   halo_info->sendlist = (int *)ops_calloc(halo_info->nmax, sizeof(int));
   halo_info->firstrecv = 0;
-}
 
+  return halo_info;
+}
 
 ops_particle_halo_data _ops_particle_decl_halo_data_core(OPS_instance *instance,
                                                          ops_dat from, ops_dat to,
@@ -695,12 +1001,12 @@ ops_particle_halo_data _ops_particle_decl_halo_data_core(OPS_instance *instance,
                                                          ops_part_orient orient_flag) {
 
   if (instance->OPS_particle_halo_index == instance->OPS_particle_halo_max) {//TODO:
-    instance->OPS_particle_halo_max += 10;
+    instance->OPS_particle_halo_data_max += 10;
     instance->OPS_particle_halo_data_list =
         (ops_particle_halo_data *) ops_realloc(instance->OPS_particle_halo_data_list,
                                                instance->OPS_particle_halo_data_max
                                                 * sizeof(ops_particle_halo_data));
-    if (instance->OPS_particle_halo_list == NULL)
+    if (instance->OPS_particle_halo_data_list == NULL)
       throw OPSException(OPS_RUNTIME_ERROR, "Error, ops_decl_particle_halo_core--"
                                             "Error allocation memory");
   }
@@ -725,10 +1031,10 @@ ops_particle_halo_data _ops_particle_decl_halo_data_core(OPS_instance *instance,
   halo->to = to;
   halo->orient = orient_flag;
   for (int i = 0; i < from->block->dims; i++) {
-    halo->from_dir[i] = (orient_flag == OPS_PART_ORIENT_ON) ? dir_from[i] : 0;
-    halo->to_dir[i] = (orient_flag == OPS_PART_ORIENT_ON) ? dir_to[i] : 0;
+    halo->from_dir[i] = (orient_flag == OPS_PART_ORIENT_ON) ? dir_from[i] : i;
+    halo->to_dir[i] = (orient_flag == OPS_PART_ORIENT_ON) ? dir_to[i] : i;
     halo->translate[i] =
-        (orient_flag == OPS_PART_ORIENT_OFF || translate == nullptr) ?  0. :translate[i];
+        (orient_flag == OPS_PART_ORIENT_OFF || translate == nullptr) ?  0.  :translate[i];
   }
   for (int i = from->block->dims; i < OPS_MAX_DIM; i++) {
     halo->from_dir[i] = 0;
@@ -745,7 +1051,9 @@ ops_particle_halo_data _ops_particle_decl_halo_data_core(OPS_instance *instance,
 
 ops_particle_halo _ops_particle_decl_halo(OPS_instance *instance, ops_particle from,
                                           ops_particle to, ops_particle_halo_data halos[],
-                                          int nhalos, double *critical_length) {
+                                          int nhalos, double *critical_length,
+                                          int *dir_from, int *dir_to,
+                                          double *translate) {
 
   if (instance->OPS_particle_halo_index == instance->OPS_particle_halo_max) {
     instance->OPS_particle_halo_max += 10;
@@ -777,6 +1085,12 @@ ops_particle_halo _ops_particle_decl_halo(OPS_instance *instance, ops_particle f
     else grp->dx[i] = 0.0;
   }
 
+  for (int idir = 0; idir < OPS_MAX_DIM; idir++) {
+    grp->translate[idir] = translate[idir];
+    grp->dir_from[idir] = dir_from[idir];
+    grp->dir_to[idir] = dir_to[idir];
+
+  }
 
   grp->dat  = (ops_particle_halo_data *)ops_calloc(nhalos, sizeof(ops_particle_halo_data));
   for (int i = 0; i < nhalos; i++) {
@@ -821,19 +1135,24 @@ ops_particle_halo_group _ops_particle_decl_halo_group(OPS_instance *instance,
                                             "reallocating memory");
   }
 
+  if (nhalos <= 0) return nullptr;
+
   ops_particle_halo_group halo_grp
     = (ops_particle_halo_group)ops_calloc(1, sizeof(ops_particle_halo_group_core));
 
   halo_grp->halo_list = (ops_particle_halo *)ops_calloc(nhalos, sizeof(ops_particle_halo));
+  halo_grp->nhalos = nhalos;
+
   for (int i = 0; i < nhalos; i++)
     halo_grp->halo_list[i] = particle_halos[i];
+
 
   /* Allocate definition of exchange info */
   halo_grp->halo_info =
       (ops_particle_halo_exchange *)ops_calloc(nhalos, sizeof(ops_particle_halo_exchange));
 
   for (int i = 0; i < nhalos; i++)
-    _ops_particle_init_halo_info(halo_grp->halo_info[i]);
+    halo_grp->halo_info[i] = _ops_particle_init_halo_info();
 
   halo_grp->halo_type = halo_type;
 
@@ -881,14 +1200,22 @@ ops_particle_halo_data ops_particle_decl_data_halo(ops_dat from, ops_dat to,
  *                            halo
  * \param[in] nhalos  number of halo-data send within this halo structure
  * \param[in] critical_length length for definition of sending region
+ * \param[in] dir_from        direction from where to send
+ * \param[in] dir_to          direction to send for vector and tensorial fields
+ * \param[in] translate       vector for translating bounding box of the sending
+ *                            ops_particle structure
  */
 /*-------------------------------------------------------------------------------------*/
 
 ops_particle_halo ops_particle_decl_halo(ops_particle from, ops_particle to,
                                          ops_particle_halo_data particle_halos[],
-                                         int  nhalos, double* critical_length) {
+                                         int  nhalos, double* critical_length,
+                                         int *dir_from, int *dir_to,
+                                         double *translate) {
   return _ops_particle_decl_halo(OPS_instance::getOPSInstance(), from, to,
-                                 particle_halos, nhalos, critical_length);
+                                 particle_halos, nhalos, critical_length,
+                                 dir_from, dir_to, translate);
+
 }
 
 
@@ -978,9 +1305,11 @@ void ops_particle_set_halo_group(ops_particle_halo_group halo_grp) {
   // TMP Definition: Later on shift within in class
   switch(halo_grp->halo_type) {
   case  OPS_HALO_GRP_EXCHANGE:
+    printf("Halo type exchange\n");
     _ops_particle_setup_exchange_comm(instance, halo_grp); //TODO:
     break;
   case  OPS_HALO_GRP_BORDER:
+    printf("Halo type border\n");
     _ops_particle_setup_border_comm(instance, halo_grp);
     break;
   case OPS_HALO_GRP_FORWARD:
@@ -994,6 +1323,7 @@ void ops_particle_set_halo_group(ops_particle_halo_group halo_grp) {
   default:
     break;
   }
+
 
 
 }
@@ -1059,8 +1389,10 @@ void ops_particle_halo_transfer(ops_particle_halo_group halo_grp) {
 
 
 ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid, ops_dat radius,
-                                      int uniform_grid, int include_virtual,
-                                      int particle_changes, int grid_type,
+                                      ops_stencil stencil,
+                                      ops_with_virtual include_virtual,
+                                      ops_shape_evolve particle_changes,
+                                      ops_grid_type grid_type,
                                       double epsilon,
                                       double crit_length, int Ng) {
 
@@ -1078,8 +1410,6 @@ ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid, ops_d
 
   /* TODO: Sanity check to verify that the two structures are owned by the same block */
 
-
-
   /* Assure that particle block is the same with the grid block */
   ops_block block_particle = particle->block;
   ops_block block_grid = grid->block;
@@ -1092,12 +1422,11 @@ ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid, ops_d
   /* create new structure */
   ops_particle_mapping map = new ops_particle_mapping_core; //Try to shift to the other structure
 
-  map->mapping_type =
-         (ops_particle_mapping_core::ops_mapping_type) include_virtual;
+  map->mapping_type = include_virtual;
 
-  if (map->mapping_type == ops_particle_mapping_core::ops_mapping_type::error_type) {
-    ops_printf("Error: This type of mapping is not supported\n");
-    exit(-1);
+  if (!(map->mapping_type =  OPS_WITH_VIRTUAL || map->mapping_type == OPS_NO_VIRTUAL)) {
+    throw OPSException(OPS_INVALID_ARGUMENT, "Mapping supports only mapping of actual "
+                                             "and with virtual particles.");
   }
 
   /* Set uniform or non uniform grid */
@@ -1106,9 +1435,9 @@ ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid, ops_d
     ops_printf("Error: Only uniform and non-uniform structured grids are supported.\n");
     exit(-1);
   }
-  map->grid_type = (ops_particle_mapping_core::ops_grid_type) grid_type;
-  if (map->grid_type == ops_particle_mapping_core::ops_grid_type::uniform_grid) {
-    map->Ngrids = (Ng> 0) ? Ng : 1;
+  map->grid_type = grid_type;
+  if (map->grid_type == OPS_UNIFORM_GRID) {
+    map->Ngrids = (Ng > 1) ? Ng : 1;
   }
 
 
@@ -1127,22 +1456,36 @@ ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid, ops_d
     d_m[i] = grid->d_m[i];
   }
 
+  //Find if stencil has more points to access the list
+  for (int i = 0; i < dim; i++) {
+    for (int p = 0; p < stencil->points; p++) {
+      d_p[i] = MAX(d_p[i], stencil->stencil[particle->block->dims * p + i]);
+      d_m[i] = MIN(d_m[i], stencil->stencil[particle->block->dims * p + i]);
+    }
+  }
+
   /* Create a copy */
   map->grid = grid;
   /* Set mapping structures */
   map->binhead = ops_decl_dat(particle->block, 1, size, base, d_m, d_p,
                               nulli, "int", "name_to_do");
 
+
+  /* Decleration of particle structures */
+  map->nParticles = particle->no_particles;
+  map->Nmax = 10;
+
+  map->parts_to_grid = ops_decl_particle_dat(particle, 1, base, nulli,
+                                             "int", "particle_to_map");
+
   //TODO: Modify structure */
   map->bin = ops_decl_particle_dat(particle, 1, base, nulli, "int", "name_to_do");
 
   map->pos_old = ops_decl_particle_dat(particle, 3, base, nulld, "double", "name_to_do");
-  map->nParticles = particle->no_particles;
 
   /* Set changes of particle and define Rp_old*/
-  map->particle_changes = (ops_particle_mapping_core::ops_shape_change) particle_changes;
-  if (map->particle_changes ==
-        ops_particle_mapping_core::ops_shape_change::change) {
+  map->particle_changes = particle_changes;;
+  if (map->particle_changes == OPS_EVOLV_SHAPE) {
     ops_decl_particle_dat(particle, 1, base, nulld, "double", "ADD");
   }
   map->decide = true;
@@ -1153,17 +1496,19 @@ ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid, ops_d
 
   /* Set remapping options */
   if (epsilon < 0.0) {
-    ops_printf("Non-positive flag. Please check your setttings\n");
-    exit(-1);
+    throw OPSException(OPS_INVALID_ARGUMENT, "Non-positive flag");
   }
 
   if (crit_length < 0.0)  {
-    ops_printf("Non-positive length. Please check your settings\nResetting to 1");
+    throw OPSException(OPS_INVALID_ARGUMENT, "Non-positive length");
     crit_length = 1.0;
   }
 
   map->skin = epsilon * crit_length;
   /* Define uniform grid mapping */
+
+  /* Set stencil for building maps for virtual particles */
+  map->mapping_stencil = stencil;
 
 
   /* Add the mapping structure to the particle list */
@@ -1172,26 +1517,114 @@ ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid, ops_d
   return map;
 }
 
-void ops_particle_list_build(ops_particle particle, ops_particle_mapping map,
-                             bool enforce)
+
+//TODO: Remove
+void ops_particle_map_decide_and_build(ops_particle particle, ops_particle_mapping map,
+                                       bool enforce)
 {
   /* Decide if list requires rebuild */
   int decide =_ops_particle_mapping_decide(map, particle, enforce);
 
-  //TODO: REMOVE PARTICLES or exchange prior to neighbor build
+
+  //TODO: See how to set up elements-Insert and remove herein
 
   /* Build new neighbor list */
   if (decide) {
     //TODO: Remove or exchange particles prior to neighbor build
     //TODO: Uniform
-    if (map->grid_type == ops_particle_mapping_core::uniform_grid)
+    if (map->grid_type == OPS_UNIFORM_GRID)
       _ops_particle_build_local_uniform(map, particle); //TODO
-    else
+    else if (map->grid_type == OPS_NON_UNIFORM_GRID)
       _ops_particle_build_local_non_uniform(map, particle); //TODO
    //NON-Uniform grid
+
+    map->decide = false;
   }
 }
 
+/*------------------------------------------------------------------------------------*/
+/* \brief Building maps of particles to uniform or non-uniform structured grids
+ *
+ * \param[in] particle pointer to an ops_particle structure
+ * \param[in] map      pointer to an ops_particle_mapping structure
+ */
+/*-----------------------------------------------------------------------------------*/
+
+void ops_particle_map_build(ops_particle particle, ops_particle_mapping map) {
+  if (map->decide) {
+    if (map->grid_type == OPS_UNIFORM_GRID)
+      _ops_particle_build_local_uniform(map, particle);
+    else if (map->grid_type == OPS_NON_UNIFORM_GRID)
+      _ops_particle_build_local_non_uniform(map, particle);
+
+    map->decide = false;
+  }
+}
+
+/*-------------------------------------------------------------------------------------*/
+/* \brief Function to decide if a given particle will be build
+ *
+ * \param[in]  particle      pointer to an ops_particle structure
+ * \param[in]  map           pointer to an ops_particle_mapping structure
+ * \param[in]  enforce       flag for enforcing particle build list
+ */
+/*-----------------------------------------------------------------------------------*/
+void ops_particle_map_decide(ops_particle particle, ops_particle_mapping map,
+                             bool enforce) {
+
+  if (enforce) {
+    map->decide = true;
+    return;
+  }
+
+  int decide = _ops_particle_mapping_decide(map, particle, enforce);
+
+  if (decide > 1)
+    decide = true;
+}
+
+/*-----------------------------------------------------------------------------------*/
+/* \brief the map for sequential code
+ *
+ * \return a flag that at least a single list is build
+ */
+
+bool ops_particle_update_map_lists(ops_particle particle) {
+
+
+  bool decide_global{false};
+  for (auto &map : particle->mapping_list) {
+    ops_particle_map_decide(particle, map);
+
+    if (!decide_global)
+      decide_global = (map->decide) ? true : false;
+
+  }
+
+  /* Mark particles for exchange or add them into an array */
+  if (decide_global) {
+    ops_particle_mark_for_del(particle);
+
+    _ops_particle_exchange(particle);
+
+    ops_particle_create_forward_comms(particle);
+  //Exchange particles for MPI and build comms for forward communications
+
+  }
+  return decide_global;
+
+}
+
+void ops_particle_build_maps(ops_particle particle) {
+
+
+  //Prior to building expand the lists
+  ops_particle_remove_marked(particle);
+
+  for (auto & map : particle->mapping_list)
+    ops_particle_map_build(particle, map);
+
+}
 
 /*----------------------------------------------------------------------------------------*/
 /* Auxiliarry functions to be moved
@@ -1208,3 +1641,12 @@ void _ops_particle_swap_data(char *data, int i, int j, int elems) {
     data[elems * j + ielem] = ctmp;
   }
 }
+
+/*--------------------------------------------------------------------------------------*
+ *  Build bounding boxes for ops_particle structures
+ *--------------------------------------------------------------------------------------*/
+void ops_build_bounding_box(ops_particle particle ) {
+
+  particle->box_block->partitionBoundingBox(particle->block);
+}
+

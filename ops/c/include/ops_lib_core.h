@@ -150,6 +150,8 @@ typedef uint16_t half;
 
 #define ZERO_complexf complexf(0,0)
 #define INFINITY_complexf complexf(FLT_MAX,FLT_MAX)
+
+#define BIG 1.0e10
 #endif
 
 /**
@@ -515,6 +517,12 @@ struct ops_arg {
   ops_arg_type argtype; /**< arg type */
   int opt;              /**< flag to indicate whether this is an optional arg,
                          *   0 - optional, 1 - not optional */
+  int part_index;       /**< indicate to which particle this structure points to
+                         *   -1 : Not particle associated ops_arg >=0 Linked to
+                         *   ops_particle structure */
+  int map_index;        /**< indicate the map exploited by the particle structure
+                          *  -1: Not particle associated structure
+                          *   >=0 point to a given structure */
 };
 
 /** Storage for OPS halos */
@@ -693,6 +701,7 @@ ops_dat ops_decl_dat(ops_block block, int data_size, int *block_size, int *base,
                      char const *name) {
 
   int stride[OPS_MAX_DIM];
+
   for (int i = 0; i < OPS_MAX_DIM; i++) stride[i] = 1;
   return ops_decl_dat_char(block, data_size, block_size, base, d_m, d_p,
                            stride, (char *)data, sizeof(T), type, name);
@@ -737,6 +746,23 @@ void ops_dat_deep_copy(ops_dat target, ops_dat orig_dat);
 OPS_FTN_INTEROP
 ops_arg ops_arg_dat(ops_dat dat, int dim, ops_stencil stencil, char const *type,
                     ops_access acc);
+
+/**
+ * Passes an accessor the values of a particle structure to the user kernel
+ *
+ * The ACCP<type>& reference and its operator has to be used to access data
+ *
+ * For the moment is assused that no stencil is used to access data (local operator)
+ *
+ * @param dat       dataset
+ * @param dim       size of data structure per particle
+ * @param type      string representing the type of data held in dataset
+ * @param acc       access type
+ *
+ * @return
+ */
+OPS_FTN_INTEROP
+ops_arg ops_arg_part_dat(ops_dat dat, int dim, char const * type, ops_access acc);
 
 /**
  * Passes an accessor to the value(s) at the current grid point to the user kernel if flag is true
@@ -800,7 +826,11 @@ ops_arg ops_arg_gbl(T *data, int dim, char const *type, ops_access acc) {
   return ops_arg_gbl_char((char *)data, dim, sizeof(T), acc);
 }
 
-
+template <class T>
+ops_arg ops_arg_particle_gbl(T *data, int dim, char const *type, ops_access acc) {
+     (void) type;
+  return ops_arg_particle_gbl_char((char *)data, dim, sizeof(T), acc);
+}
 
 #if !defined(OPS_CPP_API) || defined(OPS_INTERNAL_API)
 /**
@@ -881,7 +911,8 @@ ops_stencil ops_decl_prolong_stencil( int dims, int points, int *sten,
  * @param from       origin dataset
  * @param to         destination dataset
  * @param iter_size  defines an iteration size
- *                   (number of indices to iterate over in each direction)
+ *           char *p_a[N] =
+    {param_handler<param_remove_cvref_t<ParamType>>::construct(arguments, dim, ndim, start, block)...};          (number of indices to iterate over in each direction)
  * @param from_base  indices of starting point in @p from dataset
  * @param to_base    indices of starting point in @p to dataset
  * @param from_dir   direction of incrementing for @p from for each dimension
@@ -945,7 +976,8 @@ template <class T> void ops_reduction_result(ops_reduction handle, T *ptr) {
  * @param name  a name used to identify the constant
  * @param dim   dimension of dataset (number of items per element)
  * @param type  the name of type used for output diagnostics
- *              (e.g. "double", "float")
+ *           char *p_a[N] =
+    {param_handler<param_remove_cvref_t<ParamType>>::construct(arguments, dim, ndim, start, block)...};     (e.g. "double", "float")
  * @param data  pointer to new values for constant of type @p T
  */
 template <class T>
@@ -1521,6 +1553,51 @@ private:
   int mdim;
 #endif
   T *__restrict__ ptr;
+};
+
+/**
+ * This class is an accessor to data stored in particle ops_dats .
+ * It is used in user kernel and functions called from user kernels.
+ * The user should never explicitly construct such an
+ * object, these are constucted by OPS and passed by reference to
+ * the user kernel.
+ *
+ * For particle ops_dat structures-datasets are stored as 1D arrays. An
+ * extra argument is used for datasets that have multiple values at each
+ * point. For e.g. (x,y,z) for the particle position
+ */
+
+template<typename T>
+class ACCP {
+public:
+  __host__ __device__
+  ACCP(T *_ptr) : ptr(_ptr) , mdim(0) , bin_address(0){}
+  __host__ __device__
+  ACCP(int _mdim, int _sizex, T *_ptr) :
+  ptr(_ptr), mdim(_mdim), bin_address(0) { }
+
+  __host__ __device__
+  const T& operator()(int xoff) const {return *(ptr + xoff);}
+
+  __host__ __device__
+  T& operator()(int xoff) { return *(ptr + xoff);}
+
+  __host__ __device__
+  T& operator()(int d, int xoff) const {
+    return *(ptr + d + mdim * xoff);
+  }
+
+  __host__ __device__
+  void next(int offset) {
+    ptr += offset;
+  }
+
+  int bin_address;
+
+
+private:
+  T *__restrict__ ptr;
+  int mdim;
 };
 
 #include <ops_internal2.h>

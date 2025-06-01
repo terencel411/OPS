@@ -66,6 +66,71 @@ void ops_pack(ops_dat dat, const int src_offset, char *__restrict dest,
   }
 }
 
+void  ops_particle_pack(ops_dat dat, const int nlocal, char *__restrict  dest,
+                        const int nsend, int &packing_loc) {
+  const char *__restrict src = dat->data + nlocal * dat->elem_size;
+  const int nloop = nsend * dat->dim * dat->type_size;
+
+# ifdef _OPENMP
+# pragma omp parallel for shared(src, dest)
+#endif
+  for (int i = 0; i < nloop; i++) {
+    dest[i] = src[i];
+  }
+
+  packing_loc += nloop;
+
+}
+
+int ops_particle_pack_border_data(ops_dat data, char *__restrict dest,
+                                  const int *forward_list,
+                                  int ifirst, int nsend)
+{
+  const char *__restrict src = data->data;
+  const int ninner = data->dim * data->type_size;
+
+#ifdef _OPENMP
+# pragma omp parallel for shared (src, dest)
+#endif
+  for (int i = 0; i < nsend; i++) {
+    int ipart = forward_list[i];
+    for (int j = 0; j < ninner; j ++) {
+      dest[i * ninner + j] = src[ipart * ninner + j];
+    }
+  }
+  return nsend * ninner;
+}
+
+void ops_particle_unpack(ops_dat dat, const int nlocal,
+                         const char *__restrict buffer, const int nrecv,
+                         int &nbuf_loc)
+{
+  const char *__restrict dest = dat->data + nlocal * dat->elem_size;
+  const int nins = nrecv * dat->dim * dat->type_size;
+
+#ifdef _OPENMP
+#pragma omp_parallel for shared(dest, buffer)
+#endif
+  for (int i = 0; i < nins; i++) {
+    dest[i] = buffer[i];
+  }
+}
+
+int ops_particle_unpack_border(ops_dat dat, char *__restrict buffer,
+                               int nfirst, int nrecv) {
+  char *__restrict dest = dat->data + dat->elem_size * nfirst;
+  const int nins = nrecv * dat->elem_size * nrecv;
+
+#ifdef _OPENMP
+#pragma omp_parallel for shared(dest, buffer)
+#endif
+  for (int  i = 0; i < nins; i++)
+    dest[i] = buffer[i];
+
+  return nins;
+}
+
+
 void ops_unpack(ops_dat dat, const int dest_offset, const char *__restrict src,
                 const ops_int_halo *__restrict halo) {
   if (OPS_instance::getOPSInstance()->OPS_soa) {
@@ -89,6 +154,9 @@ void ops_unpack(ops_dat dat, const int dest_offset, const char *__restrict src,
     }
   }
 }
+
+
+
 
 char *OPS_realloc_fast(char *ptr, size_t olds, size_t news) {
   return (char*)ops_realloc(ptr, news);

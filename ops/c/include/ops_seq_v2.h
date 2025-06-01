@@ -224,7 +224,9 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
 
   int start[OPS_MAX_DIM];
   int end[OPS_MAX_DIM];
-
+/*
+ * Get first and last bin in each direction (Shift to local grid)
+ */
   #ifdef OPS_MPI
   sub_block_list sb = OPS_sub_block_list[block->index];
   if (!sb->owned) return;
@@ -247,6 +249,7 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
   }
   #endif //OPS_MPI
 
+
   #ifdef OPS_DEBUG
   ops_register_args(block->instance, args, name);
   #endif
@@ -254,10 +257,12 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
   /* The idea here is to add the elements to big chank of elements utilizing the first elements for identifying elements-output as char
    * later passed as the right argument                                                                                                */
 
+  //Data shifted to first grid point. (The p_a contain a (char *) ACC<T> array
   char *p_a[N] = 
     {param_handler<param_remove_cvref_t<ParamType>>::construct(arguments, dim, ndim, start, block)...};
-  //Offs decl
-  int offs[N][OPS_MAX_DIM] = {};
+
+  //Offs declaration what is the point
+  int offs[N][OPS_MAX_DIM] = {}; //Finds shifts to adjacent points//
   (void) std::initializer_list<int>{(initoffs(arguments, offs[J], ndim, start, end), 0)...};
 
   int total_range = 1;
@@ -268,9 +273,11 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
   }
   count[dim-1]++;     // extra in last to ensure correct termination
 
+  //Perform exchanges
   ops_H_D_exchanges_host(args, N);
   ops_halo_exchanges(args,N,range);
   ops_H_D_exchanges_host(args, N);
+
 
   for (int nt=0; nt<total_range; nt++) {
     // call kernel function, passing in pointers to data
@@ -291,7 +298,7 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
       param_handler<param_remove_cvref_t<ParamType>>::shift_arg(arguments, p_a[J], m, start, offs[J], sb, block->instance),0)...};
   #else //OPS_MPI
     (void) std::initializer_list<int>{(
-      param_handler<param_remove_cvref_t<ParamType>>::shift_arg(arguments, p_a[J], m, start, offs[J], block->instance),0)...};
+      param_handler<param_remove_cvref_t<ParamType>>::shift_arg(arguments, p_a[J], m, start, offs[J], block->instance),0)...}; //Q: Why this structure (A, 0)
   #endif //OPS_MPI
   }
 

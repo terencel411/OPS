@@ -96,6 +96,8 @@
 #define ZERO_short 0;
 #define INFINITY_short SHRT_MAX;
 
+#define BIG 1.0e10
+
 #define ZERO_bool 0;
 
 /*
@@ -122,8 +124,9 @@ typedef TAILQ_HEAD(, ops_dat_entry_core) Double_linked_list;
 struct ops_block_descriptor {
   ops_block_core *block;        /**< pointer to the block */
   Double_linked_list datasets;  /**< list of datasets associated with this block */
-  ops_particle_core  *particle; /**< pointer to the particle data structure */
+  ops_particle_core  **particle; /**< pointer to the particle data structure */ //TODO: Expand to multiple lists per block
   int num_datasets;             /**< number of datasets */
+  int no_particle_structures {0};
 
 };
 
@@ -170,6 +173,40 @@ typedef struct {
   int stride;      ///< stride between blocks
 } ops_int_halo;
 
+typedef struct {
+
+  int nswaps;  ///<iterations for sending data in a given direction
+
+  int nswap_pos; ///< #Swaps in positive direction //TODO: Check how we are sending or recv from here?
+  int nswap_neg; ///< #Swaps in negative direction //TODO: Same for oppo.
+
+  int dir;     //<Sending and receiving direction
+
+  //Number of elements received in different swaps
+  int *irecv_neg; ///<first point received in negative direction for a given swap
+  int *nrecv_neg; ///<particles received in the given swap in the negative direction
+
+  int *irecv_pos; ///<first point received in positive direction for a given swap
+  int *nrecv_pos; ///< # particles received in the given swap in the positive direction
+
+  int nforward_pos; ///<# number of particles forward by this process in positive direction
+  int nforward_neg; ///<# number of particles send in the negative direction by this process
+
+  int nalloc_max_pos; //<# number of particles prior allocation in negative direction
+  int nalloc_max_neg; //<# number of particles prior allocation in negative direction
+
+
+  int *nsend_pos;  ///<number of particles send in the positive direction for each swap
+  int *nsend_neg;  ///<number of particles send in the negative direction for each swap
+
+
+
+  int *particle_send_neg; ///<Particle list send and receive in this intra-block communication
+  int *particle_send_pos; //<Particle list send in positive direction
+
+  double dx_neg;  ///<Size of block for sending in the negative dir
+  double dx_pos; ///<Size of block for sending in the pos. direction
+} ops_int_particle_halos;
 
 ops_reduction ops_decl_reduction_handle_core(OPS_instance *instance, int size, const char *type,
                                              const char *name);
@@ -210,6 +247,7 @@ ops_halo ops_decl_halo_core(OPS_instance *instance, ops_dat from, ops_dat to, in
 
 ops_arg ops_arg_dat_core(ops_dat dat, ops_stencil stencil, ops_access acc);
 ops_arg ops_arg_gbl_core(char *data, int dim, int size, ops_access acc);
+ops_arg ops_arg_part_dat_core(ops_dat dat, ops_access acc);
 
 OPS_FTN_INTEROP
 void ops_print_dat_to_txtfile_core(ops_dat dat, const char *file_name);
@@ -366,7 +404,7 @@ void ops_fprintf2(std::ostream &, const char *format, ...);
 void fprintf2(std::ostream &, const char *format, ...);
 
 ops_dat ops_dat_alloc_core(ops_block block);
-ops_dat ops_dat_realloc_core(ops_dat dat, int sizex);
+void ops_dat_realloc_core(ops_dat dat, int sizex);
 int ops_dat_copy_metadata_core(ops_dat target, ops_dat orig_dat);
 ops_kernel_descriptor * ops_dat_deep_copy_core(ops_dat target, ops_dat orig_dat, int *range);
 void ops_internal_copy_seq(ops_kernel_descriptor *desc);

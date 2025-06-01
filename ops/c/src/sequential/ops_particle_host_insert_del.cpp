@@ -51,14 +51,13 @@
 void ops_particle_remove(ops_particle particle) {
 
   const int dim = particle->block->dims;
-  size_t Nlocal = particle->no_particles;
-  size_t Ndel{0};
+  long int Nlocal = (long int) particle->no_particles;
   double xmin[dim], xmax[dim];
 
   BoundingBox *box = particle->box_block;
   box->getLocalMaxMin(xmin, xmax);
 
-  double *xpos = (double *)particle->particle_pos_dat[0]->data;
+  double *xpos = (double *)particle->particle_pos_dat->data;
 
   int i = 0;
   while (i < Nlocal) {
@@ -66,12 +65,13 @@ void ops_particle_remove(ops_particle particle) {
 
     int imark = particle->mark_deletion[i];
 
+    //TODO: TO-Be removed
     if (imark == 0) {
       bool decide = box->isCoordinateInBoundingBox(xlocal);
       if (!decide) imark = 1;
     }
 
-    if (imark == 1) {//Not-within block mark and shift for deletion
+    if (imark == 1 || imark == 2) {//Not-within block mark and shift for deletion
       _ops_particle_swap_data((char *)xpos, i, Nlocal-1, dim * sizeof(double));
       if (particle->particle_envelope != nullptr)
         _ops_particle_swap_data((char *)particle->particle_envelope->data, i, Nlocal-1,
@@ -94,7 +94,7 @@ void ops_particle_remove(ops_particle particle) {
 /*----------------------------------------------------------------*/
 void ops_particle_init_mark_deletion(ops_particle particle) {
 
-  size_t Nlocal = particle->no_particles;
+  int Nlocal = (int) particle->no_particles;
 
   for (int i = 0; i < Nlocal; i++)
     particle->mark_deletion[i] = 0; //Particle to remain

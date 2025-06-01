@@ -59,7 +59,7 @@
 /* Auxiliary BoundingBox Functions                                                     */
 /*                                                                                     */
 
-void _ops_construct_local_box_from_dat(ops_dat coords, double grid_Size, int dim,
+void _ops_construct_local_box_from_dat(ops_dat coords, double  *grid_Size, int dim,
                                       double* xmin, double* xmax);
 
 /*-------------------------------------------------------------------------------------*/
@@ -77,7 +77,7 @@ void  _ops_particle_add_elem(int dim, T *x_local, ops_dat pos, int loc) {
 
   T* data = (T *)pos->data;
 
-  for (int i = 0; i < data; i++)
+  for (int i = 0; i < dim; i++)
     data[dim * loc + i] = x_local[i];
 }
 
@@ -99,7 +99,9 @@ ops_particle_halo_data _ops_particle_decl_halo_data_core(OPS_instance *instance,
 
 ops_particle_halo _ops_particle_decl_halo(OPS_instance *instance, ops_particle from,
                                           ops_particle to, ops_particle_halo_data halos[],
-                                          int nhalos, double *critical_length);
+                                          int nhalos, double *critical_length,
+                                          int dir_from, int dir_to,
+                                          double *translate);
 
 ops_particle_halo_group _ops_particle_decl_halo_group(OPS_instance *instance,
                                                       ops_particle_halo particle_halos[],
@@ -139,6 +141,13 @@ void _ops_particle_halo_reverse_transfer(OPS_instance *instance,
 
 void _ops_particle_halo_exchange_transfer(OPS_instance *instance,
                                           ops_particle_halo_group halo_grp);
+
+/*------------------------------------------------------------------------------------*
+ * Communication functions
+ *------------------------------------------------------------------------------------*/
+
+void _ops_particle_exchange(ops_particle particle);
+
 
 /*--------------------------------------------------------------------------------------*/
 /* Mapping auxiliary functions                                                          */
@@ -188,4 +197,7 @@ void _ops_particle_to_non_uniform_grid_intersection(const int init, const int di
                                                     int *binhead, const int *size, int *bin);
 
 int _ops_particle_moved_outside(ops_particle particle);
+
+void ops_particle_exchange(ops_particle particle);
+
 #endif /* __OPS_PARTICLE_INTERNAL_H */
