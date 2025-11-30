@@ -316,7 +316,8 @@ class OPS_instance {
 
 	//SEQ execution
 	int arg_idx[OPS_MAX_DIM];
-
+        int arg_idp[1]; //SEQ execution
+        int arg_idx_map[OPS_MAX_DIM];
 
 	// Debugging
 	ops_arg *OPS_curr_args;

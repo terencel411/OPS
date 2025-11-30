@@ -58,6 +58,7 @@ inline int address(int ndim, int dat_size, int* start, int* size, int* stride, i
   for(int i=0; i<ndim; i++) {
     base = base + dat_size * mult(size, i) * (start[i] * stride[i] - base_off[i] - d_m[i]);
   }
+
   return base;
 }
 
@@ -207,6 +208,7 @@ static void initoffs(const ops_arg &arg, int *offs, const int &ndim, int *start,
       offs[n] = off(ndim, n, start, end, arg.dat->size, arg.stencil->stride);
     }
   }
+
 }
 
 template <typename... ParamType, typename... OPSARG, size_t... J>

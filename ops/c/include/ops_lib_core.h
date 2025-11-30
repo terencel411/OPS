@@ -93,6 +93,8 @@
 #define OPS_ARG_IDX 2
 #define OPS_ARG_GBL_PARTICLE 3
 #define OPS_ARG_DAT_PARTICLE 4
+#define OPS_ARG_IDP 5
+#define OPS_ARG_IDX_MAP 6
 
 typedef std::complex<double> complexd;
 typedef std::complex<float> complexf;
@@ -517,6 +519,12 @@ struct ops_arg {
   ops_arg_type argtype; /**< arg type */
   int opt;              /**< flag to indicate whether this is an optional arg,
                          *   0 - optional, 1 - not optional */
+  int part_index;       /**< indicate to which particle this structure points to
+                         *   -1 : Not particle associated ops_arg >=0 Linked to
+                         *   ops_particle structure */
+  int map_index;        /**< indicate the map exploited by the particle structure
+                          *  -1: Not particle associated structure
+                          *   >=0 point to a given structure */
 };
 
 /** Storage for OPS halos */

@@ -339,14 +339,15 @@ void ops_exit_core(OPS_instance *instance) {
     ops_free(instance->OPS_particle_halo_data_list[i]);
   ops_free(instance->OPS_particle_halo_data_list);
 
+  //Fine for halo list
   for (int i = 0; i < instance->OPS_particle_halo_index; i++)
-    ops_free(instance->OPS_particle_halo_list[i]);
+    instance->OPS_particle_halo_list[i] = _ops_free_particle_halo(instance->OPS_particle_halo_list[i]);
+   // ops_free(instance->OPS_particle_halo_list[i]);
   ops_free(instance->OPS_particle_halo_list);
 
   for (int i = 0; i < instance->OPS_particle_halo_group_index; i++) {
-    for (int j = 0; j < instance->OPS_particle_halo_group_list[i]->nhalos;j++)
-      ops_free(instance->OPS_particle_halo_group_list[i]->halo_list[j]);
-    ops_free(instance->OPS_particle_halo_group_list[i]);
+    instance->OPS_particle_halo_group_list[i]
+       = _ops_free_particle_halo_group(instance->OPS_particle_halo_group_list[i]);
   }
   ops_free(instance->OPS_particle_halo_group_list);
 
@@ -608,8 +609,6 @@ ops_dat ops_decl_dat_core(ops_block block, int dim, int *dataset_size,
                           int type_size, char const *type, char const *name) 
 {
    ops_dat dat = ops_dat_alloc_core(block);
-
-   printf("Field %s: Dataset size = [%d %d %d]\n", name, dataset_size[0], dataset_size[1], dataset_size[2]);
    ops_dat_init_metadata_core(dat, dim, dataset_size, base, d_m, d_p, stride, data, type_size, type, name);
    return dat;
 }
@@ -788,6 +787,9 @@ ops_stencil _ops_decl_restrict_stencil ( OPS_instance *instance, int dims, int p
   memcpy(stencil->mgrid_stride,stride,sizeof(int)*dims);
 
   stencil->type = 2;
+
+
+
 
 
   return stencil;
@@ -1291,6 +1293,9 @@ void ops_print_dat_to_txtfile_core(ops_dat dat, const char* file_name_in)
     throw ex;
   }
 
+  if (dat->is_particle)
+    throw OPSException(OPS_RUNTIME_ERROR, "Error: ops_print_dat_to_txtfile is compatible "
+                       "with grid-based ops_dat structures\n");
   if (fprintf(fp, "ops_dat:  %s \n", dat->name) < 0) {
     OPSException ex(OPS_RUNTIME_ERROR);
     ex << "Error: error writing to file " << file_name;

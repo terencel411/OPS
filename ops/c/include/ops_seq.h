@@ -486,10 +486,14 @@ void ops_par_loop(void (*kernel)(T0*, T1*, T2*),
      char const * name, ops_block block, int dim, int *range,
      ops_arg arg0, ops_arg arg1, ops_arg arg2) {
 
+
+  //Create offs matrix
   char *p_a[3];
   int  offs[3][OPS_MAX_DIM];
 
   int  count[dim];
+
+
   ops_arg args[3] = { arg0, arg1, arg2};
 
 

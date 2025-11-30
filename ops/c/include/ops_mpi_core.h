@@ -66,8 +66,12 @@ typedef struct {
 
   int nsend; //number of forward exchange iterations needed
 
-} sub_particle;
+  ops_particle_halo_exchange **halo_info;
+  //no need to send data: (See what ops_dat) contain in MPI????
 
+} sub_particle_core;
+
+typedef sub_particle_core *sub_particle;
 ///
 /// Struct for holding the decomposition details of a block on an MPI process
 ///
@@ -95,6 +99,8 @@ typedef struct {
   MPI_Group grp;
   int owned;
 
+  //TODO: If we use map. we can exploit map for sending & shifting data
+  //
   sub_particle *sb_particle_list;
 } sub_block;
 
@@ -146,7 +152,7 @@ typedef struct {
   ops_halo halo;
   int nproc_from; ///< number of processes I have to send to (from part of halo)
   int nproc_to;///< number of processes I have to receive from (to part of halo)
-  int *proclist;
+  int *proclist; ///<Processes that I send to
   int *local_from_base;
   int *local_to_base;
   int *local_iter_size;
@@ -167,6 +173,51 @@ typedef struct {
   MPI_Request *requests;
   MPI_Status *statuses;
 } ops_mpi_halo_group;
+
+typedef struct {
+  ops_particle_halo particle_halo;
+  int nproc_from;    /// <number of processes that I send data to (due to halo)
+  int nproc_from_max; /// <Maximum possible number of processes where the halo will receive from
+  int nproc_to_max;   /// <Maximum number of procsses where the halo will send to
+  int nproc_to;  /// <number of process that I received data from (due to halos)
+  int *proclist; /// <List of destination processes
+  int *proclist_complete; ///< List of destination processes of all structures
+  int *send_region; ///< Sending region in terms of bins
+  BoundingBox **sendBox;
+  int index;
+  int *isend;
+} ops_mpi_particle_halo;
+
+typedef struct {
+  ops_particle_halo_group group;
+  int nhalos;
+  ops_mpi_particle_halo **mpi_halos;
+  int num_neighbors_send;
+  int num_neighbors_recv;
+  int *neighbors_send;
+  int *neighbors_recv;
+  int *send_sizes;
+  int *recv_sizes;
+  int index;
+
+  MPI_Request *requests;
+  MPI_Status *statuses;
+
+  ops_particle_halo_exchange *halo_info;
+  int nhalo_info;
+  int *send_shift;
+  int *recv_shift;
+
+  int *send_bites;
+  int *recv_bites;
+
+  int *send_pos_bites;
+  int *shift_send_pos;
+
+  int *recv_pos_bites;
+  int *shift_recv_pos;
+
+} ops_mpi_particle_halo_group;;
 
 void ops_mpi_exit(OPS_instance *instance);
 
@@ -198,6 +249,9 @@ int ops_particle_unpack_border(ops_dat dat, char *__restrict buffer,
 
 void ops_particle_setup_forward_comm(sub_particle &sub_part);
 
+
+
+
 /*******************************************************************************
 * Other External functions
 *******************************************************************************/
@@ -216,8 +270,12 @@ extern int ops_my_global_rank;
 //
 extern sub_block_list *OPS_sub_block_list;
 extern sub_dat_list *OPS_sub_dat_list;
+
 extern ops_mpi_halo *OPS_mpi_halo_list;
 extern ops_mpi_halo_group *OPS_mpi_halo_group_list;
+
+extern ops_mpi_particle_halo *OPS_mpi_particle_halo_list;
+extern ops_mpi_particle_halo_group *OPS_mpi_particle_halo_group_list;
 
 
 extern double ops_gather_time;

@@ -741,6 +741,7 @@ void _ops_exit(OPS_instance *instance) {
     if (instance->OPS_reduct_d!=NULL) ops_device_free(instance, (void**)&instance->OPS_reduct_d);
   }
 
+  //TODO: Correct issue with particle halos
   ops_exit_particles(instance);
   ops_exit_core(instance);
   ops_exit_device(instance);

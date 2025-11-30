@@ -706,11 +706,12 @@ void  ops_particle_exchange_buf(ops_particle particle,sub_block *sb,int idir, in
 
   int nlocal = particle->no_particles;
   BoundingBox *box = particle->box_block;
+  double *particle_pos = (double *)particle->particle_pos_dat->data;
   int dim = sb->block->dims;
   if (sb->id_m[idir] != MPI_PROC_NULL) { //Perform only when
     int i = 0;
     while (i < nlocal) {
-      if ((double *)particle->particle_data[0]->data[dim * i + idir] < box->getMinCoordDir(idir)) {
+      if (particle_pos[dim * i + idir] < box->getMinCoordDir(idir)) {
         nsend[0]++;
         //copy particle to nlocal - 1
         _ops_particle_swap_data(particle->particle_pos_dat->data, i, nlocal - 1,
@@ -719,8 +720,11 @@ void  ops_particle_exchange_buf(ops_particle particle,sub_block *sb,int idir, in
           _ops_particle_swap_data(particle->particle_envelope->data, i, nlocal - 1,
                                   particle->particle_envelope->elem_size);
 
-        for (ops_dat &dat : particle->particle_data)
+        //for (ops_dat &dat : particle->particle_data) {
+        for (int index = 0; index < particle->particle_dat_index; index++) {
+          ops_dat dat = particle->particle_dat[index];
           _ops_particle_swap_data(dat->data, i, nlocal - 1, dat->elem_size);
+        }
 
         nlocal--;
 
@@ -731,7 +735,7 @@ void  ops_particle_exchange_buf(ops_particle particle,sub_block *sb,int idir, in
 
   //Pack data
   if (nsend[0] > 0) {
-    send_recv_bites[0] = nsend[0] * sb->sb_particle_list[particle->index].bites_in_exchange; //TODO-Check for last option
+    send_recv_bites[0] = nsend[0] * sb->sb_particle_list[particle->index]->bites_in_exchange; //TODO-Check for last option
 
     if (send_recv_bites[0] > ops_buffer_send_1_size) {
       //realloc and increase by 100 bites
@@ -751,9 +755,12 @@ void  ops_particle_exchange_buf(ops_particle particle,sub_block *sb,int idir, in
                         ops_buffer_send_1 + npacking_loc, nsend[0],
                         npacking_loc);
 
-    for (auto &dat : particle->particle_data)
+    //for (auto &dat : particle->particle_data) {
+    for (int index = 0; index < particle->particle_dat_index; index++) {
+      ops_dat dat = particle->particle_dat[index];
       ops_particle_pack(dat, nlocal, ops_buffer_send_1 + npacking_loc,
                         nsend[0], npacking_loc);
+    }
   }
 
   MPI_Status status;
@@ -772,7 +779,7 @@ void  ops_particle_exchange_buf(ops_particle particle,sub_block *sb,int idir, in
   if (sb->id_p[idir] != MPI_PROC_NULL) {
     int i = 0;
     while (i < nlocal) {
-      if ((double *) particle->particle_data[0]->data[dim * i + idir] > box->getMinCoordDir(idir)) {
+      if (particle_pos[dim * i + idir] > box->getMinCoordDir(idir)) {
         nsend[1]++;
         _ops_particle_swap_data(particle->particle_pos_dat->data, i, nlocal - 1,
                                 particle->particle_pos_dat->elem_size);
@@ -781,8 +788,11 @@ void  ops_particle_exchange_buf(ops_particle particle,sub_block *sb,int idir, in
           _ops_particle_swap_data(particle->particle_envelope->data, i, nlocal - 1,
                                   particle->particle_envelope->elem_size);
 
-        for (ops_dat &dat : particle->particle_data)
+        //for (ops_dat &dat : particle->particle_data) {
+        for (int index = 0; index < particle->particle_dat_index; index++) {
+          ops_dat dat = particle->particle_dat[index];
           _ops_particle_swap_data(dat->data, i, nlocal - 1, dat->elem_size);
+        }
 
         nlocal--;
       }
@@ -791,7 +801,7 @@ void  ops_particle_exchange_buf(ops_particle particle,sub_block *sb,int idir, in
   }
 
   if (nsend[1] > 0)  {
-    send_recv_bites[2] = nsend[1] * sb->sb_particle_list[particle->index].bites_in_exchange;
+    send_recv_bites[2] = nsend[1] * sb->sb_particle_list[particle->index]->bites_in_exchange;
 
     if (send_recv_bites[2] > ops_buffer_send_2_size) {
       //realloc and increase by 100 bites
@@ -808,9 +818,12 @@ void  ops_particle_exchange_buf(ops_particle particle,sub_block *sb,int idir, in
       ops_particle_pack(particle->particle_envelope, nlocal,
                         ops_buffer_send_2 + npacking_loc, nsend[1], npacking_loc);
 
-    for (auto &dat : particle->particle_data)
+    //for (auto &dat : particle->particle_data) {
+    for (int index = 0; index < particle->particle_dat_index; index++) {
+      ops_dat dat = particle->particle_dat[index];
       ops_particle_pack(dat, nlocal, ops_buffer_send_2 + npacking_loc, nsend[1],
                           npacking_loc);
+    }
   }
 
   MPI_Sendrecv(&send_recv_bites[2], 1, MPI_INT, sb->id_p[idir], 100,
@@ -830,105 +843,105 @@ void  ops_particle_exchange_buf(ops_particle particle,sub_block *sb,int idir, in
 }
 
 void ops_particle_border_pack(ops_particle particle, int  iswap,
-                              ops_int_particle_halos &particle_halo,
+                              ops_int_particle_halos particle_halo,
                               int ifirst, int ilast) {
 
   /* Get block structure */
   sub_block *sb = OPS_sub_block_list[particle->block->index];
 
-  double reg_send_neg = particle->box_block->getMinCoordDir(particle_halo.dir)
-      + particle_halo.dx_neg;
-  double reg_send_pos = particle->box_block->getMaxCoordDir(particle_halo.dir)
-      - particle_halo.dx_pos;
+  double reg_send_neg = particle->box_block->getMinCoordDir(particle_halo->dir)
+      + particle_halo->dx_neg;
+  double reg_send_pos = particle->box_block->getMaxCoordDir(particle_halo->dir)
+      - particle_halo->dx_pos;
 
-  particle_halo.nrecv_pos[iswap] = 0;
-  particle_halo.nrecv_neg[iswap] = 0;
+  particle_halo->nrecv_pos = 0;
+  particle_halo->nrecv_neg = 0;
 
-  particle_halo.nsend_pos[iswap] = 0;
-  particle_halo.nsend_neg[iswap] = 0;
+  particle_halo->nsend_pos = 0;
+  particle_halo->nsend_neg = 0;
 
   int dim = particle->block->dims;
-  int dir = particle_halo.dir;
+  int dir = particle_halo->dir;
   double *xpos = (double *) particle->particle_pos_dat->data;
 
-  if (iswap < particle_halo.nswap_neg) {
+  if (iswap < particle_halo->nswap_neg) {
     for (int i = ifirst; i < ilast; i++) {
       if (xpos[dim * i + dir] <= reg_send_neg) {
-        particle_halo.nsend_neg[iswap]++;
-        particle_halo.nforward_neg++;
+        particle_halo->nsend_neg++;
+        particle_halo->nforward_neg[iswap]++;
 
         //check for data reallocation
-        if (particle_halo.nforward_neg > particle_halo.nalloc_max_neg) {
-          particle_halo.nalloc_max_neg = particle_halo.nforward_neg + 100;
-          particle_halo.particle_send_neg = (int *) ops_realloc(particle_halo.particle_send_neg,
-                                                                sizeof(int) * particle_halo.nalloc_max_neg);
+        if (particle_halo->nforward_neg[iswap] > particle_halo->nalloc_max_neg) {
+          particle_halo->nalloc_max_neg = particle_halo->nforward_neg[iswap] + 100;
+          particle_halo->particle_send_neg = (int *) ops_realloc(particle_halo->particle_send_neg,
+                                                                sizeof(int) * particle_halo->nalloc_max_neg);
         }
 
         //Check if list needs to be allocated
-        if (particle_halo.nsend_neg[iswap] * dim * sizeof(double) > ops_buffer_send_1_size) {
+        if (particle_halo->nsend_neg * dim * sizeof(double) > ops_buffer_send_1_size) {
           ops_buffer_send_1 = (char *)OPS_realloc_fast(ops_buffer_send_1, ops_buffer_send_1_size,
-                                                       particle_halo.nsend_neg[iswap] *
+                                                       particle_halo->nsend_neg *
                                                                 dim * sizeof(double) + 100);
-          ops_buffer_send_1_size = particle_halo.nsend_neg[iswap] * dim * sizeof(double) + 100;
+          ops_buffer_send_1_size = particle_halo->nsend_neg * dim * sizeof(double) + 100;
 
         }
 
         //Add particle to sending list
-        particle_halo.particle_send_neg[particle_halo.nforward_neg-1] = i;
+        particle_halo->particle_send_neg[particle_halo->nforward_neg[iswap]-1] = i;
       }
     }
   }
 
-  int idir = particle_halo.dir;
+  int idir = particle_halo->dir;
   MPI_Status status;
-  MPI_Sendrecv(&particle_halo.nsend_neg[iswap], 1, MPI_INT, sb->id_m[idir], 100,
-               &particle_halo.nrecv_pos[iswap], 1, MPI_INT, sb->id_p[idir], 100,
+  MPI_Sendrecv(&particle_halo->nsend_neg, 1, MPI_INT, sb->id_m[idir], 100,
+               &particle_halo->nrecv_pos, 1, MPI_INT, sb->id_p[idir], 100,
                sb->comm, &status);
 
   int ifis{0}, ielem{0};
 
-  if (particle_halo.nsend_neg[iswap] > 0) {
+  if (particle_halo->nsend_neg > 0) {
     for (int i = 0; i < iswap; i++)
-      ifis += particle_halo.nsend_neg[i];
+      ifis += particle_halo->nsend_neg;
     ielem = ops_particle_pack_border_data(particle->particle_pos_dat, ops_buffer_send_1,
-                                          particle_halo.particle_send_neg,
-                                          ifis, particle_halo.nsend_neg[iswap]);
+                                          particle_halo->particle_send_neg,
+                                          ifis, particle_halo->nsend_neg);
 
   }
 
   //Re-allocate arrays for forward communications
-  if (particle_halo.nrecv_pos[iswap] * dim * sizeof(double) > ops_buffer_recv_1_size) {
+  if (particle_halo->nrecv_pos[iswap] * dim * sizeof(double) > ops_buffer_recv_1_size) {
     ops_buffer_recv_1 = (char *) OPS_realloc_fast(ops_buffer_recv_1, ops_buffer_recv_1_size,
-                                                  particle_halo.nrecv_pos[iswap]
+                                                  particle_halo->nrecv_pos[iswap]
                                                     * dim * sizeof(double) + 100);
-    ops_buffer_recv_1_size = particle_halo.nrecv_pos[iswap]
+    ops_buffer_recv_1_size = particle_halo->nrecv_pos[iswap]
                                                      * dim * sizeof(double) + 100;
   }
 
 
   //DO THE SAME FOR THE NEGATIVE DIRECTION
-  if (iswap < particle_halo.nswap_pos) {
+  if (iswap < particle_halo->nswap_pos) {
     for (int i = ifirst; i < ilast; i++) {
       if (xpos[dim * i + dir] >= reg_send_pos) {
-        particle_halo.nsend_pos[iswap]++;
-        particle_halo.nforward_pos++;
+        particle_halo->nsend_pos++;
+        particle_halo->nforward_pos[iswap]++;
 
         //Check if reallocation is neccessary
-        if (particle_halo.nforward_pos > particle_halo.nalloc_max_pos) {
-          particle_halo.nalloc_max_pos = particle_halo.nforward_pos + 100;
-          particle_halo.particle_send_pos = (int *) ops_realloc(particle_halo.particle_send_pos,
-                                                                sizeof(int) * particle_halo.nalloc_max_pos);
+        if (particle_halo->nforward_pos[iswap] > particle_halo->nalloc_max_pos) {
+          particle_halo->nalloc_max_pos = particle_halo->nforward_pos[iswap] + 100;
+          particle_halo->particle_send_pos = (int *) ops_realloc(particle_halo->particle_send_pos,
+                                                                sizeof(int) * particle_halo->nalloc_max_pos);
         }
 
-        if ( particle_halo.nsend_pos[iswap] * dim * sizeof(double) > ops_buffer_send_2_size) {
+        if ( particle_halo->nsend_pos * dim * sizeof(double) > ops_buffer_send_2_size) {
           ops_buffer_send_2 = (char *)OPS_realloc_fast(ops_buffer_send_2, ops_buffer_send_2_size,
-                                                       particle_halo.nsend_pos[iswap] *
+                                                       particle_halo->nsend_pos *
                                                        dim * sizeof(double) + 100);
 
-          ops_buffer_send_2_size = particle_halo.nsend_pos[iswap] * dim * sizeof(double) + 100;
+          ops_buffer_send_2_size = particle_halo->nsend_pos * dim * sizeof(double) + 100;
         }
 
-        particle_halo.particle_send_pos[particle_halo.nforward_pos - 1] = i;
+        particle_halo->particle_send_pos[particle_halo->nforward_pos[iswap] - 1] = i;
       }
 
 
@@ -937,29 +950,75 @@ void ops_particle_border_pack(ops_particle particle, int  iswap,
 
 
   //Send and receiving data for swap
-  MPI_Sendrecv(&particle_halo.nsend_pos[iswap], 1, MPI_INT, sb->id_p[idir], 200,
-               &particle_halo.nrecv_neg[iswap], 1, MPI_INT, sb->id_m[idir], 200,
+  MPI_Sendrecv(&particle_halo->nforward_pos[iswap], 1, MPI_INT, sb->id_p[idir], 200,
+               &particle_halo->nrecv_neg[iswap], 1, MPI_INT, sb->id_m[idir], 200,
                sb->comm, &status);
 
-  if (particle_halo.nsend_pos[iswap] > 0) {
+  if (particle_halo->nsend_pos > 0) {
     ifis = 0;
     for (int i = 0; i < iswap; i++)
-      ifis += particle_halo.nsend_pos[i];
+      ifis += particle_halo->nforward_pos[iswap];
     ielem = ops_particle_pack_border_data(particle->particle_pos_dat, ops_buffer_send_2,
-                                          particle_halo.particle_send_pos,
-                                          ifis, particle_halo.nsend_pos[iswap]);
+                                          particle_halo->particle_send_pos,
+                                          ifis, particle_halo->nforward_pos[iswap]);
   }
 
   //REallocate receiving arrays if necessary
-  if (particle_halo.nrecv_neg[iswap] * dim * sizeof(double) > ops_buffer_recv_2_size) {
+  if (particle_halo->nrecv_neg[iswap] * dim * sizeof(double) > ops_buffer_recv_2_size) {
     ops_buffer_recv_2 = (char *) OPS_realloc_fast(ops_buffer_recv_2, ops_buffer_recv_2_size,
-                                                  particle_halo.nrecv_pos[iswap]
+                                                  particle_halo->nrecv_neg[iswap]
                                                    * dim * sizeof(double) + 100);
-    ops_buffer_recv_2_size = particle_halo.nrecv_neg[iswap]
-                                                       * dim * sizeof(double) + 100;
+    ops_buffer_recv_2_size = particle_halo->nrecv_neg[iswap]
+                                * dim * sizeof(double) + 100;
   }
 
 }
+
+void ops_particle_forward_pack(ops_dat dat, ops_int_particle_halos halo,
+                               int *send_recv_offsets) {
+
+  //Packing data in negative direction
+  if (!dat->is_particle)
+    throw OPSException(OPS_RUNTIME_ERROR,"Forward communication only available for particle"
+                       "data structures");
+
+  int nsend = halo->nsend_neg * dat->elem_size;
+  if (send_recv_offsets[0] + nsend > ops_buffer_send_1_size) {
+    ops_buffer_send_1 = (char *)OPS_realloc_fast(ops_buffer_send_1, ops_buffer_send_1_size,
+                                        send_recv_offsets[0] + 4 * nsend);
+    ops_buffer_send_1_size = send_recv_offsets[0] + 4 * nsend; //TODO: Change to sth large
+  }
+
+
+  //Find first element
+  int ifirst = 0;
+  if (halo->nsend_neg > 0) {
+    ifirst = halo->nsend_neg;
+    send_recv_offsets[0] += ops_particle_pack_border_data(dat, ops_buffer_send_1 + send_recv_offsets[0],
+                                                          halo->particle_send_neg,
+                                                          ifirst, halo->nsend_neg);
+  }
+
+  //Packing data in positive driection
+  nsend = halo->nsend_pos* dat->elem_size;
+  if (send_recv_offsets[2] + nsend > ops_buffer_send_2_size) {
+    ops_buffer_send_2 = (char *) OPS_realloc_fast(ops_buffer_send_1, ops_buffer_send_1_size,
+                                                  send_recv_offsets[2] + 4 * nsend); //TODO: Chech what is doing
+    ops_buffer_send_2_size = send_recv_offsets[2] + 4 * nsend;
+  }
+
+  ifirst  = 0;
+  if (halo->nsend_pos > 0) {
+    for (int i = 0; i < 1; i++)
+      ifirst += halo->nsend_pos;
+
+    send_recv_offsets[2] += ops_particle_pack_border_data(dat, ops_buffer_send_2 + send_recv_offsets[2],
+                                                          halo->particle_send_pos,
+                                                          ifirst, halo->nsend_pos);
+  }
+
+}
+
 
 /*-----------------------------------------------------------------------------*/
 
@@ -967,14 +1026,14 @@ void ops_particle_exchange_unbuf(ops_particle particle,sub_block *sb,int idir,
                                   int *send_recv_bites) {
 
   int nlocal = particle->no_particles;
-  int nbits_particle = sb->sb_particle_list[particle->index].bites_in_exchange;
+  int nbits_particle = sb->sb_particle_list[particle->index]->bites_in_exchange;
   int nrecv{0};
 
   int nexpected = (send_recv_bites[1] + send_recv_bites[3]) / nbits_particle;
 
   //reallocate particle structures
   if (nexpected + nlocal > particle->Nmax)
-    ops_particle_realloc_data(particle, nexpected);
+    ops_particle_realloc_data(particle, nexpected + nlocal);
 
   //Update particles received from the positive direction
   if (sb->id_p[idir] != MPI_PROC_NULL && send_recv_bites[1] > 0) {
@@ -989,14 +1048,16 @@ void ops_particle_exchange_unbuf(ops_particle particle,sub_block *sb,int idir,
       ops_particle_unpack(particle->particle_envelope, nlocal, ops_buffer_recv_1,
                           nrecv, nbuff_loc);
 
-    for (auto &dat : particle->particle_data)
+    //for (auto &dat : particle->particle_data) {
+    for (int index = 0; index < particle->particle_dat_index; index++) {
+      ops_dat dat = particle->particle_dat[index];
       ops_particle_unpack(dat, nlocal, ops_buffer_recv_1, nrecv, nbuff_loc);
-
+    }
     nlocal += nrecv;
   }
 
   //Update particle structures in the negative direction
-  if (sb->id_m[idir] != MPI_NULL_PROC && send_recv_bites[3] > 0) {
+  if (sb->id_m[idir] != MPI_PROC_NULL && send_recv_bites[3] > 0) {
     nrecv = send_recv_bites[3] / nbits_particle;
 
     int nbuff_loc{0};
@@ -1009,9 +1070,12 @@ void ops_particle_exchange_unbuf(ops_particle particle,sub_block *sb,int idir,
                           ops_buffer_recv_2 + nbuff_loc,
                           nrecv, nbuff_loc);
 
-    for (auto &dat : particle->particle_data)
+    for (int index = 0; index < particle->particle_dat_index;index++) {
+  //  for (auto &dat : particle->particle_data) {
+      ops_dat dat = particle->particle_dat[index];
       ops_particle_unpack(dat, nlocal, ops_buffer_recv_2 + nbuff_loc,
                           nrecv, nbuff_loc);
+    }
 
     nlocal += nrecv;
 
@@ -1027,32 +1091,54 @@ void ops_particle_border_unpack(ops_particle particle, int iswap,
 {
   int nfirst = particle->no_particles + particle->no_virtual;
 
-  int nreceived = particle_halos.nrecv_pos[iswap] + particle_halos.nrecv_neg[iswap];
+  int nreceived = particle_halos->nrecv_pos[iswap] + particle_halos->nrecv_neg[iswap];
 
   /* Reallocate all particle structures for receiving border particle data */
   if (nreceived + nfirst > particle->Nmax)
-    ops_particle_realloc_data(particle, nreceived);
+    ops_particle_realloc_data(particle, nreceived + nfirst);
 
   ops_dat coords = particle->particle_pos_dat;
 
 
   // Perform exchange in the positive direction  as data received
-  if (particle_halos.nrecv_pos[iswap] > 0) {
-    particle_halos.irecv_pos[iswap] = nfirst;
+  if (particle_halos->nrecv_pos[iswap] > 0) {
+    particle_halos->irecv_pos[iswap] = nfirst;
     int bites = ops_particle_unpack_border(coords, ops_buffer_recv_1,
-                                           nfirst, particle_halos.nrecv_pos[iswap]);
-    nfirst += particle_halos.nrecv_pos[iswap];
+                                           nfirst, particle_halos->nrecv_pos[iswap]);
+    nfirst += particle_halos->nrecv_pos[iswap];
 
   }
 
   // Perform the unpack in the negative direction
-  if  (particle_halos.nrecv_neg[iswap] > 0) {
-    particle_halos.irecv_neg[iswap] = nfirst;
+  if  (particle_halos->nrecv_neg[iswap] > 0) {
+    particle_halos->irecv_neg[iswap] = nfirst;
     int bites = ops_particle_unpack_border(coords, ops_buffer_recv_2,
-                                           nfirst, particle_halos.nrecv_neg[iswap]);
+                                           nfirst, particle_halos->nrecv_neg[iswap]);
   }
 
   particle->no_virtual += nreceived;
+}
+
+void ops_particle_forward_unpack(ops_dat dat, int iswap,
+                                 ops_int_particle_halos  particle_halos,
+                                 int *nrecv_bit) {
+
+  int nrecv_dat = particle_halos->nrecv_pos[iswap] * dat->elem_size;
+  int nfirst = particle_halos->irecv_pos[iswap];
+
+  ops_particle_unpack_border(dat, ops_buffer_recv_1 + nrecv_bit[0],
+                             nfirst, particle_halos->nrecv_pos[iswap]);
+
+  nrecv_bit[0] += nrecv_dat;
+
+  //unpack in negative direciton
+  nrecv_dat = particle_halos->nrecv_neg[iswap] * dat->elem_size;
+  nfirst = particle_halos->irecv_neg[iswap];
+
+  ops_particle_unpack_border(dat, ops_buffer_recv_2 + nrecv_bit[1],
+                             nfirst, particle_halos->nrecv_neg[iswap]);
+
+  nrecv_bit[1] += nrecv_dat;
 }
 
 
@@ -1217,6 +1303,203 @@ void ops_halo_exchanges(ops_arg* args, int nargs, int *range_in) {
   }
 }
 
+
+void ops_particle_forward_dat(int idir, ops_dat dat, ops_particle_mapping map,
+                              ops_particle particle,
+                              ops_int_particle_halos halos, sub_block_list sb) {
+  int send_recv_offsets[4];
+
+  for (int i = 0; i < 4; i++)
+    send_recv_offsets[i] = 0;
+
+
+}
+
+void ops_halo_particle_forward_exchange(ops_arg *args, int nargs, int *range_in, ops_particle *particle) {
+
+  int send_recv_offsets[4];
+
+  for (int idim = 0; idim < OPS_MAX_DIM; idim++) {
+
+    for (int i = 0; i < 4; i++)
+      send_recv_offsets[4] = 0;
+
+    //Loop over all args to get the maximum swap size
+    int nswap = 0;
+    int icont{0};
+    for (int i = 0; i < nargs; i++) {
+      if (args[i].argtype != OPS_ARG_DAT_PARTICLE) continue;
+
+      if (args[i].acc == OPS_WRITE || args[i].acc == OPS_MAX || args[i].acc == OPS_MIN)
+        continue;
+
+      //Get stencil and access data for the given dim
+      ops_block block = args[i].dat->block;
+      int part_index = args[i].part_index;
+      if (part_index == -1) return;
+      ops_particle particle = OPS_instance::getOPSInstance()->OPS_block_list[block->index].particle[part_index];
+
+      int map_index = args[i].map_index;
+      if (args[i].stencil != nullptr) {
+        if (args[i].stencil->dims >= idim) continue;
+      }
+      else {
+        if (map_index == -1) continue;
+        if (particle->map_list[map_index]->mapping_stencil->dims >= idim) continue;
+      }
+
+      ops_stencil stencil = (args[i].stencil != nullptr) ? args[i].stencil :
+          particle->map_list[map_index]->mapping_stencil;
+
+      if (block->dims <= idim) continue;
+
+      //Get sub-particle and obtained max-swap in each direction
+      sub_block_list sb = OPS_sub_block_list[args[i].dat->block->index];
+      sub_particle sp= sb->sb_particle_list[part_index];
+
+      nswap = MAX(sp->particle_halos[idim]->nswaps, nswap);
+    } //first loop to fins
+
+    int flag{0};
+    sub_block_list sb;
+    for (int iswap = 0; iswap < nswap; iswap++) {
+
+      //Start looping over all args to generate buffer //
+      for (int i = 0; i < nargs; i++) {
+
+        //Repeat the structure for verify that loop will happen
+        if (args[i].argtype != OPS_ARG_DAT_PARTICLE) continue;
+
+        if (args[i].acc == OPS_WRITE || args[i].acc == OPS_MAX || args[i].acc == OPS_MIN)
+          continue;
+
+        //Get stencil and access data for the given dim
+        ops_block block = args[i].dat->block;
+        int part_index = args[i].part_index;
+        if (part_index == -1) return;
+        ops_particle particle = OPS_instance::getOPSInstance()->OPS_block_list[block->index].particle[part_index];
+
+        int map_index = args[i].map_index;
+        if (args[i].stencil != nullptr) {
+          if (args[i].stencil->dims >= idim) continue;
+        }
+        else {
+          if (map_index == -1) continue;
+          if (particle->map_list[map_index]->mapping_stencil->dims >= idim) continue;
+        }
+
+        if (block->dims <= idim) continue;
+
+        sb = OPS_sub_block_list[args[i].dat->block->index];
+        sub_particle sp = sb->sb_particle_list[part_index];
+        ops_stencil stencil= (args[i].stencil != nullptr) ? args[i].stencil :
+            particle->map_list[map_index]->mapping_stencil;
+
+        int ndim = sb->ndim;
+
+        if (iswap == 0) {
+          int range[2 * OPS_MAX_DIM];
+          for (int d2 = 0; d2 < ndim; d2++) {
+            if (stencil->type == 1) {
+              range[2*d2+0] = range_in[2*d2+0]/stencil->mgrid_stride[d2];
+              range[2*d2+1] = (range_in[2*d2+1]-1)/stencil->mgrid_stride[d2]+1;
+            }
+            else if (stencil->type == 2) {
+              range[2*d2+0] = range_in[2*d2+0] * stencil->mgrid_stride[d2];
+              range[2*d2+1] = range_in[2*d2+1] * stencil->mgrid_stride[d2];
+            }
+            else {
+              range[2*d2+0] = range_in[2*d2+0]; //Generate range in each direction
+              range[2*d2+1] = range_in[2*d2+1];
+            }
+          }
+
+          //Check for intersection with full range assumeing The mapping dat TODO
+            //TODO: Set intersection in the specific region based on extended zones (Work as safety)
+           // Get a flag and shift out-if no intersection break
+        }
+
+        if (flag == 0) break;
+
+        ops_particle_forward_pack(args[i].dat, sp->particle_halos[idim],
+                                  send_recv_offsets);
+
+
+      }
+
+      //Send and receive data for each swap
+      MPI_Status status;
+      MPI_Sendrecv(&send_recv_offsets[0], 1, MPI_INT, sb->id_m[idim], 665,
+                   &send_recv_offsets[1], 1, MPI_INT, sb->id_p[idim], 665,
+                   sb->comm, &status);
+
+      MPI_Sendrecv(&send_recv_offsets[2], 1, MPI_INT, sb->id_p[idim], 666,
+                   &send_recv_offsets[3], 1, MPI_INT, sb->id_m[idim], 666,
+                   sb->comm, &status);
+
+      //Reallocate if necessary old data
+      if (send_recv_offsets[1] > ops_buffer_recv_1_size) {
+        ops_buffer_recv_1 = (char *) OPS_realloc_fast(ops_buffer_recv_1, ops_buffer_recv_1_size,
+                                                      send_recv_offsets[1] + 1000);
+        ops_buffer_recv_1_size += send_recv_offsets[1] + 1000;
+      }
+
+      if (send_recv_offsets[3] > ops_buffer_recv_2_size) {
+        ops_buffer_recv_2 = (char *) OPS_realloc_fast(ops_buffer_recv_2, ops_buffer_recv_2_size,
+                                                      send_recv_offsets[3] + 1000);
+        ops_buffer_recv_2_size += send_recv_offsets[3] + 1000;
+      }
+
+      //SEND DATA TO PROCESSES
+      MPI_Request request[4];
+      MPI_Isend(ops_buffer_send_1, send_recv_offsets[0], MPI_BYTE,
+                send_recv_offsets[0] > 0 ? sb->id_m[idim] : MPI_PROC_NULL,
+                idim, sb->comm, &request[0]);
+      MPI_Isend(ops_buffer_send_2, send_recv_offsets[2], MPI_BYTE,
+                send_recv_offsets[2] > 0 ? sb->id_p[idim] : MPI_PROC_NULL,
+                idim + OPS_MAX_DIM, sb->comm, &request[1]);
+
+      MPI_Irecv(ops_buffer_recv_1, send_recv_offsets[1], MPI_BYTE,
+                send_recv_offsets[1] > 0 ? sb->id_p[idim] : MPI_PROC_NULL,
+                idim, sb->comm, &request[2]);
+
+      MPI_Irecv(ops_buffer_recv_2, send_recv_offsets[3], MPI_BYTE,
+                send_recv_offsets[3] > 0 ? sb->id_m[idim] : MPI_PROC_NULL,
+                idim, sb->comm, &request[3]);
+
+      //TO UNPACK-Follow similar path.
+
+      int nrecv_dat[2];
+      for (int i = 0; i < 2; i++) nrecv_dat[i] = 0;
+      for (int i = 0; i < nargs; i++) {
+        if (args[i].argtype != OPS_ARG_DAT_PARTICLE) continue;
+
+        if (args[i].acc == OPS_WRITE || args[i].acc == OPS_MAX || args[i].acc == OPS_MIN)
+          continue;
+
+        ops_block block = args[i].dat->block;
+        int part_index = args[i].part_index;
+        ops_particle particle = OPS_instance::getOPSInstance()->OPS_block_list[block->index].particle[part_index];
+
+        sb = OPS_sub_block_list[args[i].dat->block->index];
+        sub_particle sp = sb->sb_particle_list[part_index];
+
+        ops_particle_forward_unpack(args[i].dat, iswap,
+                                    sp->particle_halos[idim], nrecv_dat);
+
+        MPI_Status status1[4];
+        MPI_Waitall(2, &request[0], &status1[0]);
+
+      }
+
+      if (flag == 0) break; //No intersection no-need to send and recv data in this direction
+
+    }
+
+
+  }
+}
+
 void ops_halo_exchanges_datlist(ops_dat *dats, int ndats, int *depths) {
   // double c1,c2,t1,t2;
   int send_recv_offsets[4]; //{send_1, recv_1, send_2, recv_2}, for the two
@@ -1292,63 +1575,6 @@ void ops_halo_exchanges_datlist(ops_dat *dats, int ndats, int *depths) {
   }
 }
 
-void ops_particle_exchange(ops_particle particle) {
-
-  //Get block
-  if (particle == nullptr)
-    return;
-
-  ops_block block = particle->block;
-  sub_block *sb = OPS_sub_block_list[block->index];
-
-  int send_recv_bites[4]; //0: send negative  1: rcv neg 2: send pos 3: recv pos
-
-  if (!sb->owned) return;
-
-  //Get Bounding Box
-  BoundingBox *box = particle->box_block;
-
-  if (box == nullptr)
-    throw OPSException(OPS_RUNTIME_ERROR,"Emtpy bounding box linked to particle structure");
-
-  double xloc = (double *)particle->particle_pos_dat->data;
-  int dim =block->dims;
-  for (int idir = 0; idir < dim; idir++) {
-
-    //Put in buffer for send 1 and 2
-    ops_particle_exchange_buf(particle, sb, idir, send_recv_bites);
-
-    //communication for send and receive
-    if (sb->comm == MPI_COMM_NULL)
-      continue;
-
-    MPI_Request request[4];
-    MPI_Isend(ops_buffer_send_1, send_recv_bites[0], MPI_BYTE,
-              send_recv_bites[0] > 0  ?  sb->id_m[idir] : MPI_PROC_NULL,
-              dim, sb->comm, &request[0]);
-    MPI_Isend(ops_buffer_send_2, send_recv_bites[2], MPI_BYTE,
-              send_recv_bites[2] > 0 ? sb->id_p[idir] : MPI_PROC_NULL,
-              OPS_MAX_DIM + dim, sb->comm, &request[1]);
-
-    MPI_Irecv(ops_buffer_recv_1, send_recv_bites[1], MPI_BYTE,
-              send_recv_bites[1] > 0 ? sb->id_p[idir] : MPI_PROC_NULL, dim,
-              sb->comm, &request[2]);
-    MPI_Irecv(ops_buffer_recv_2, send_recv_bites[3], MPI_BYTE,
-              send_recv_bites[3] > 0 ? sb->id_m[idir] : MPI_PROC_NULL,
-              OPS_MAX_DIM + dim, sb->comm, &request[3]);
-
-    MPI_Status status[4];
-    MPI_Waitall(2, &request[2], &status[2]);
-
-    //unpack to the right location
-    ops_particle_exchange_unbuf(particle, sb, idir, send_recv_bites);
-
-    MPI_Waitall(2, &request[0], &status[0]);
-    particle->no_virtual = 0;
-    //Update requests
-  } //direction
-}
-
 void ops_particle_build_exchange_border(ops_particle particle) {
 
   if (particle == nullptr)
@@ -1360,7 +1586,7 @@ void ops_particle_build_exchange_border(ops_particle particle) {
   if (!sb->owned) return;
 
   /* Get subparticle */
-  sub_particle *sp = sb->sb_particle_list[particle->index];
+  sub_particle sp = sb->sb_particle_list[particle->index];
   ops_int_particle_halos *part_int_halos = sp->particle_halos;
 
   int dim = block->dims;
@@ -1369,22 +1595,22 @@ void ops_particle_build_exchange_border(ops_particle particle) {
   int nvirtual = 0;
   for (int idir = 0; idir < dim; idir++) {
     //Loop over all possible paths
-    sp->particle_halos[idir].nforward_neg = 0;
-    sp->particle_halos[idir].nforward_pos = 0;
+    sp->particle_halos[idir]->nforward_neg = 0;
+    sp->particle_halos[idir]->nforward_pos = 0;
     int ifirst = 0;
     int ilast = particle->no_particles + nvirtual;
-    for (int iswap = 0; iswap < sp->particle_halos[idir].nswaps; iswap++) {
+    for (int iswap = 0; iswap < sp->particle_halos[idir]->nswaps; iswap++) {
 
       //Perform check for box in both direction
       ops_particle_border_pack(particle, iswap, sp->particle_halos[idir], ifirst, ilast); //TODO
 
 
       //perform exchange of data //
-      int size_send1 = sizeof(double) * dim * sp->particle_halos[idir].nsend_neg[iswap];
-      int size_send2 = sizeof(double) * dim * sp->particle_halos[idir].nsend_pos[iswap];
+      int size_send1 = sizeof(double) * dim * sp->particle_halos[idir]->nsend_neg;
+      int size_send2 = sizeof(double) * dim * sp->particle_halos[idir]->nsend_pos;
 
-      int size_recv1 = sizeof(double) * dim * sp->particle_halos[idir].nrecv_pos[iswap];
-      int size_recv2 = sizeof(double) * dim * sp->particle_halos[idir].nrecv_neg[iswap];
+      int size_recv1 = sizeof(double) * dim * sp->particle_halos[idir]->nrecv_pos[0];
+      int size_recv2 = sizeof(double) * dim * sp->particle_halos[idir]->nrecv_neg[0];
 
       //TODO: Exchange
       //communication for send and receive
@@ -1410,7 +1636,7 @@ void ops_particle_build_exchange_border(ops_particle particle) {
       MPI_Waitall(2, &request[0], &status[0]);
 
       ifirst = ilast;
-      ilast += sp->particle_halos[idir].nrecv_neg + sp->particle_halos[idir].nrecv_pos;
+      ilast += sp->particle_halos[idir]->nrecv_neg[0] + sp->particle_halos[idir]->nrecv_pos[0];
     }
 
   }

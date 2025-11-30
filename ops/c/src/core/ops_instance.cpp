@@ -128,6 +128,7 @@ void OPS_instance::init_globals() {
 
   OPS_particle_halo_group_list = NULL;
   OPS_particle_halo_group_max = 0; OPS_particle_halo_group_index = 0;
+
 }
 
 OPS_instance::OPS_instance(const int argc, const char * const argv[], const int diags_level, std::ostream &s) {
