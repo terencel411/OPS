@@ -73,45 +73,58 @@ int main(int argc, char *argv[]) {
   /* Insert block */
   ops_block block3D = ops_decl_block(3, "block3D");
 
+  //Generate grid structures */
+  int size[3] = {100, 100, 100};
+  int d_m[3] ={ 0, 0, 0};
+  int d_p[3] ={0, 0, 0};
+  int d_mf[3] = {-1, -1, -1};
+  int d_pf[3] = { 1, 1, 1};
+  double *temp = NULL;
+
+
+  ops_dat field = ops_decl_dat(block3D, 3, size, base, d_mf, d_pf, temp, "double", "test_field");
+  ops_dat coords_data  = ops_decl_dat(block3D, 3, size, base, d_m, d_p, temp, "double", "coords_grid");
+
+
+
+
   /* Generating box bound */
   double Lx = 10.0;
   ops_point xlow{0.0, 0.0, 0.0};
   ops_point xmax{Lx, Lx, Lx};
+  double dx_box[3] = {0, 0.0, 0};
 
-  BoundingBox *boundBlock = ops_create_bounding_box(3);
+  BoundingBox *boundBlock = ops_create_bounding_box(block3D, coords_data, 3, dx_box); //TODO: Assign to a structure that is stored in memory.
 
-  /* Insert particle structure in the block */
-  ops_particle particle = ops_decl_particle(block3D, boundBlock);
-  double *temp = NULL;
+  //Define particle //
+  ops_particle particle = ops_decl_particle(block3D, "particle_tests", boundBlock);
+
+
+  /* Setup up particle ops_dat structures */
+
+  /* Particle position */
   ops_dat particle_crd = ops_decl_particle_dat(particle, 3, base, temp, "double", "crd_x");
+
+  /* Particle envelope */
+   ops_dat particle_act_shape = ops_decl_particle_envelope(particle, base, temp, "double",
+                                                           "envelope");
 
   ops_dat particle_act_crd = ops_decl_particle_pos_dat(particle, 3, base,
                                                        temp, "double","coords");
 
-  ops_dat particle_act_shape = ops_decl_particle_envelope(particle, base, temp, "double",
-                                                          "envelope");
-
-  printf("Size of double %d\n", sizeof(double));
-
-  int size[3] = {100, 100, 100};
-  int d_m[3] ={ 0, 0, 0};
-  int d_p[3] ={0, 0, 0};
-
-  int d_mf[3] = {-1, -1, -1};
-  int d_pf[3] = { 1, 1, 1};
-
-  ops_dat field = ops_decl_dat(block3D, 3, size, base, d_mf, d_pf, temp, "double", "test_field");
-
-
-  ops_dat coords_data  = ops_decl_dat(block3D, 3, size, base, d_m, d_p, temp, "double", "coords_grid");
 
   /* declare stencil */
   int loca_dat[3]={0, 0, 0};
   ops_stencil local = ops_decl_stencil(3, 1, loca_dat, "local_Stencil");
+                    //  1        2         3         4         5         6         7
+  int diag_stenc[] = {0,0,0, -1, 0, 0,  1, 0, 0,  0, -1, 0,  0, 1, 0,  0, 0, -1,   0, 0, 1};
+  ops_stencil  diag = ops_decl_stencil(3, 7, diag_stenc, "diag_stenc");
 
   ops_particle_mapping map = ops_decl_mapping(particle, coords_data, particle_act_shape,
+                                              diag,
                                               OPS_NO_VIRTUAL, OPS_CONST_SHAPE,
                                               OPS_UNIFORM_GRID, 1, 0.001); //Overload mapping function with \pm grid_points
+
   //Add also a dx
 
   /* Declare halos */
@@ -119,6 +132,8 @@ int main(int argc, char *argv[]) {
   double translate[3] = {Lx, 0., 0.};
 
   //TODO: INFORM ONLY FOR TYPE
+
+  /*
   ops_particle_halo_data xcrd_halo =  ops_particle_decl_data_halo(particle_act_crd, particle_act_crd,
                                                                   dir_from,
                                                                   dir_from, translate,
@@ -128,7 +143,7 @@ int main(int argc, char *argv[]) {
                                                                  dir_from, dir_from, translate,
                                                                  OPS_PART_ORIENT_OFF);
 
-  /* Define particle halo */
+  // Define particle halo
   ops_particle_halo_data halo_data_grp[2] = {xcrd_halo,  env_halo};
   double crit_length[3] = {0.0, 0.0, 0.0}; //Example-need to dive
 
@@ -148,7 +163,7 @@ int main(int argc, char *argv[]) {
 
 
   translate[0] = -Lx;
-  /* Define for the opposite direction halos */
+  //Define for the opposite direction halos
   ops_particle_halo halo_part_opp = ops_particle_decl_halo(particle, particle,
                                                            halo_data_grp, 2,
                                                            crit_length, dir_from,
@@ -172,28 +187,33 @@ int main(int argc, char *argv[]) {
                                                                            OPS_HALO_GRP_BORDER,
                                                                            OPS_PART_LOOP_LOCAL,
                                                                            nullptr);
-
-  ops_partition("particle_partition");
+  */
 
   /* Init domain */
-  double dx[1];
-  dx[0]= (xmax.x - xlow.x) / static_cast<double>(size[0]-1);
+  double dx_l[1];
+  dx_l[0]= (xmax.x - xlow.x) / static_cast<double>(size[0]-1);
 
-  ops_printf("dx = %f", dx[0]);
+
+
+  ops_printf("dx = %f", dx_l[0]);
   int range[6]{0, size[0], 0, size[1], 0, size[2]};
   ops_par_loop(KerGenerateKernel, "KerGenerateKernel", block3D, 3, range,
                ops_arg_dat(coords_data, 3, local, "double", OPS_WRITE),
                ops_arg_dat(field, 3, local, "double", OPS_WRITE),
-               ops_arg_gbl(dx, 1, "double", OPS_READ),
+               ops_arg_gbl(dx_l, 1, "double", OPS_READ),
                ops_arg_idx());
 
   /* Verify partition */
   //TODO: Insert Bounding Box
-  ops_set_bounding_box_from_dat(boundBlock, coords_data, 0.0, 3);
+  double dx[3];
+  for (int i = 0; i < 3; i++) dx[i] = 0;
 
+
+  //ops_set_bounding_box_from_dat(boundBlock, coords_data, dx, 3);
+  ops_particle_setup_partition();
   /* Setting up halos */
-  ops_particle_set_halo_group(halo_group);
-  ops_particle_set_halo_group(halo_group_border);
+//  ops_particle_set_halo_group(halo_group);
+//  ops_particle_set_halo_group(halo_group_border);
 
   double xCrds[3 * 20];
   double rshape[20];
@@ -211,13 +231,18 @@ int main(int argc, char *argv[]) {
     trial[3 * i + 1] = xf(re) * xf(re);
     trial[3 * i + 2] = 0.0;//xf(re) - 1;
 
+    printf("Candidate particle are [%f %f %f] with trial [%f %f %f]\n",
+           xCrds[3 * i], xCrds[3 * i + 1], xCrds[3 * i + 2],
+           trial[3 * i], trial[3 * i + 1], trial[3 * i + 2]);
+
   }
 
+  /* Insert particles in the simulation */
   ops_particle_insert(KerInsertData, "KerInsertData", KerDecide, particle, 0, 3, 20, xCrds, rshape,
                       ops_arg_gbl_particle(xCrds, 3, "double", OPS_READ),
-                      ops_arg_dat_particle(particle_act_shape, 1, "double", OPS_WRITE),
+                      ops_arg_dat_particle(particle_act_shape, 1, "double", particle, map, OPS_WRITE, local),
                       ops_arg_gbl_particle(rshape, 1, "double", OPS_READ),
-                      ops_arg_dat_particle(particle_crd, 3, "double", OPS_WRITE),
+                      ops_arg_dat_particle(particle_crd, 3, "double", particle, map, OPS_WRITE, local),
                       ops_arg_gbl_particle(trial, 3, "double", OPS_READ));
 
   //TODO: Vrf mapping without removing and inserting
@@ -225,33 +250,50 @@ int main(int argc, char *argv[]) {
   double *xcoords = (double *) particle_act_crd->data;
   double *rad =(double *)particle_act_shape->data;
   for (int i = 0; i < 20; i++) {
-//    printf("Particle %d [%f %f %f] Rp = %f\n", i, xcoords[3 * i], xcoords[3 * i + 1],
-//           xcoords[3 * i + 2], rad[i]);
+   printf("Particle %d [%f %f %f] Rp = %f\n", i, xcoords[3 * i], xcoords[3 * i + 1],
+          xcoords[3 * i + 2], rad[i]);
   }
   ops_particle_update_map_lists(particle);
 
-
   ops_particle_build_maps(particle);
+
+
   //TODO-1: Add also the opposite where particle is mapped in the cell
 
   double dt{0.001};
-  double rangeLoop[6] = {0, 10., 0. ,10., 0., 10.};
+ // double rangeLoop[6] = {4, 6., 4. ,6., 1., 5.}; //Region inside block Expecting 1 (Overlap)
+ //double rangeLoop[6] = {10, 30, 10, 30, 10, 30}; //All outside Expecting 2
+ //double rangeLoop[6] = {0, 10, 0, 10, 0, 10}; //Within Expecting all (Projection)
+   double rangeLoop[6] = {-5, 7, -5,  7, -5, 7}; //Partial overlap in (Particle projection)
+//   double rangeLoop[6] = {-5, 15, -5, 15, -5, 15}; //All in Expecting 0
+ //double rangeLoop[6] = {11, 30, 10, 30, 10, 30}; //All outside Expecting 2
+
+
+  double *part_dta  =(double *)particle_crd->data;
+
+  for (int i = 0; i < particle->no_particles; i++)
+    printf("Prior: %d [%f %f %f]\n", i, part_dta[3 * i], part_dta[3 * i + 1], part_dta[3 * i + 2]);
 
   ops_particle_par_loop(KerComputeVel, "KerComputeVel", particle,
                         map, 3, rangeLoop,
                         ops_arg_gbl(&dt, 1, "double", OPS_READ),
                         ops_arg_dat(field, 3, local, "double", OPS_READ),
-                        ops_arg_dat_particle(particle_crd, 3, "double", OPS_WRITE));
+                        ops_arg_dat(coords_data, 3, local, "double", OPS_READ),
+                        ops_arg_dat_particle(particle_act_crd, 3, "double", particle, map, OPS_WRITE,local),
+                        ops_arg_dat_particle(particle_crd, 3, "double", particle, map, OPS_WRITE, local));
 
   int iter_range[] = {0, size[0], 0, size[1], 0, size[2]};
 
-  double *part_dta  =(double *)particle_crd->data;
+  part_dta  =(double *)particle_crd->data;
   for (int i = 0; i < particle->no_particles; i++)
     printf("%d [%f %f %f]\n", i, part_dta[3 * i], part_dta[3 * i + 1], part_dta[3 * i + 2]);
 
+  exit(-1);
+
   ops_par_loop(KernelGrid, "KernelGrid", block3D, map, local, 3, iter_range,
                ops_arg_dat(field, 3, local, "double", OPS_WRITE),
-               ops_arg_dat_particle(particle_crd, 3, "double", OPS_WRITE));
+               ops_arg_dat_particle(particle_crd, 3, "double", particle, map, OPS_WRITE,
+                                    local));
 
   //TODO-2: Add the quadrature scheme
 

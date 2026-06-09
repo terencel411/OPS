@@ -34,13 +34,16 @@ void KerInsertData(const double *dats, ACCP<double>& rad,const double *rad_ins,
   adds(2, 0) = inse[2];
 }
 
-void KerComputeVel(const double *dt, ACC<double>& field, ACCP<double>& u) {
+void KerComputeVel(const double *dt, ACC<double>& field, ACC<double>& coords, ACCP<double>& xpos,
+                   ACCP<double>& u) {
   u(0, 0) += (*dt) * 0.02;
   u(1, 0) += (*dt) * 0.02;
   u(2, 0) += (*dt) * 0.01;
 
-  printf("Field = [%f %f %f]\n", field(0, 0, 0, 0),
-         field(1, 0, 0, 0), field(2, 0, 0, 0));
+//  printf("Grid points are [%f %f %f] and particle crds are [%f %f %f]\n",coords(0, 0, 0, 0), coords(1, 0, 0, 0),
+//         coords(2, 0, 0, 0), xpos(0, 0), xpos(1, 0), xpos(2, 0));
+//  printf("Grid points of adjacent cells [%f %f %f]\n", coords(0, 0, 1, 0), coords(1, 0, 1, 0), coords(2, 0, 1, 0));
+
 }
 
 void KernelGrid(ACC<double>& field_grid, const ACCP<double>& field_prt) {
