@@ -330,6 +330,16 @@ bool ops_checkpointing_filename(const char *file_name, std::string &filename_out
   return (OPS_instance::getOPSInstance()->OPS_enable_checkpointing > 1);
 }
 
+bool ops_checkpoint_filename_txt(const char *filename, std::string &filename_out) {
+  filename_out = filename;
+  filename_out += "_";
+  filename_out += std::to_string(ops_my_global_rank);
+  filename_out += ".txt";
+
+  return (OPS_instance::getOPSInstance()->OPS_enable_checkpointing > 1);
+
+}
+
 void ops_checkpointing_calc_range(ops_dat dat, const int *range,
                                   int *discarded_range) {
   for (int d = 0; d < OPS_MAX_DIM; d++) {

@@ -31,60 +31,61 @@
 */
 
 /** @file
-  * @brief OPS mpi support functions for particle management
-  * @author
-  * @details Setup the fine details of domain decomposition for particle packages within
-  *          OPS
+  * @brief OPS particles function that are common for MPI and sequential backened
+  * @author Valantis Tsinginos
+  * @details Implements functions that are common for MPI & sequential backend
+  *          including function for mapping of particles into uniform and non-uniform
+  *          structured grids
   */
 
-#include <math.h>
-#include <mpi.h>
-#include <ops_mpi_core.h>
+#include "ops_lib_core.h"
 #include <ops_exceptions.h>
+#include <string>
+#include <assert.h>
+#include <array>
+#include <limits>
+#include <vector>
 
+void _ops_build_uniform_dats(const int init, const int dim, const ops_dat grid,
+                             const ops_dat xp, const size_t Np, const double *dx,
+                             const ops_point xmin, const ops_point xmax,
+                             ops_dat binhead, ops_dat bin) {
 
-/*-------------------------------------------------------------------------------------*
- *  Setting domain partition for particle data involving
- *  1. Particle domain partition
- *  2. Setting details of forward communication for particle exchange data
- */
-void ops_particle_setup_partition() {
-
-  OPS_instance *instance = OPS_instance::getOPSInstance();
-
-  if (!ops_partitioned())
-    throw OPSException(OPS_RUNTIME_ERROR, " Setting up particle partition must "
-                                          "happen after domain partition.");
-
-  // loop over all blocks
-  for (int index = 0; index < instance->OPS_block_index; index++) {
-    ops_block block= instance->OPS_block_list[index];
-
-    sub_block *sb = OPS_sub_block_list[block->index];
-
-    if (!sb->owned) return;
-
-    /* Get access to particle data */
-    sub_particle *spar = sb->sb_particle_list;
-    int nparticles = instance->OPS_block_list[index].no_particle_structures;
-
-    for (int ipartlist = 0; ipartlist < nparticles; ipartlist++) {
-      ops_particle particle = spar[ipartlist].particle;
-      sub_particle sub_part = spar[ipartlist];
-
-      //Build bounding box for particle //
-      ops_build_bounding_box(particle);
-
-      //Set communication structures in terms of boxes
-
-      //TODO:1. Find how far we go for data exchange
-      //     2. Set number of loops in each  for rcv data
-      ops_particle_setup_forward_comm(sub_particle);
-
-
-
-    }
+  int size[dim];
+  size_t no_elems{1};
+  for (int i = 0; i < dim; i++) {
+    size[i] = grid->size[i];
+    no_elems *= size[i];
   }
 
+  /* Initialize elements */
+  int* binhead_data = (int *)binhead->data;
+  for (size_t i = 0; i < no_elems; i++)
+    binhead_data[i] = -1;
+
+  int* bin_data = (int *)bin->data;
+  if (init) {
+    for (size_t i = 0; i < Np; i++)
+      bin_data[i] = -1;
+  }
+
+  /* Map particles to grid */
+  double *xp_data = (double *)xp->data;
+
+//#ifdef _OPENMP
+//# pragma omp parallel for shared(xp_data)
+//#endif
+  for (long int i = Np - 1; i >= 0; i--) {
+    int ibin = _ops_coord_to_bin(dim, xmin, xmax, dx, size, xp_data + xp->dim * i);
+    //TODO: Add separation between local and not local elements
+    if (ibin < 0) {
+      printf("i = %d xp = [%f %f] ", i, xp_data[2 * i], xp_data[2 * i +1]);
+      ops_printf("WARNING: Non-positiove value");
+      continue;
+    }
+    bin_data[i] = binhead_data[ibin];
+    binhead_data[ibin] = i;
+  }
 }
+
 

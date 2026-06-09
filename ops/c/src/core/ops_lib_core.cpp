@@ -97,6 +97,40 @@ std::vector<int> splitStringInt(std::string probsString, char sep) {
     return params;
 }
 
+void _ops_append_char(char *&buff, size_t &len, size_t &cap, const char *fmt, ...) {
+
+  va_list args;
+
+  while (1) {
+    size_t remaining = (cap > len) ? cap - len : 0;
+
+    va_start(args, fmt);
+
+    int written = vsnprintf(buff + len, remaining, fmt, args);
+
+    va_end(args);
+
+    if (written < 0)
+      throw OPSException(OPS_RUNTIME_ERROR,"ERROR: vsnprintf");
+
+    if ((size_t) written < remaining) {
+      len += written;
+      return;
+    }
+
+    size_t new_cap = (cap > 0) ? (cap * 2) : 64;
+    if (new_cap < len + written + 1)
+      new_cap = 2 * (len + written);
+
+    if (buff == nullptr)
+      buff = (char *) ops_malloc(new_cap);
+    else
+      buff = (char *) ops_realloc(buff, new_cap);
+
+    cap = new_cap;
+  }
+}
+
 void _ops_set_args(OPS_instance *instance, const char *argv) {
   char temp[64];
   const char *pch;
@@ -339,14 +373,15 @@ void ops_exit_core(OPS_instance *instance) {
     ops_free(instance->OPS_particle_halo_data_list[i]);
   ops_free(instance->OPS_particle_halo_data_list);
 
+  //Fine for halo list
   for (int i = 0; i < instance->OPS_particle_halo_index; i++)
-    ops_free(instance->OPS_particle_halo_list[i]);
+    instance->OPS_particle_halo_list[i] = _ops_free_particle_halo(instance->OPS_particle_halo_list[i]);
+   // ops_free(instance->OPS_particle_halo_list[i]);
   ops_free(instance->OPS_particle_halo_list);
 
   for (int i = 0; i < instance->OPS_particle_halo_group_index; i++) {
-    for (int j = 0; j < instance->OPS_particle_halo_group_list[i]->nhalos;j++)
-      ops_free(instance->OPS_particle_halo_group_list[i]->halo_list[j]);
-    ops_free(instance->OPS_particle_halo_group_list[i]);
+    instance->OPS_particle_halo_group_list[i]
+       = _ops_free_particle_halo_group(instance->OPS_particle_halo_group_list[i]);
   }
   ops_free(instance->OPS_particle_halo_group_list);
 
@@ -397,6 +432,11 @@ ops_block _ops_decl_block(OPS_instance *instance, int dims, const char *name) {
 
       //TODO: Check if assignment works fine
       OPS_block_list_new[i].particle = instance->OPS_block_list[i].particle;
+      OPS_block_list_new[i].no_particle_structures
+                         = instance->OPS_block_list[i].no_particle_structures;
+      OPS_block_list_new[i].histories = instance->OPS_block_list[i].histories;
+      OPS_block_list_new[i].no_history_structures =
+          instance->OPS_block_list[i].no_history_structures;
     }
     ops_free(instance->OPS_block_list);
     instance->OPS_block_list = OPS_block_list_new;
@@ -410,6 +450,8 @@ ops_block _ops_decl_block(OPS_instance *instance, int dims, const char *name) {
   block->instance = instance;
   instance->OPS_block_list[instance->OPS_block_index].block = block;
   instance->OPS_block_list[instance->OPS_block_index].num_datasets = 0;
+  instance->OPS_block_list[instance->OPS_block_index].no_particle_structures = 0;
+  instance->OPS_block_list[instance->OPS_block_index].no_history_structures = 0;
   TAILQ_INIT(&(instance->OPS_block_list[instance->OPS_block_index].datasets));
   instance->OPS_block_index++;
 
@@ -608,8 +650,6 @@ ops_dat ops_decl_dat_core(ops_block block, int dim, int *dataset_size,
                           int type_size, char const *type, char const *name) 
 {
    ops_dat dat = ops_dat_alloc_core(block);
-
-   printf("Field %s: Dataset size = [%d %d %d]\n", name, dataset_size[0], dataset_size[1], dataset_size[2]);
    ops_dat_init_metadata_core(dat, dim, dataset_size, base, d_m, d_p, stride, data, type_size, type, name);
    return dat;
 }
@@ -788,6 +828,9 @@ ops_stencil _ops_decl_restrict_stencil ( OPS_instance *instance, int dims, int p
   memcpy(stencil->mgrid_stride,stride,sizeof(int)*dims);
 
   stencil->type = 2;
+
+
+
 
 
   return stencil;
@@ -1278,12 +1321,18 @@ void ops_dump3(ops_dat dat, const char *name) {
 bool ops_checkpointing_filename(const char *file_name, std::string &filename_out,
                                 std::string &filename_out2);
 
+bool ops_checkpoint_filename_txt(const char *filename, std::string &filename_out);
+
+
 
 void ops_print_dat_to_txtfile_core(ops_dat dat, const char* file_name_in)
 {
   //printf("file %s, name %s type = %s\n",file_name, dat->name, dat->type);
    std::string file_name, ignored;
   ops_checkpointing_filename(file_name_in, file_name, ignored);
+
+  ops_checkpoint_filename_txt(file_name_in, file_name);
+
   FILE *fp;
   if (fopen_s(&fp,file_name.c_str(), "a") != 0) {
     OPSException ex(OPS_RUNTIME_ERROR);
@@ -1291,6 +1340,9 @@ void ops_print_dat_to_txtfile_core(ops_dat dat, const char* file_name_in)
     throw ex;
   }
 
+  if (dat->is_particle)
+    throw OPSException(OPS_RUNTIME_ERROR, "Error: ops_print_dat_to_txtfile is compatible "
+                       "with grid-based ops_dat structures\n");
   if (fprintf(fp, "ops_dat:  %s \n", dat->name) < 0) {
     OPSException ex(OPS_RUNTIME_ERROR);
     ex << "Error: error writing to file " << file_name;
@@ -2473,7 +2525,126 @@ void _ops_free_dat(ops_dat dat) {
   ops_free_dat_core(dat);
 }
 
+typedef union {
+    double d;
+    uint64_t u;
+} dblbits;
 
+/* Fast check: is x within N ULPs of integer? */
+static inline bool near_integer(double x, int ulps) {
+    dblbits b = { .d = x };
+
+    if (!isfinite(x))
+        return false;
+
+    uint64_t exp  = (b.u >> 52) & 0x7FF;
+    uint64_t frac = b.u & ((1ULL << 52) - 1);
+
+    /* Exponent >= 1023 + 52 → integer (mantissa can't represent fractions) */
+    if (exp >= 1075)
+        return true;
+
+    int exp_val = (int)exp - 1023;
+
+    /* If value < 1.0 */
+    if (exp_val < 0) {
+        /* Only integer if close to 0 or 1 */
+        int shift = 52 + exp_val;   /* exp_val is negative */
+        if (shift < 0) return false;
+
+        uint64_t dist = frac >> shift;
+        return dist <= (uint64_t)ulps || dist >= ((1ULL << shift) - ulps);
+    }
+
+    /* Mask off fractional bits */
+    int frac_bits = 52 - exp_val;
+    uint64_t mask = (1ULL << frac_bits) - 1;
+    uint64_t fractional = frac & mask;
+
+    return fractional <= (uint64_t)ulps ||
+           fractional >= mask - (uint64_t)ulps;
+}
+
+
+
+
+double ops_floor(double x, double epsilon) {
+
+  if (epsilon < 0) epsilon = -epsilon;
+
+  double ipart = (double)(int64_t)x;
+  double frac = x - ipart;
+
+  if (fabs(frac) <= epsilon)
+    return ipart;
+
+  if (frac >= 1.0 - epsilon)
+    return ipart + 1.0;
+
+  if (frac <= -1. + epsilon)
+    return ipart - 1.0;
+
+  return floor(x);
+
+
+}
+
+float ops_floor(float x, float epsilon) {
+
+  if (epsilon < 0) epsilon = -epsilon;
+
+  float ipart = (float)(int64_t)x;
+  float frac = x - ipart;
+
+  if (fabsf(x) <= epsilon)
+    return ipart;
+
+  if (frac >= 1. - epsilon)
+    return ipart + 1.0;
+
+  if (frac <= - 1. + epsilon)
+    return ipart - 1.0;
+
+  return floorf(x);
+}
+
+double ops_ceil(double x, double epsilon) {
+  if (epsilon < 0) epsilon = -epsilon;
+
+  double ipart = (double)(int64_t)x;
+  double frac = x - ipart;
+
+  //Treated as exactly when close to integer
+  if (fabs(frac) <= epsilon)
+    return ipart;
+
+  if (frac >= 1. - epsilon)
+    return ipart + 1.0;
+
+  if (frac <= -1.0 + epsilon)
+    return ipart - 1.0;
+
+  return ceil(x);
+}
+
+float ops_ceil(float x, float epsilon) {
+  if (epsilon < 0) epsilon = -epsilon;
+
+  float ipart = (float)(int64_t)x;
+  float frac = x - ipart;
+
+  //Treated as exactly when close to integer
+  if (fabs(frac) <= epsilon)
+    return ipart;
+
+  if (frac >= 1. - epsilon)
+    return ipart + 1.0;
+
+  if (frac <= -1.0 + epsilon)
+    return ipart - 1.0;
+
+  return ceil(x);
+}
 /************* Functions only use in the Fortran Backend ************/
 
 extern "C" int getOPS_block_size_x() { return OPS_instance::getOPSInstance()->OPS_block_size_x; }

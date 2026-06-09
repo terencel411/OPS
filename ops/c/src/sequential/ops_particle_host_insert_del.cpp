@@ -77,7 +77,10 @@ void ops_particle_remove(ops_particle particle) {
         _ops_particle_swap_data((char *)particle->particle_envelope->data, i, Nlocal-1,
                                 particle->particle_envelope->elem_size);
 
-      for (ops_dat &data : particle->particle_data) {
+      for (int idat = 0; idat < particle->particle_dat_index; idat++) {
+        ops_dat data = particle->particle_dat[idat];
+      //for (ops_dat &data : particle->particle_data) {
+
         _ops_particle_swap_data(data->data, i, Nlocal-1, data->elem_size);
       }
       Nlocal--;

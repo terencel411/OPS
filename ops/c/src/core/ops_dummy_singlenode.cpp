@@ -299,6 +299,16 @@ bool ops_checkpointing_filename(const char *file_name, std::string &filename_out
   return false;
 }
 
+bool ops_checkpoint_filename_txt(const char *filename, std::string &filename_out) {
+
+  filename_out = filename;
+  filename_out += ".txt";
+
+  return (OPS_instance::getOPSInstance()->OPS_enable_checkpointing > 1);
+
+}
+
+
 void ops_checkpointing_duplicate_data(ops_dat dat, int my_type, int my_nelems,
                                       char *my_data, int *my_range,
                                       int *rm_type, int *rm_elems,
@@ -703,16 +713,22 @@ void ops_NaNcheck(ops_dat dat) {
 void _ops_partition(OPS_instance *instance, const char *routine) {
   (void)instance;
   (void)routine;
+
+  _ops_particle_setup_tmp_array(instance); //TODO:
 }
 
 void _ops_partition(OPS_instance *instance, const char *routine, std::map<std::string, void*>& opts) {
   (void)instance;
   (void)routine;
   (void)opts;
+
+  _ops_particle_setup_tmp_array(instance); //TODO:
 }
 
 void ops_partition(const char *routine) {
   (void)routine;
+
+  _ops_particle_setup_tmp_array(OPS_instance::getOPSInstance()); //TODO:
 }
 
 bool ops_partitioned() {
@@ -722,6 +738,9 @@ bool ops_partitioned() {
 void ops_partition_opts(const char *routine, std::map<std::string, void*>& opts) {
   (void)routine;
   (void)opts;
+
+  _ops_particle_setup_tmp_array(OPS_instance::getOPSInstance()); //TODO:
+
 }
 
 void ops_timers(double *cpu, double *et) {
@@ -741,7 +760,9 @@ void _ops_exit(OPS_instance *instance) {
     if (instance->OPS_reduct_d!=NULL) ops_device_free(instance, (void**)&instance->OPS_reduct_d);
   }
 
+  //TODO: Correct issue with particle halos
   ops_exit_particles(instance);
+  ops_exit_histories(instance);
   ops_exit_core(instance);
   ops_exit_device(instance);
 }

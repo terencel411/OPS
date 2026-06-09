@@ -147,7 +147,7 @@ template <typename T> struct grid_part_param_handler<ACCP<T>> {
 
       //ifirst = binhead[address_bin]; //TODO: Check if this element is an actuall point
 
-      ifirst = (binhead[address_bin] < 0) ? 0 : binhead[address_bin];
+      ifirst = (binhead[address_bin] <= 0) ? 0 : binhead[address_bin];
       ACCP<T> *datap = new ACCP<T>(arg.dim, map->nParticles, (T* ) (arg.dat->data + ifirst));
 
       datap->bin_address = address_bin;
@@ -294,7 +294,6 @@ void  ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
   //Shift data to first point and construct associated structures
   char *p_a[N] = {grid_part_param_handler<param_remove_cvref_t<ParamType>>::construct(arguments, dim, ndim, start,
                                                                                      ifirst[J], block, map)...};
-
 
   ops_arg arg_bin = ops_arg_dat(map->binhead, 1, part_stencil, "int", OPS_READ);
 

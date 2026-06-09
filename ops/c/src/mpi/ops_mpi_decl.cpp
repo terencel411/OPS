@@ -128,6 +128,9 @@ void _ops_exit(OPS_instance *instance) {
   MPI_Finalized(&flag);
   if (!flag)
     MPI_Finalize();
+
+  ops_exit_particles(instance);
+  ops_exit_histories(instance);
   ops_exit_core(instance);
   ops_exit_device(instance);
 }
@@ -187,6 +190,8 @@ void ops_print_dat_to_txtfile(ops_dat dat, const char *file_name) {
     ops_print_dat_to_txtfile_core(dat, file_name);
   }
 }
+
+
 
 void ops_NaNcheck(ops_dat dat) {
   if (OPS_sub_block_list[dat->block->index]->owned == 1) {

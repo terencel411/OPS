@@ -93,6 +93,11 @@
 #define OPS_ARG_IDX 2
 #define OPS_ARG_GBL_PARTICLE 3
 #define OPS_ARG_DAT_PARTICLE 4
+#define OPS_ARG_DAT_PARTICLE_J 5
+#define OPS_ARG_IDP 6
+#define OPS_ARG_IDJ 7
+#define OPS_ARG_IDX_MAP 8
+#define OPS_ARG_DAT_HISTORY 9
 
 typedef std::complex<double> complexd;
 typedef std::complex<float> complexf;
@@ -175,6 +180,7 @@ class ops_dat_core;
 struct ops_reduction_core;
 struct ops_arg;
 class ops_particle_core;
+class ops_neighbor_history_core;
 
 /** Storage for OPS blocks */
 class ops_block_core {
@@ -311,6 +317,10 @@ class ops_dat_core {
                            *   multi-grid*/
   bool is_particle;       /** Flag that indicates that ops_dat object linked to Lagrangian
                               point */
+
+  bool is_exchangable;    /** Flag that indicates that the ops_dat structure follows the
+                              particle as it moves around */
+
 
   // Default constructor zeros out all data in the struct
   ops_dat_core() { memset(this, 0, sizeof(ops_dat_core)); }
@@ -523,6 +533,10 @@ struct ops_arg {
   int map_index;        /**< indicate the map exploited by the particle structure
                           *  -1: Not particle associated structure
                           *   >=0 point to a given structure */
+  int hist_index;       /**< indicate to which particle index the history is linked */
+  ops_neighbor_history_core *history; /**< Pointer to an ops_neighbor_history_core
+                                          in cast that ops_arg is linked to a contact
+                                          history*/
 };
 
 /** Storage for OPS halos */
@@ -1583,7 +1597,12 @@ public:
   T& operator()(int xoff) { return *(ptr + xoff);}
 
   __host__ __device__
-  T& operator()(int d, int xoff) const {
+  T& operator()(int d, int xoff) {
+    return *(ptr + d + mdim * xoff);
+  }
+
+  __host__ __device__
+  const T& operator()(int d, int xoff) const {
     return *(ptr + d + mdim * xoff);
   }
 
@@ -1597,6 +1616,81 @@ public:
 
 private:
   T *__restrict__ ptr;
+  int mdim;
+};
+
+template<typename T>
+class ACCPJ {// : public ACCP<T> {
+public:
+  __host__ __device__
+ACCPJ(T *_ptr) : ptr(_ptr), mdim(0) {}
+  __host__ __device__
+  ACCPJ(int _mdim, int sizex, T* _ptr) :
+  ptr(_ptr), mdim(_mdim) { }
+
+  __host__ __device__
+  T& operator()(int xoff) {return *(ptr + xoff);}
+
+  __host__ __device__
+  const T& operator()(int xoff) const { return *(ptr + xoff);}
+
+  __host__ __device__
+  const T& operator()(int d, int xoff) const {
+    return *(ptr + d + mdim * xoff);
+  }
+
+  T& operator()(int d, int xoff) {
+    return *(ptr + d + mdim * xoff);
+  }
+
+  __host__ __device__
+  void next(int offset) {
+    ptr += offset;
+  }
+private:
+  T *__restrict__ ptr;
+  int mdim;
+};
+
+template<typename T>
+class ACC_HIS {//
+public:
+  __host__ __device__
+  ACC_HIS(T* _ptr) : ptr(_ptr), mdim(0), offset_old(0) {}
+
+  ACC_HIS(int _mdim, T* _ptr) :
+    ptr(_ptr), mdim(_mdim), offset_old(0) { }
+
+  ACC_HIS(int _mdim, int size, T* _ptr) :
+  ptr(_ptr), mdim(_mdim), offset_old(0) { }
+
+  __host__ __device__
+  T& operator()(int xoff) {return *(ptr + xoff);}
+
+  __host__ __device__
+  const T& operator()(int xoff) const { return *(ptr + xoff);}
+
+  const T& operator()(int d, int xoff) const {
+    return *(ptr + d + mdim * xoff);
+  }
+
+  T& operator()(int d, int xoff) {
+    return *(ptr + d + mdim * xoff);
+  }
+
+  __host__ __device__
+  void update_old_offset(int offset) {
+    offset_old = offset;
+  }
+
+  __host__ __device__
+  void next(int offset) {
+    ptr += (offset - offset_old);
+  }
+
+private:
+  T *__restrict__ ptr;
+  int offset_old;
   int mdim;
 };
 

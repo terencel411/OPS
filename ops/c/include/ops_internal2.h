@@ -59,6 +59,11 @@
 #define OPS_ARG_IDX 2
 #define OPS_ARG_GBL_PARTICLE 3
 #define OPS_ARG_DAT_PARTICLE 4
+#define OPS_ARG_DAT_PARTICLE_J 5
+#define OPS_ARG_IDP 6
+#define OPS_ARG_IDJ 7
+#define OPS_ARG_IDX_MAP 8
+#define OPS_ARG_DAT_HISTORY 9
 
 #define OPS_PARTICLE_ACTUAL 0
 #define OPS_PARTICLE_VIRTUAL 1
@@ -125,8 +130,10 @@ struct ops_block_descriptor {
   ops_block_core *block;        /**< pointer to the block */
   Double_linked_list datasets;  /**< list of datasets associated with this block */
   ops_particle_core  **particle; /**< pointer to the particle data structure */ //TODO: Expand to multiple lists per block
+  ops_neighbor_history_core **histories; /**< pointer to neighbor history structures */
   int num_datasets;             /**< number of datasets */
   int no_particle_structures {0};
+  int no_history_structures{0}; /**< number of neighbor history structures */
 
 };
 
@@ -179,6 +186,7 @@ typedef struct {
 
   int nswap_pos; ///< #Swaps in positive direction //TODO: Check how we are sending or recv from here?
   int nswap_neg; ///< #Swaps in negative direction //TODO: Same for oppo.
+  int nlevels[2];  ///< Maximum number of points to send data in each direction
 
   int dir;     //<Sending and receiving direction
 
@@ -189,24 +197,33 @@ typedef struct {
   int *irecv_pos; ///<first point received in positive direction for a given swap
   int *nrecv_pos; ///< # particles received in the given swap in the positive direction
 
-  int nforward_pos; ///<# number of particles forward by this process in positive direction
-  int nforward_neg; ///<# number of particles send in the negative direction by this process
+  int *nforward_pos; ///<# number of particles forward by this process in positive direction
+  int *nforward_neg; ///<# number of particles send in the negative direction by this process
 
   int nalloc_max_pos; //<# number of particles prior allocation in negative direction
   int nalloc_max_neg; //<# number of particles prior allocation in negative direction
 
 
-  int *nsend_pos;  ///<number of particles send in the positive direction for each swap
-  int *nsend_neg;  ///<number of particles send in the negative direction for each swap
+  int nsend_pos;  ///<number of particles send in the positive direction for each swap
+  int nsend_neg;  ///<number of particles send in the negative direction for each swap
 
+  int region_pos[2 * OPS_MAX_DIM]; ///<Grid region for shifting particles in positive direction
+  int region_neg[2 * OPS_MAX_DIM]; ///<Grid region for shifting particles in negative direction
 
+  double region_exch_pos[2]; ///<TODO: Need to define those
+  double region_exch_neg[2]; ///<TODO: Need to define those
+
+  double region_bord_pos[2 * OPS_MAX_DIM];
+  double region_bord_neg[2 * OPS_MAX_DIM];
 
   int *particle_send_neg; ///<Particle list send and receive in this intra-block communication
-  int *particle_send_pos; //<Particle list send in positive direction
+  int *particle_send_pos; ///<Particle list send in positive direction
 
   double dx_neg;  ///<Size of block for sending in the negative dir
   double dx_pos; ///<Size of block for sending in the pos. direction
-} ops_int_particle_halos;
+} ops_int_particle_halo_base;
+
+typedef ops_int_particle_halo_base *ops_int_particle_halos;
 
 ops_reduction ops_decl_reduction_handle_core(OPS_instance *instance, int size, const char *type,
                                              const char *name);
@@ -221,6 +238,8 @@ void ops_exit_lazy(OPS_instance *instance);
 void ops_exit_core(OPS_instance *instance);
 
 void ops_exit_particles(OPS_instance *instance);
+
+void ops_exit_histories(OPS_instance *instance);
 
 ops_dat ops_decl_dat_core(ops_block block, int data_size, int *block_size,
                           int *base, int *d_m, int *d_p, int *stride, char *data,
@@ -332,7 +351,8 @@ void create_kerneldesc_and_enque(char const* kernel_name, ops_arg *args, int nar
  *    Particle data core functions
  **********************************************************************************/
 
-ops_particle _ops_decl_particle(OPS_instance *instance, ops_block block, BoundingBox *Box);
+ops_particle _ops_decl_particle(OPS_instance *instance, ops_block block, BoundingBox *Box,
+                                char const* name);
 
 /*******************************************************************************
 * Random number generations
@@ -403,6 +423,10 @@ void printf2(OPS_instance *instance, const char *format, ...);
 void ops_fprintf2(std::ostream &, const char *format, ...);
 void fprintf2(std::ostream &, const char *format, ...);
 
+void _ops_append_char(char *&buff, size_t &len, size_t &cap,
+                      const char *fmt, ...);
+
+
 ops_dat ops_dat_alloc_core(ops_block block);
 void ops_dat_realloc_core(ops_dat dat, int sizex);
 int ops_dat_copy_metadata_core(ops_dat target, ops_dat orig_dat);
@@ -428,6 +452,13 @@ inline void ops_mpi_reduce(ops_arg *args, double *data) {
 inline void ops_mpi_reduce(ops_arg *args, int *data) {
   ops_mpi_reduce_int(args, data);
 }
+
+
+double ops_floor(double value, double epsilon = 1.e-12);
+float ops_floor(float value, float epsilon = 1.e-12);
+
+double ops_ceil(double value, double epsilon = 1.e-12);
+float ops_ceil(float value, float epsilon = 1.e-12);
 
 class OPS_instance;
 
