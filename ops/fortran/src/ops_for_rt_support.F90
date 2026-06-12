@@ -248,6 +248,7 @@ module OPS_Fortran_RT_Support
   end subroutine
 
   integer function getRange(block, start, end, range, ndim)
+
     use, intrinsic :: ISO_C_BINDING
     use OPS_Fortran_Declarations
     implicit none

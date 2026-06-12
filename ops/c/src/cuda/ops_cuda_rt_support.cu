@@ -60,6 +60,7 @@ __global__ void copy_kernel_tobuf(char *dest, char *src, int rx_s, int rx_e,
                                   int buf_strides_z, int type_size, int dim, int OPS_soa, 
                                   bool mixed_exchange, int storage_type_size) {
 
+
   int idx_z = rz_s + z_step * (blockDim.z * blockIdx.z + threadIdx.z);
   int idx_y = ry_s + y_step * (blockDim.y * blockIdx.y + threadIdx.y);
   int idx_x = rx_s + x_step * (blockDim.x * blockIdx.x + threadIdx.x);
@@ -110,6 +111,7 @@ __global__ void copy_kernel_tobuf(char *dest, char *src, int rx_s, int rx_e,
       } else {
         memcpy(dest+d*type_size, src, type_size);
       }
+
       if (OPS_soa) src += size_x * size_y * size_z * type_size;
       else src += type_size;
     }
@@ -123,6 +125,7 @@ __global__ void copy_kernel_frombuf(char *dest, char *src, int rx_s, int rx_e,
                                     int buf_strides_x, int buf_strides_y,
                                     int buf_strides_z, int type_size, int dim, int OPS_soa,
                                     bool mixed_exchange, int storage_type_size) {
+
 
   int idx_z = rz_s + z_step * (blockDim.z * blockIdx.z + threadIdx.z);
   int idx_y = ry_s + y_step * (blockDim.y * blockIdx.y + threadIdx.y);
@@ -174,6 +177,7 @@ __global__ void copy_kernel_frombuf(char *dest, char *src, int rx_s, int rx_e,
       } else {
         memcpy(dest, src + d*type_size, type_size);
       }
+
       if (OPS_soa) dest += size_x * size_y * size_z * type_size;
       else dest += type_size;
     }
@@ -211,6 +215,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
       dest, src->data_d, rx_s, rx_e, ry_s, ry_e, rz_s, rz_e, x_step, y_step,
       z_step, src->size[0], src->size[1], src->size[2], buf_strides_x,
       buf_strides_y, buf_strides_z, src->type_size, src->dim, src->block->instance->OPS_soa,mixed_exchange,storage_type_size);
+
   cutilSafeCall(src->block->instance->ostream(),cudaGetLastError());
 
   // TODO: MPI buffers and GPUDirect
@@ -221,6 +226,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
                            int x_step, int y_step, int z_step,
                            int buf_strides_x, int buf_strides_y,
                            int buf_strides_z, bool mixed_exchange, int storage_type_size) {
+
 
   src += src_offset;
   int thr_x = abs(rx_s - rx_e);
@@ -248,6 +254,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
       dest->data_d, src, rx_s, rx_e, ry_s, ry_e, rz_s, rz_e, x_step, y_step,
       z_step, dest->size[0], dest->size[1], dest->size[2], buf_strides_x,
       buf_strides_y, buf_strides_z, dest->type_size, dest->dim, dest->block->instance->OPS_soa,mixed_exchange,storage_type_size);
+
   cutilSafeCall(dest->block->instance->ostream(),cudaGetLastError());
   dest->dirty_hd = 2;
 }

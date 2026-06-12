@@ -40,6 +40,7 @@
 #include <string>
 
 //#include <ops_cuda_rt_support.h>
+
 #include <ops_mpi_core.h>
 #include <ops_exceptions.h>
 #include <ops_tridiag.h>
@@ -181,6 +182,7 @@ void ops_tridMultiDimBatch(
   int device = OPS_DEVICE;
   ops_stencil S3D_000 = a->block->instance->OPS_internal_0[3];
 
+
   if(strcmp(a->type, "double") == 0) {
     // Get raw pointer access to data held by OPS
     // Points to element 0, skipping MPI halo
@@ -281,6 +283,7 @@ void ops_tridMultiDimBatch_Inc(
 
   int device = OPS_DEVICE;
   ops_stencil S3D_000 = a->block->instance->OPS_internal_0[3];
+
 
   if(strcmp(a->type, "double") == 0) {
     const double *a_ptr = (double *)ops_dat_get_raw_pointer(a, 0, S3D_000, &device);

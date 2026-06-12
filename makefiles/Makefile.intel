@@ -11,6 +11,7 @@ else
 		CXXFLAGS += -qopt-zmm-usage=high
 	endif
 endif
+
 ifdef IEEE
 	CCFLAGS += -fp-model strict -fp-model source -prec-div -prec-sqrt
 	CXXFLAGS += -fp-model strict -fp-model source -prec-div -prec-sqrt
@@ -40,3 +41,4 @@ FTNLINK := -lifcore -lifport
 SYCLCXX=icpx
 SYCLMPICXX=mpicxx
 SYCL_FLAGS=-fsycl -fsycl-targets=spir64_x86_64 -Xs "-march=avx512" -D__INTEL_SYCL__
+

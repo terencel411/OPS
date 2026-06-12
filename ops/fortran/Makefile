@@ -16,6 +16,7 @@ ifdef HDF5_INSTALL_PATH
   HDF5_LIB		:= -L$(HDF5_INSTALL_PATH)/lib
   CHKCC			:= $(MPICC)
   CHKCXX		:= $(MPICXX)
+
 ifdef CHECKPOINTING
   HDF5_INC 	  	:= $(HDF5_INC) -DCHECKPOINTING
 endif
@@ -27,6 +28,7 @@ endif
 CXXFLAGS += -DOPS_FTN
 NVCCFLAGS += -DOPS_FTN
 
+<<<<<<< HEAD
 ifneq ($(strip $(MPI_INSTALL_PATH)),)
 ifneq (,$(wildcard $(MPI_INC)))
 I_MPI_INC = -I$(MPI_INC)
@@ -41,6 +43,11 @@ endif
 .PHONY: mkdir
 
 TARGETS	= f_seq f2c_seq f_mpi f2c_mpi f_ompoffload f_mpi_ompoffload
+=======
+.PHONY: mkdir
+
+TARGETS	= f_seq f_mpi
+>>>>>>> mpi_zone
 
 ifdef HDF5_INSTALL_PATH
 	TARGETS += hdf5_seq
@@ -184,6 +191,7 @@ $(F_OPS_OBJ)/%.o : $(C_OPS_SRC)/sycl/%.cpp
 	$(SYCLCXX) $(CXXFLAGS) $(SYCL_FLAGS) -I$(C_OPS_INC) -c $< -o $@
 
 #	******************************	Sequential	************************************
+
 $(F_OPS_OBJ)/ops_for_declarations.o: $(F_OPS_SRC)/ops_for_declarations.F90
 	$(FC) $(FFLAGS) $(FMODS) -c $< -o $@
 
@@ -202,6 +210,7 @@ $(F_OPS_OBJ)/ops_for_declarations_cuda.o: $(F_OPS_SRC)/ops_for_declarations.F90
 	$(FC) $(FFLAGS) $(FMODS_CUDA) -c $< -o $@
 
 $(F_OPS_OBJ)/%_cuda.o : $(F_OPS_SRC)/%.F90 $(F_OPS_OBJ)/ops_for_declarations_cuda.o
+
 	$(FC) $(FFLAGS) $(FMODS_CUDA) -c $< -o $@
 
 $(F_OPS_OBJ)/%_cuda.o : $(F_OPS_SRC)/%.CUF

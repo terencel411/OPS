@@ -84,7 +84,6 @@ def extract_intrinsic_functions(kernel_func: str):
 
     return result_string
 
-
 def extract_arglist_fortran(kernel_func: str):
     start_index = kernel_func.find('(')
     end_index   = kernel_func.find(')', start_index)
@@ -97,7 +96,6 @@ def extract_arglist_fortran(kernel_func: str):
     arguments_list = [arg.strip() for arg in arguments_str.split(',')]
 
     return arguments_list
-
 
 class Findable(ABC):
     """
@@ -789,6 +787,7 @@ def replace_fortran_program_with_subroutine(files):
             break
     else:
         print("No valid PROGRAM/END PROGRAM pair found in the given files.")
+
 
 
 

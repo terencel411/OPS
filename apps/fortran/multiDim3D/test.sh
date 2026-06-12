@@ -18,6 +18,7 @@ source ../../scripts/$SOURCE_INTEL
 make
 cd -
 make cleanall
+
 make
 
 echo '============================ Test MultiDim3D Intel Compilers=========================================================='
@@ -261,3 +262,4 @@ fi
 rm -f multidim.dat.*
 
 echo "---------- Exiting Test Script "
+

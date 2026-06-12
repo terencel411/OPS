@@ -37,6 +37,7 @@ class Scheme(Findable):
         kernel_idx: int,
         force_soa: bool
     ) -> Tuple[str, str, str]:
+
         # Load the loop host template
         template = env.get_template(str(self.loop_host_template))
         #extention = self.loop_host_template.suffixes[-2][1:]
@@ -149,7 +150,6 @@ class Scheme(Findable):
             ),
             self.loop_kernel_f2c_extension
         )
-
 
     def genMasterKernel(self, env: Environment, app: Application, user_types_file: Optional[Path], force_soa: bool) -> Tuple[str, str]:
         if self.master_kernel_template is None:

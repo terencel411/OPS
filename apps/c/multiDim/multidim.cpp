@@ -59,16 +59,18 @@ int ny{3};
 void WriteDataToH5(const std::string &fileName, const ops_block &block,
                    const std::vector<ops_dat> &dataList) {
 #pragma omp single
-  {
+
     ops_fetch_block_hdf5_file(block, fileName.c_str());
     for (auto data : dataList) {
         ops_fetch_dat_hdf5_file(data, fileName.c_str());
     }
   }
+
 }
 
 int main(int argc, char **argv)
 {
+
   try {
   //initialize sizes using global values
   int x_cells = 4;
@@ -210,6 +212,7 @@ int main(int argc, char **argv)
     std::cout << "This test is considered FAILED" << std::endl;
     exit(-1);
   }
+
 
   exit(0);
 }

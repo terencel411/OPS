@@ -332,4 +332,3 @@ Example
 
 The CloverLeaf-3D application demonstrates this usage.
 See: `apps/c/CloverLeaf_3D/clover_leaf.cpp`
-

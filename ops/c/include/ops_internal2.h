@@ -58,8 +58,16 @@
 #define OPS_ARG_DAT 1
 #define OPS_ARG_IDX 2
 
+#define OPS_ARG_GBL_PARTICLE 3
+#define OPS_ARG_DAT_PARTICLE 4
+#define OPS_ARG_DAT_PARTICLE_J 5
+#define OPS_ARG_IDP 6
+#define OPS_ARG_IDJ 7
+#define OPS_ARG_IDX_MAP 8
+#define OPS_ARG_DAT_HISTORY 9
 
-
+#define OPS_PARTICLE_ACTUAL 0
+#define OPS_PARTICLE_VIRTUAL 1
 /*
  * * zero constants
  * */
@@ -94,6 +102,7 @@
 #define ZERO_short 0;
 #define INFINITY_short SHRT_MAX;
 
+#define BIG 1.0e10
 #define ZERO_bool 0;
 
 /*
@@ -121,6 +130,10 @@ struct ops_block_descriptor {
   ops_block_core *block;        /**< pointer to the block */
   Double_linked_list datasets;  /**< list of datasets associated with this block */
   int num_datasets;             /**< number of datasets */
+  ops_particle_core  **particle; /**< pointer to the particle data structure */
+  ops_neighbor_history_core **histories; /**< pointer to neighbor history structures */
+  int no_particle_structures {0}; /**< Number of particle structures linked to block */
+  int no_history_structures{0}; /**< number of neighbor history structures */
 
 };
 
@@ -166,6 +179,50 @@ typedef struct {
   int stride;      ///< stride between blocks
 } ops_int_halo;
 
+typedef struct {
+
+  int nswaps;  ///<iterations for sending data in a given direction
+
+  int nswap_pos; ///< #Swaps in positive direction //TODO: Check how we are sending or recv from here?
+  int nswap_neg; ///< #Swaps in negative direction //TODO: Same for oppo.
+  int nlevels[2];  ///< Maximum number of points to send data in each direction
+
+  int dir;     //<Sending and receiving direction
+
+  //Number of elements received in different swaps
+  int *irecv_neg; ///<first point received in negative direction for a given swap
+  int *nrecv_neg; ///<particles received in the given swap in the negative direction
+
+  int *irecv_pos; ///<first point received in positive direction for a given swap
+  int *nrecv_pos; ///< # particles received in the given swap in the positive direction
+
+  int *nforward_pos; ///<# number of particles forward by this process in positive direction
+  int *nforward_neg; ///<# number of particles send in the negative direction by this process
+
+  int nalloc_max_pos; //<# number of particles prior allocation in negative direction
+  int nalloc_max_neg; //<# number of particles prior allocation in negative direction
+
+
+  int nsend_pos;  ///<number of particles send in the positive direction for each swap
+  int nsend_neg;  ///<number of particles send in the negative direction for each swap
+
+  int region_pos[2 * OPS_MAX_DIM]; ///<Grid region for shifting particles in positive direction
+  int region_neg[2 * OPS_MAX_DIM]; ///<Grid region for shifting particles in negative direction
+
+  double region_exch_pos[2]; ///<TODO: Need to define those
+  double region_exch_neg[2]; ///<TODO: Need to define those
+
+  double region_bord_pos[2 * OPS_MAX_DIM];
+  double region_bord_neg[2 * OPS_MAX_DIM];
+
+  int *particle_send_neg; ///<Particle list send and receive in this intra-block communication
+  int *particle_send_pos; ///<Particle list send in positive direction
+
+  double dx_neg;  ///<Size of block for sending in the negative dir
+  double dx_pos; ///<Size of block for sending in the pos. direction
+} ops_int_particle_halo_base;
+
+typedef ops_int_particle_halo_base *ops_int_particle_halos;
 
 ops_reduction ops_decl_reduction_handle_core(OPS_instance *instance, int size, const char *type,
                                              const char *name);
@@ -185,6 +242,9 @@ void ops_exit_core(OPS_instance *instance);
 extern std::vector<std::vector<int> > edat_prev_range;
 extern std::vector<ops_access >       edat_prev_acc; 
 extern std::vector<int> edge_dirtybit;
+void ops_exit_particles(OPS_instance *instance);
+
+void ops_exit_histories(OPS_instance *instance);
 
 ops_dat ops_decl_dat_core(ops_block block, int data_size, int *block_size,
                           int *base, int *d_m, int *d_p, int *stride, char *data,
@@ -212,12 +272,15 @@ ops_halo ops_decl_halo_core(OPS_instance *instance, ops_dat from, ops_dat to, in
 ops_arg ops_arg_dat_core(ops_dat dat, ops_stencil stencil, ops_access acc);
 ops_arg ops_arg_gbl_core(char *data, int dim, int size, ops_access acc);
 
+ops_arg ops_arg_part_dat_core(ops_dat dat, ops_access acc);
+
 OPS_FTN_INTEROP
 void ops_print_dat_to_txtfile_core(ops_dat dat, const char *file_name);
 
 OPS_FTN_INTEROP
 void ops_NaNcheck(ops_dat dat);
 void ops_NaNcheck_core(ops_dat dat, char *buffer, int *disp, int *d_m);
+
 
 void ops_timing_realloc(OPS_instance *instance, int, const char *);
 float ops_compute_transfer(int dims, int *start, int *end, ops_arg *arg);
@@ -238,6 +301,7 @@ int ops_stencil_check_3d_md(int arg_idx, int idx0, int idx1, int idx2, int dim0,
 OPS_FTN_INTEROP
 void ops_set_dirtybit_host(
     ops_arg *args, int nargs); // data updated on host .. i.e. dirty on host
+
 OPS_FTN_INTEROP
 void ops_set_halo_dirtybit3(ops_arg *arg, int *iter_range);
 void ops_set_halo_dirtybit3_tiled(ops_arg *arg, int *iter_range, int *left_boundary_cleanUpTo, int *left_halo_cleanUpTo, int *right_boundary_cleanUpTo, int *right_halo_cleanUpTo);
@@ -276,6 +340,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
                            int x_step, int y_step, int z_step,
                            int buf_strides_x, int buf_strides_y,
                            int buf_strides_z, bool mixed_exchange, int storage_type_size);
+
 void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
                          int rx_e, int ry_s, int ry_e, int rz_s, int rz_e,
                          int x_step, int y_step, int z_step, int buf_strides_x,
@@ -285,10 +350,12 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
 void ops_enqueue_kernel(ops_kernel_descriptor *desc);
 OPS_FTN_INTEROP
 void ops_execute(OPS_instance *instance=NULL);
+
 OPS_FTN_INTEROP
 void ops_execute_block(ops_block block);
 bool ops_get_abs_owned_range(ops_block block, int *range, int *start, int *end, int *disp, int *size);
 int compute_ranges(ops_arg* args, int nargs, ops_block block, int* range, int* start, int* end, int* arg_idx);
+
 OPS_FTN_INTEROP
 int ops_get_proc();
 int ops_num_procs();
@@ -304,6 +371,13 @@ int getDatBaseFromOpsArg1D(ops_arg *arg, int *start, int dim);
 int getDatBaseFromOpsArg2D(ops_arg *arg, int *start, int dim);
 int getDatBaseFromOpsArg3D(ops_arg *arg, int *start, int dim);
 }
+
+/*********************************************************************************
+ *    Particle data core functions
+ **********************************************************************************/
+
+ops_particle _ops_decl_particle(OPS_instance *instance, ops_block block, BoundingBox *Box,
+                                char const* name);
 
 /*******************************************************************************
 * Random number generations
@@ -376,6 +450,9 @@ void ops_fprintf2(std::ostream &, const char *format, ...);
 void fprintf2(std::ostream &, const char *format, ...);
 
 ops_dat ops_dat_alloc_core(ops_block block);
+void _ops_append_char(char *&buff, size_t &len, size_t &cap,
+                      const char *fmt, ...);
+void ops_dat_realloc_core(ops_dat dat, int sizex);
 int ops_dat_copy_metadata_core(ops_dat target, ops_dat orig_dat);
 ops_kernel_descriptor * ops_dat_deep_copy_core(ops_dat target, ops_dat orig_dat, int *range);
 void ops_internal_copy_seq(ops_kernel_descriptor *desc);
@@ -399,6 +476,13 @@ inline void ops_mpi_reduce(ops_arg *args, double *data) {
 inline void ops_mpi_reduce(ops_arg *args, int *data) {
   ops_mpi_reduce_int(args, data);
 }
+
+
+double ops_floor(double value, double epsilon = 1.e-12);
+float ops_floor(float value, float epsilon = 1.e-12);
+
+double ops_ceil(double value, double epsilon = 1.e-12);
+float ops_ceil(float value, float epsilon = 1.e-12);
 
 class OPS_instance;
 

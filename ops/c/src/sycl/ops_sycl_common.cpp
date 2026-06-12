@@ -155,6 +155,7 @@ void cutilDeviceInit(OPS_instance *instance, const int argc, const char * const 
     std::vector<cl::sycl::device> devices;
     devices = cl::sycl::device::get_devices();
     int devid = OPS_sycl_device - 3;
+
     if (devid < 0 || devid >= devices.size()) {
       ops_printf("Error, unrecognised SYCL device selection. Available devices (%d)\n",devices.size());
       for (int i = 0; i < devices.size(); i++)
@@ -170,6 +171,7 @@ void cutilDeviceInit(OPS_instance *instance, const int argc, const char * const 
 
   instance->OPS_hybrid_gpu = 1;
   auto platform = instance->sycl_instance->queue->get_device().get_platform();
+
   if (instance->OPS_diags>=1)
     instance->ostream()
       << "Running on device " << instance->sycl_instance->queue->get_device().get_info<cl::sycl::info::device::name>()
@@ -210,3 +212,4 @@ void _ops_finalize_gpu_power_measurement(OPS_instance *instance) {
     (void)instance; // Suppress unused parameter warning
     // Do nothing for SYCL backends
 }
+

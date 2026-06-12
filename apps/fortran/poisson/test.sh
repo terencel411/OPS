@@ -13,12 +13,14 @@ export DEMOS=TRUE
 if [[ -v TELOS || -v DEMOS || -v KOS ]]; then
 
 echo '============================ Test Poisson Intel Compilers=========================================================='
+
 cd $OPS_INSTALL_PATH/fortran
 source ../../scripts/$SOURCE_INTEL
 make
 cd -
 make clean
 make IEEE=1
+
 
 echo '============> Running OpenMP'
 KMP_AFFINITY=compact OMP_NUM_THREADS=20 ./poisson_openmp > perf_out
@@ -130,7 +132,6 @@ cd -
 make cleanall
 make
 #poisson_openmp poisson_mpi_openmp poisson_mpi poisson_cuda poisson_mpi_cuda
-
 
 echo '============================ Test Poisson PGI Compilers=========================================================='
 echo '============> Running OpenMP'
@@ -303,3 +304,4 @@ echo "All AMD HIP complier based applications ---- PASSED"
 fi
 
 echo "---------- Exiting Test Script "
+

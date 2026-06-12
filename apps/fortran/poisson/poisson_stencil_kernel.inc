@@ -9,3 +9,4 @@ subroutine poisson_stencil_kernel(u,f,u2)
                       / (2.0_8 * (dx * dx + dy * dy))
 
 end subroutine poisson_stencil_kernel
+

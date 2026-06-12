@@ -19,6 +19,7 @@ if [[ -v TELOS || -v DEMOS || -v KOS ]]; then
 echo "Testing Intel classic complier based applications ---- "
 cd $OPS_INSTALL_PATH/c
 source ../../scripts/$SOURCE_INTEL
+
 make clean 
 make
 cd $OPS_INSTALL_PATH/../apps/c/poisson
@@ -114,15 +115,18 @@ fi
 
 echo "All Intel classic complier based applications ---- PASSED"
 
+
 if [[ -v TELOS || -v DEMOS ]]; then
 
 #============================ Test with Intel SYCL Compilers==========================================
 echo "Testing Intel SYCL complier based applications ---- "
 cd $OPS_INSTALL_PATH/c
 source ../../scripts/$SOURCE_INTEL_SYCL
+
 make clean
 SYCL_FAT_FLAGS="-fsycl -fsycl-targets=spir64,nvptx64-nvidia-cuda -D__INTEL_SYCL__"
 make SYCL_FLAGS="$SYCL_FAT_FLAGS" sycl mpi_sycl
+
 cd $OPS_INSTALL_PATH/../apps/c/poisson
 
 make clean
@@ -132,6 +136,7 @@ make IEEE=1 SYCL_FLAGS="$SYCL_FAT_FLAGS" poisson_sycl poisson_mpi_sycl poisson_m
 
 echo '============> Running SYCL on CPU'
 ./poisson_sycl OPS_SYCL_DEVICE=cpu OPS_BLOCK_SIZE_X=512 OPS_BLOCK_SIZE_Y=1 > perf_out
+
 grep "Total error:" perf_out
 grep "Total Wall time" perf_out
 grep "PASSED" perf_out
@@ -139,7 +144,9 @@ rc=$?; if [[ $rc != 0 ]]; then echo "TEST FAILED";exit $rc; fi
 rm perf_out
 
 echo '============> Running MPI+SYCL on CPU'
+
 $MPI_INSTALL_PATH/bin/mpirun -np 20 ./poisson_mpi_sycl OPS_SYCL_DEVICE=cpu OPS_BLOCK_SIZE_X=256 OPS_BLOCK_SIZE_Y=1 > perf_out
+
 grep "Total error:" perf_out
 grep "Total Wall time" perf_out
 grep "PASSED" perf_out
@@ -190,7 +197,6 @@ if [[ -v TELOS || -v DEMOS ]]; then
 echo "Testing PGI/NVHPC complier based applications ---- "
 cd $OPS_INSTALL_PATH/c
 source ../../scripts/$SOURCE_PGI
-
 make clean
 #make -j
 make

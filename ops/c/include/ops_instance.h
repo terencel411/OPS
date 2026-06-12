@@ -299,7 +299,8 @@ class OPS_instance {
  *                 in the future.
  */
     void partition(const char *routine);
-	void partition(const char *routine, std::map<std::string, void*>& opts);
+
+    void partition(const char *routine, std::map<std::string, void*>& opts);
 // #endif
 
 	/*******************************************************************************
@@ -319,6 +320,16 @@ class OPS_instance {
 	ops_reduction *OPS_reduction_list;
 	
 
+
+	//Particle Data and halos
+	ops_particle_halo_data *OPS_particle_halo_data_list;
+	int OPS_particle_halo_data_max, OPS_particle_halo_data_index;
+
+	ops_particle_halo  *OPS_particle_halo_list;
+	int OPS_particle_halo_index, OPS_particle_halo_max;
+	ops_particle_halo_group *OPS_particle_halo_group_list;
+	int OPS_particle_halo_group_index, OPS_particle_halo_group_max;
+
 	// Checkpointing
  	int OPS_enable_checkpointing;
 	double OPS_checkpointing_time;
@@ -333,6 +344,9 @@ class OPS_instance {
 	//SEQ execution
 	int arg_idx[OPS_MAX_DIM];
 
+        int arg_idp[1]; //SEQ execution
+        int arg_idj[1];
+        int arg_idx_map[OPS_MAX_DIM];
 
 	// Debugging
 	ops_arg *OPS_curr_args;
@@ -382,6 +396,7 @@ class OPS_instance {
 	int OPS_block_size_y;
 	int OPS_block_size_z;
 	int OPS_device_id;
+
 	char *OPS_consts_h, *OPS_consts_d, *OPS_reduct_h, *OPS_reduct_d;
 	int OPS_consts_bytes, OPS_reduct_bytes;
 	int OPS_cl_device;

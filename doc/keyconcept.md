@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Key Concepts and Structure
 
 An OPS application can generally be divided into two key parts:

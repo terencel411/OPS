@@ -144,6 +144,7 @@ void ops_pack_cuda_internal(ops_dat dat, const int src_offset, char *__restrict 
     cutilSafeCall(OPS_instance::getOPSInstance()->ostream(),cudaGetLastError());
 
   } else if (halo_blocklength % 4 == 0 && dat->type_size>=4) {
+
     int num_threads = 128;
     int num_blocks =
         (((dat->dim * halo_blocklength / 4) * halo_count) - 1) / num_threads + 1;
@@ -200,6 +201,7 @@ void ops_unpack_cuda_internal(ops_dat dat, const int dest_offset, const char *__
         dat->dim, dat->size[0]*dat->size[1]*dat->size[2]*dat->type_size);
     cutilSafeCall(OPS_instance::getOPSInstance()->ostream(),cudaGetLastError());
   } else if (halo_blocklength % 4 == 0 && dat->type_size>=4) {
+
     int num_threads = 128;
     int num_blocks =
         (((dat->dim * halo_blocklength / 4) * halo_count) - 1) / num_threads + 1;
@@ -260,6 +262,7 @@ __global__ void copy_kernel_tobuf(char *dest, char *src, int rx_s, int rx_e,
                                   int buf_strides_z, int type_size, int dim, int OPS_soa,
                                   bool mixed_exchange, int storage_type_size) {
 
+
   int idx_z = rz_s + z_step * (blockDim.z * blockIdx.z + threadIdx.z);
   int idx_y = ry_s + y_step * (blockDim.y * blockIdx.y + threadIdx.y);
   int idx_x = rx_s + x_step * (blockDim.x * blockIdx.x + threadIdx.x);
@@ -310,6 +313,7 @@ __global__ void copy_kernel_tobuf(char *dest, char *src, int rx_s, int rx_e,
       } else {
         memcpy(dest+d*type_size, src, type_size);
       }
+
       if (OPS_soa) src += size_x * size_y * size_z * type_size;
       else src += type_size;
     }
@@ -324,6 +328,7 @@ __global__ void copy_kernel_frombuf(char *dest, char *src, int rx_s, int rx_e,
                                     int buf_strides_z, int type_size, int dim, int OPS_soa,
                                     bool mixed_exchange, int storage_type_size) {
 
+
   int idx_z = rz_s + z_step * (blockDim.z * blockIdx.z + threadIdx.z);
   int idx_y = ry_s + y_step * (blockDim.y * blockIdx.y + threadIdx.y);
   int idx_x = rx_s + x_step * (blockDim.x * blockIdx.x + threadIdx.x);
@@ -337,7 +342,8 @@ __global__ void copy_kernel_frombuf(char *dest, char *src, int rx_s, int rx_e,
     src += ((idx_z - rz_s) * z_step * buf_strides_z +
             (idx_y - ry_s) * y_step * buf_strides_y +
             (idx_x - rx_s) * x_step * buf_strides_x) *
-            (mixed_exchange?storage_type_size:type_size) * dim;
+
+                (mixed_exchange?storage_type_size:type_size) * dim;
     for (int d = 0; d < dim; d++) {
       if (mixed_exchange){
         if (storage_type_size == 4) {
@@ -374,6 +380,7 @@ __global__ void copy_kernel_frombuf(char *dest, char *src, int rx_s, int rx_e,
       } else {
         memcpy(dest, src + d * type_size, type_size);
       }      
+
       if (OPS_soa) dest += size_x * size_y * size_z * type_size;
       else dest += type_size;
     }
@@ -384,6 +391,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
                          int rx_e, int ry_s, int ry_e, int rz_s, int rz_e,
                          int x_step, int y_step, int z_step, int buf_strides_x,
                          int buf_strides_y, int buf_strides_z, bool mixed_exchange, int storage_type_size) {
+
   dest += dest_offset;
   int thr_x = abs(rx_s - rx_e);
   int blk_x = 1;
@@ -432,6 +440,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
       buf_strides_y, buf_strides_z, src->type_size, src->dim, OPS_instance::getOPSInstance()->OPS_soa, mixed_exchange, storage_type_size);
   cutilSafeCall(OPS_instance::getOPSInstance()->ostream(),cudaGetLastError());
   ops_device_sync(OPS_instance::getOPSInstance());
+
 
   if (!OPS_instance::getOPSInstance()->OPS_gpu_direct)
     cutilSafeCall(OPS_instance::getOPSInstance()->ostream(),cudaMemcpy(dest, halo_buffer_d, size * sizeof(char),
@@ -494,6 +503,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
       buf_strides_y, buf_strides_z, dest->type_size, dest->dim, OPS_instance::getOPSInstance()->OPS_soa, mixed_exchange, storage_type_size);
   cutilSafeCall(OPS_instance::getOPSInstance()->ostream(),cudaGetLastError());
   ops_device_sync(OPS_instance::getOPSInstance());
+
   dest->dirty_hd = 2;
 }
 

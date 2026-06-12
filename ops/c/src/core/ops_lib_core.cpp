@@ -97,6 +97,40 @@ std::vector<int> splitStringInt(std::string probsString, char sep) {
     return params;
 }
 
+void _ops_append_char(char *&buff, size_t &len, size_t &cap, const char *fmt, ...) {
+
+  va_list args;
+
+  while (1) {
+    size_t remaining = (cap > len) ? cap - len : 0;
+
+    va_start(args, fmt);
+
+    int written = vsnprintf(buff + len, remaining, fmt, args);
+
+    va_end(args);
+
+    if (written < 0)
+      throw OPSException(OPS_RUNTIME_ERROR,"ERROR: vsnprintf");
+
+    if ((size_t) written < remaining) {
+      len += written;
+      return;
+    }
+
+    size_t new_cap = (cap > 0) ? (cap * 2) : 64;
+    if (new_cap < len + written + 1)
+      new_cap = 2 * (len + written);
+
+    if (buff == nullptr)
+      buff = (char *) ops_malloc(new_cap);
+    else
+      buff = (char *) ops_realloc(buff, new_cap);
+
+    cap = new_cap;
+  }
+}
+
 void _ops_set_args(OPS_instance *instance, const char *argv) {
   char temp[64];
   const char *pch;
@@ -133,6 +167,7 @@ void _ops_set_args(OPS_instance *instance, const char *argv) {
   if (pch != NULL) {
     snprintf(temp, 64, "%s", pch);
     instance->ops_cache_size = atof(temp + 15);
+
     if (instance->is_root()) instance->ostream() << "\n Cache size per process = " << instance->ops_cache_size << '\n';
   }
   pch = strstr(argv, "OPS_REALLOC=");
@@ -283,6 +318,7 @@ void ops_exit_core(OPS_instance *instance) {
     _ops_finalize_gpu_power_measurement(instance);
   }
   
+
   ops_dat_entry *item = TAILQ_FIRST(&instance->OPS_dat_list);
 
   /*free doubly linked list holding the ops_dats */
@@ -307,7 +343,6 @@ void ops_exit_core(OPS_instance *instance) {
   }
   ops_free(instance->OPS_block_list);
   instance->OPS_block_list = NULL;
-
 
   // free stencils
   for (int i = 0; i < instance->OPS_stencil_index; i++) {
@@ -366,6 +401,23 @@ void ops_exit_core(OPS_instance *instance) {
   edat_prev_acc.clear();
   std::vector<ops_access>().swap(edat_prev_acc);  // Free ops_access vector
 
+  //Clearing particle structures
+  for (int i = 0; i < instance->OPS_particle_halo_data_index; i++)
+    ops_free(instance->OPS_particle_halo_data_list[i]);
+  ops_free(instance->OPS_particle_halo_data_list);
+
+  //Fine for halo list
+  for (int i = 0; i < instance->OPS_particle_halo_index; i++)
+    instance->OPS_particle_halo_list[i] = _ops_free_particle_halo(instance->OPS_particle_halo_list[i]);
+   // ops_free(instance->OPS_particle_halo_list[i]);
+  ops_free(instance->OPS_particle_halo_list);
+
+  for (int i = 0; i < instance->OPS_particle_halo_group_index; i++) {
+    instance->OPS_particle_halo_group_list[i]
+       = _ops_free_particle_halo_group(instance->OPS_particle_halo_group_list[i]);
+  }
+  ops_free(instance->OPS_particle_halo_group_list);
+
   instance->is_initialised = 0;
 }
 
@@ -410,6 +462,13 @@ ops_block _ops_decl_block(OPS_instance *instance, int dims, const char *name) {
 
       OPS_block_list_new[i].num_datasets = instance->OPS_block_list[i].num_datasets;
 
+      //TODO: Check if assignment works fine
+      OPS_block_list_new[i].particle = instance->OPS_block_list[i].particle;
+      OPS_block_list_new[i].no_particle_structures
+                         = instance->OPS_block_list[i].no_particle_structures;
+      OPS_block_list_new[i].histories = instance->OPS_block_list[i].histories;
+      OPS_block_list_new[i].no_history_structures =
+          instance->OPS_block_list[i].no_history_structures;
     }
     ops_free(instance->OPS_block_list);
     instance->OPS_block_list = OPS_block_list_new;
@@ -423,6 +482,10 @@ ops_block _ops_decl_block(OPS_instance *instance, int dims, const char *name) {
   block->instance = instance;
   instance->OPS_block_list[instance->OPS_block_index].block = block;
   instance->OPS_block_list[instance->OPS_block_index].num_datasets = 0;
+
+  instance->OPS_block_list[instance->OPS_block_index].no_particle_structures = 0;
+  instance->OPS_block_list[instance->OPS_block_index].no_history_structures = 0;
+
   TAILQ_INIT(&(instance->OPS_block_list[instance->OPS_block_index].datasets));
   instance->OPS_block_index++;
 
@@ -541,6 +604,38 @@ void ops_dat_init_metadata_core(
   // These quantities are computed differently for different backends
 }
 
+void ops_dat_realloc_core(ops_dat dat, int sizex) {
+
+  if (dat == nullptr) {
+    OPSException ex{OPS_RUNTIME_CONFIGURATION_ERROR};
+    ex << "Error: Reallocation of an empty ops_dat structure";
+    throw ex;
+  }
+
+   /* Reallocation only for particles */
+
+
+   if (!dat->is_particle)
+    return;
+
+   if (sizex < 1) {
+      OPSException ex{OPS_INVALID_ARGUMENT};
+      ex<<"Error: Invalid size";
+      throw ex;
+   }
+
+  /* Increase size of ops_dat structure */
+  dat->size[0] = sizex;
+  int bytes = dat->dim;
+  for (int i = 0; i < dat->block->dims; i++)
+    bytes *= dat->size[i];
+
+  if (dat->data == NULL) {
+    dat->data = (char *) ops_calloc(bytes, dat->type_size);
+  }
+  else
+    dat->data =(char *)ops_realloc(dat->data, dat->type_size * bytes);
+}
 
 /**
  * Allocate an ops_dat on a given ops_block and insert into internal linked lists.
@@ -559,6 +654,7 @@ ops_dat ops_dat_alloc_core(ops_block block)
   dat->index = block->instance->OPS_dat_index++;
   dat->block = block;
 
+  dat->is_particle = false;
   /* Create a pointer to an item in the ops_dats doubly linked list */
   ops_dat_entry *item;
 
@@ -609,6 +705,7 @@ ops_dat ops_decl_dat_temp_core(ops_block block, int dim, int *dataset_size,
 }
 
 void ops_free_dat_core(ops_dat dat) {
+
   // Free lowdim edge dataset treatment
   edat_prev_range[dat->index].clear();
 
@@ -777,7 +874,6 @@ ops_stencil _ops_decl_restrict_stencil ( OPS_instance *instance, int dims, int p
   memcpy(stencil->mgrid_stride,stride,sizeof(int)*dims);
 
   stencil->type = 2;
-
 
   return stencil;
 }
@@ -1051,9 +1147,11 @@ ops_arg ops_arg_dat_core(ops_dat dat, ops_stencil stencil, ops_access acc) {
   arg.argtype = OPS_ARG_DAT;
   arg.dat = dat;
   arg.stencil = stencil;
-  if (acc == OPS_WRITE && stencil->points != 1) {
+  if (!dat->is_particle)
+    if (acc == OPS_WRITE && stencil->points != 1 ) {
       throw OPSException(OPS_INVALID_ARGUMENT, "Error: OPS does not support OPS_WRITE arguments with a non (0,0,0) stencil due to potential race conditions");
-  }
+    }
+
   if (dat != NULL) {
     arg.data = dat->data;
     arg.data_d = dat->data_d;
@@ -1063,6 +1161,32 @@ ops_arg ops_arg_dat_core(ops_dat dat, ops_stencil stencil, ops_access acc) {
   }
   arg.acc = acc;
   arg.opt = 1;
+  return arg;
+}
+
+
+/*---------------------------------------------------------*/
+/* For the moment assumed no stencil for particle data */
+/*---------------------------------------------------------*/
+ops_arg ops_arg_part_dat_core(ops_dat dat, ops_access acc) {
+  ops_arg arg;
+  memset(&arg, 0, sizeof(ops_arg));
+
+  arg.argtype = OPS_ARG_DAT_PARTICLE;
+
+  if (dat != NULL) {
+    arg.data = dat->data;
+    arg.data_d = dat->data_d;
+
+  }
+  else {
+    arg.data = NULL;
+    arg.data_d = NULL;
+  }
+
+  arg.acc = acc;
+  arg.opt = 1;
+
   return arg;
 }
 
@@ -1098,22 +1222,53 @@ ops_arg ops_arg_idx() {
 ops_arg ops_arg_dat(ops_dat dat, int dim, ops_stencil stencil, char const *type,
                     ops_access acc) {
     (void)type;
-  // return ops_arg_dat_core( dat, stencil, acc );
+
+    if (dat->is_particle)
+      throw OPSException(OPS_INVALID_ARGUMENT,"Error: ops_arg_dat_opt cannot be called for "
+                                              "particle_ops_dat structure");
+    // return ops_arg_dat_core( dat, stencil, acc );
   ops_arg temp = ops_arg_dat_core(dat, stencil, acc);
   (&temp)->dim = dim;
+
   return temp;
 }
 
 ops_arg ops_arg_dat_opt(ops_dat dat, int dim, ops_stencil stencil,
                         char const *type, ops_access acc, int flag) {
     (void)type;(void)dim;
+
+  if (dat->is_particle)
+    throw OPSException(OPS_INVALID_ARGUMENT,"Error: ops_arg_dat_opt cannot be called for "
+                                            "particle_ops_dat structure");
   ops_arg temp = ops_arg_dat_core(dat, stencil, acc);
   (&temp)->opt = flag;
   return temp;
 }
 
+
+ops_arg ops_arg_part_dat(ops_dat dat, int dim, char const * type, ops_access acc) {
+  (void) type;
+
+  if (!dat->is_particle)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Error, ops_arg_part_dat cannot be called for"
+                                             "grid ops_dat structure");
+
+  ops_arg temp = ops_arg_part_dat_core(dat, acc);
+
+  (&temp)->dim = dim;
+
+  return temp;
+}
+
 ops_arg ops_arg_gbl_char(char *data, int dim, int size, ops_access acc) {
   return ops_arg_gbl_core(data, dim, size, acc);
+}
+
+ops_arg ops_arg_particle_gbl_char(char *data, int dim, int size, ops_access acc) {
+  ops_arg temp = ops_arg_gbl_core(data, dim, size, acc);
+  (&temp)->argtype = OPS_ARG_GBL_PARTICLE;
+
+  return temp;
 }
 
 ops_reduction ops_decl_reduction_handle_core(OPS_instance *instance, int size, const char *type,
@@ -1274,17 +1429,27 @@ bool ops_checkpointing_filename(const char *file_name, std::string &filename_out
                                 std::string &filename_out2);
 
 
+bool ops_checkpoint_filename_txt(const char *filename, std::string &filename_out);
+
+
 void ops_print_dat_to_txtfile_core(ops_dat dat, const char* file_name_in)
 {
   //printf("file %s, name %s type = %s\n",file_name, dat->name, dat->type);
    std::string file_name, ignored;
   ops_checkpointing_filename(file_name_in, file_name, ignored);
+
+  ops_checkpoint_filename_txt(file_name_in, file_name);
+
   FILE *fp;
   if (fopen_s(&fp,file_name.c_str(), "a") != 0) {
     OPSException ex(OPS_RUNTIME_ERROR);
     ex << "Error: can't open file " << file_name;
     throw ex;
   }
+
+  if (dat->is_particle)
+    throw OPSException(OPS_RUNTIME_ERROR, "Error: ops_print_dat_to_txtfile is compatible "
+                       "with grid-based ops_dat structures\n");
 
   if (fprintf(fp, "ops_dat:  %s \n", dat->name) < 0) {
     OPSException ex(OPS_RUNTIME_ERROR);
@@ -1682,6 +1847,7 @@ void ops_timing_realloc(OPS_instance *instance, int kernel, const char *name) {
   if (instance->ops_gpu_power_measurement_active && instance->ops_gpu_measurement_counter++ % instance->ops_gpu_measurement_frequency == 0) {
     _ops_sample_gpu_power(instance);
   }
+
 }
 
 float ops_compute_transfer(int dims, int *start, int *end, ops_arg *arg) {
@@ -1847,6 +2013,7 @@ void ops_NaNcheck_core(ops_dat dat, char *buffer, int *disp, int *d_m) {
  int indices[OPS_MAX_DIM] = {0};
   ops_printf("ops_NaNcheck_core called for %s \n", dat->name);
 
+
   size_t prod[OPS_MAX_DIM+1];
   prod[0] = dat->size[0];
   for (int d = 1; d < OPS_MAX_DIM; d++) {
@@ -1935,6 +2102,7 @@ void ops_NaNcheck_core(ops_dat dat, char *buffer, int *disp, int *d_m) {
                     printf("%sError: NaN detected at element dim:%d,index:(%d", buffer, d, indices[0]);
                     for(int dim = 1; dim < dat->block->dims; dim++) printf(",%d",indices[dim]);
                     printf(")\n");
+
                     exit(2);
                   }
                 }
@@ -2044,6 +2212,7 @@ extern "C" ops_halo_group ops_decl_halo_group_elem(int nhalos, ops_halo *halos,
 
 void *ops_malloc(size_t size) {
   void *ptr=NULL;// = _mm_malloc(size, OPS_ALIGNMENT);
+
   if( posix_memalign((void**)&(ptr), OPS_ALIGNMENT, size) ) {
       OPSException ex(OPS_INTERNAL_ERROR);
       ex << "Error, posix_memalign() returned an error.";
@@ -2055,6 +2224,7 @@ void *ops_malloc(size_t size) {
 void *ops_calloc(size_t num, size_t size) {
 //#ifdef __INTEL_COMPILER
   //void * ptr = _mm_malloc(num*size, OPS_ALIGNMENT);
+
   void *ptr=NULL;
   if( posix_memalign((void**)&(ptr), OPS_ALIGNMENT, num*size) ) {
       OPSException ex(OPS_INTERNAL_ERROR);
@@ -2084,6 +2254,7 @@ void *ops_realloc(void *ptr, size_t size) {
         throw ex;
     }
     //void *newptr2 = _mm_malloc(size, OPS_ALIGNMENT);
+
     memcpy(newptr2, newptr, size);
     ops_free(newptr);
     return newptr2;
@@ -2584,11 +2755,130 @@ std::vector<std::vector<int> > edat_prev_range;
 std::vector<ops_access >       edat_prev_acc;
 std::vector<int> edge_dirtybit;
 
+typedef union {
+    double d;
+    uint64_t u;
+} dblbits;
+
+/* Fast check: is x within N ULPs of integer? */
+static inline bool near_integer(double x, int ulps) {
+    dblbits b = { .d = x };
+
+    if (!isfinite(x))
+        return false;
+
+    uint64_t exp  = (b.u >> 52) & 0x7FF;
+    uint64_t frac = b.u & ((1ULL << 52) - 1);
+
+    /* Exponent >= 1023 + 52 → integer (mantissa can't represent fractions) */
+    if (exp >= 1075)
+        return true;
+
+    int exp_val = (int)exp - 1023;
+
+    /* If value < 1.0 */
+    if (exp_val < 0) {
+        /* Only integer if close to 0 or 1 */
+        int shift = 52 + exp_val;   /* exp_val is negative */
+        if (shift < 0) return false;
+
+        uint64_t dist = frac >> shift;
+        return dist <= (uint64_t)ulps || dist >= ((1ULL << shift) - ulps);
+    }
+
+    /* Mask off fractional bits */
+    int frac_bits = 52 - exp_val;
+    uint64_t mask = (1ULL << frac_bits) - 1;
+    uint64_t fractional = frac & mask;
+
+    return fractional <= (uint64_t)ulps ||
+           fractional >= mask - (uint64_t)ulps;
+}
+
+
+double ops_floor(double x, double epsilon) {
+
+  if (epsilon < 0) epsilon = -epsilon;
+
+  double ipart = (double)(int64_t)x;
+  double frac = x - ipart;
+
+  if (fabs(frac) <= epsilon)
+    return ipart;
+
+  if (frac >= 1.0 - epsilon)
+    return ipart + 1.0;
+
+  if (frac <= -1. + epsilon)
+    return ipart - 1.0;
+
+  return floor(x);
+
+
+}
+
+float ops_floor(float x, float epsilon) {
+
+  if (epsilon < 0) epsilon = -epsilon;
+
+  float ipart = (float)(int64_t)x;
+  float frac = x - ipart;
+
+  if (fabsf(x) <= epsilon)
+    return ipart;
+
+  if (frac >= 1. - epsilon)
+    return ipart + 1.0;
+
+  if (frac <= - 1. + epsilon)
+    return ipart - 1.0;
+
+  return floorf(x);
+}
+
+double ops_ceil(double x, double epsilon) {
+  if (epsilon < 0) epsilon = -epsilon;
+
+  double ipart = (double)(int64_t)x;
+  double frac = x - ipart;
+
+  //Treated as exactly when close to integer
+  if (fabs(frac) <= epsilon)
+    return ipart;
+
+  if (frac >= 1. - epsilon)
+    return ipart + 1.0;
+
+  if (frac <= -1.0 + epsilon)
+    return ipart - 1.0;
+
+  return ceil(x);
+}
+
+float ops_ceil(float x, float epsilon) {
+  if (epsilon < 0) epsilon = -epsilon;
+
+  float ipart = (float)(int64_t)x;
+  float frac = x - ipart;
+
+  //Treated as exactly when close to integer
+  if (fabs(frac) <= epsilon)
+    return ipart;
+
+  if (frac >= 1. - epsilon)
+    return ipart + 1.0;
+
+  if (frac <= -1.0 + epsilon)
+    return ipart - 1.0;
+
+  return ceil(x);
+}
 /************* Functions only use in the Fortran Backend ************/
 
 extern "C" int getOPS_block_size_x() { return OPS_instance::getOPSInstance()->OPS_block_size_x; }
 extern "C" int getOPS_block_size_y() { return OPS_instance::getOPSInstance()->OPS_block_size_y; }
 extern "C" int getOPS_block_size_z() { return OPS_instance::getOPSInstance()->OPS_block_size_z; }
+
 
 /*
  * GPU Power Measurement Public APIs
@@ -2607,3 +2897,4 @@ void ops_sample_gpu_power() {
 double ops_get_gpu_energy_consumed() {
     return OPS_instance::getOPSInstance()->get_gpu_energy_consumed();
 }
+

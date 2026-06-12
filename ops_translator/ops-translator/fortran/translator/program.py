@@ -83,6 +83,7 @@ def translateProgram(program: Program, force_soa: bool, offload_pragma_flag_dict
         spec.content = new_content
 
     temp_source = str(ast)
+
     # 4. Comment the call to ops_decl_const, no implementation needed in Fortran
 #    pattern = r"(?i)(call|CALL)\sops_decl_const\(.*?\)"
 #    new_source = re.sub(pattern, r"!\g<0>", temp_source)
@@ -156,7 +157,6 @@ def unindent_cpp_directives(s: str) -> str:
     ]
 
     return re.sub(rf"^\s*#({'|'.join(directives)})(\s+|\s*$)", r"#\1\2", s, flags=re.MULTILINE)
-
 
 def add_offload_directives(app_consts: List[OPS.Const], offload_pragma_flag_dict: dict):
     file_path = 'constants.F90'

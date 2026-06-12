@@ -53,6 +53,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
                          int buf_strides_y, int buf_strides_z, bool mixed_exchange, int storage_type_size) {
 
   char *src_buff = (char*) src->data_d;
+
   size_t bufsize = src->block->instance->ops_halo_buffer_size;
   int thr_x = abs(rx_s - rx_e);
   int thr_y = abs(ry_s - ry_e);
@@ -150,6 +151,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
 //              dest[d*type_size+l] = srcptr[l];
             if (OPS_soa) src_buff += size_x * size_y * size_z * type_size;
             else src_buff += type_size;
+
           }
         }
       }
@@ -164,6 +166,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
                            int buf_strides_z, bool mixed_exchange, int storage_type_size) {
 
   char *dest_buff = (char*) dest->data_d;
+
   size_t bufsize = dest->block->instance->ops_halo_buffer_size;
   int thr_x = abs(rx_s - rx_e);
   int thr_y = abs(ry_s - ry_e);
@@ -261,6 +264,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
 //              destptr[l] = src[d*type_size+l];
             if (OPS_soa) dest_buff += size_x * size_y * size_z * type_size;
             else dest_buff += type_size;
+
           }
         }
       }

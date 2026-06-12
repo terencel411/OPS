@@ -259,12 +259,14 @@ program MBLOCK
     else
       print *,"extents: ", 0, 0, 0, 0
     endif
+
 !  call ops_print_dat_to_txtfile(data1, "data0_modified.txt")
 
   call ops_fetch_block_hdf5_file(grid1, "data0_modified.h5")
   call ops_fetch_dat_hdf5_file(data1, "data0_modified.h5")
 
   write(*,'(a)')"The test is considered as PASSED!"
+
   write(*,'(a)')"Sucessful exit from OPS"
 
   call ops_exit( )

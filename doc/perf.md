@@ -28,6 +28,7 @@ halos for multiple `ops_par_loops` can be exchanged with a single MPI
 message (see [TPDS2017](https://ieeexplore.ieee.org/abstract/document/8121995) for more details).  
 To test, compile CloverLeaf under ``OPS/apps/c/CloverLeaf``, modify clover.in
 to use a $6144^2$ mesh, then run as follows:  
+
 For OpenMP with tiling:
 ```bash
 export OMP_NUM_THREADS=xx; numactl -physnodebind=0 ./cloverleaf_tiled OPS_TILING

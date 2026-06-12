@@ -149,7 +149,7 @@ void copy_data_buf(const ops_dat &dat, const int *local_range,
   //     "At Rank II = %d istart=%d iend=%d  jstart=%d jend=%d  kstart=%d kend=%d\n",
   //     ops_my_global_rank,range_max_dim[0], range_max_dim[1], range_max_dim[2],
   //     range_max_dim[3],range_max_dim[4], range_max_dim[5]);
-  
+
   fetch_loop_slab(local_buf, dat->data, local_buf_size, dat->size, d_m,
                     dat->elem_size, dat->dim, range_max_dim);
   dat->dirty_hd = 1;
@@ -407,6 +407,7 @@ void ops_fetch_dat_hdf5_file(ops_dat dat, char const *file_name) {
     ops_get_data(dat);
     ops_check_lowdim_update(dat);
 
+
     // compute the number of elements that this process will write to the final
     // file
     // also compute the correct offsets on the final file that this process
@@ -429,6 +430,7 @@ void ops_fetch_dat_hdf5_file(ops_dat dat, char const *file_name) {
     // to write to hdf5 file
     int g_d_p[block->dims]; // global size of the block halo (+) depth
                 // attribute
+
     // to write to hdf5 file
 
     hsize_t count[block->dims];  // parameters for for hdf5 file chuck writing
@@ -495,6 +497,7 @@ void ops_fetch_dat_hdf5_file(ops_dat dat, char const *file_name) {
         local_range[2 * d + 1] = 1;
       }
     }
+
 
     copy_data_buf(dat, local_range, data);
     delete[] range;

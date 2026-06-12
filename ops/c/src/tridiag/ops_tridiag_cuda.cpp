@@ -40,6 +40,7 @@
 #include <string>
 
 //#include <ops_cuda_rt_support.h>
+
 #include <ops_lib_core.h>
 #include <ops_tridiag.h>
 
@@ -121,6 +122,7 @@ void ops_tridMultiDimBatch(
   int device = OPS_DEVICE;
   ops_stencil S3D_000 = a->block->instance->OPS_internal_0[3];
 
+
   // Calculate dimension of area being solved and the starting offset from the
   // origin of the dat
   int dims[3];
@@ -196,6 +198,7 @@ void ops_tridMultiDimBatch_Inc(
 
   int device = OPS_DEVICE;
   ops_stencil S3D_000 = a->block->instance->OPS_internal_0[3];
+
 
   // Calculate dimension of area being solved and the starting offset from the
   // origin of the dat

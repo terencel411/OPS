@@ -69,7 +69,6 @@ program POISSON
   !halo vars
   integer(kind=4) ::  sizes(2*ngrid_x*ngrid_y), disps(2*ngrid_x*ngrid_y)
   integer(kind=4) ::  dispx, dispy
-
   integer(kind=4) ::  halo_iter(2), base_from(2), base_to(2), dir(2), dir_to(2)
 
   !ops blocks
@@ -92,7 +91,7 @@ program POISSON
 
   !ops_halos
   type(ops_halo) :: halos((2*(ngrid_x*(ngrid_y-1)+(ngrid_x-1)*ngrid_y)))
-  
+
   !ops_halo group
   type(ops_halo_group) :: u_halos
 
@@ -187,6 +186,7 @@ program POISSON
       print *, "disps ",disps(2*((i-1)+ngrid_x*(j-1))+1),", ",disps(2*((i-1)+ngrid_x*(j-1))+2)
     END DO
   END DO
+
 
   off = 1
   DO j = 1, ngrid_y
@@ -292,11 +292,11 @@ program POISSON
       iter_range(4) = sizes(2*((i-1)+ngrid_x*(j-1))+2)
       !write(*,*) iter_range
       call ops_par_loop(poisson_initialguess_kernel, "poisson_initialguess_kernel", blocks((i-1)+ngrid_x*(j-1)+1), 2, iter_range, &
-                      ops_arg_dat(u((i-1)+ngrid_x*(j-1)+1), 1, S2D_00, "real(kind=8)", OPS_WRITE))
+                        ops_arg_dat(u((i-1)+ngrid_x*(j-1)+1), 1, S2D_00, "real(kind=8)", OPS_WRITE))
+
 
     END DO
   END DO
-
 
   !
   ! Main iterative loop
@@ -365,7 +365,6 @@ program POISSON
   call ops_execute_block(blocks(1))
 #endif
 
-  !call ops_dump_to_hdf5("output.h5")
   !call ops_print_dat_to_txtfile(u(1), "poisson.dat")
   !call ops_print_dat_to_txtfile(ref(1), "poisson.dat")
   !call exit()

@@ -519,7 +519,6 @@
         endif()
     endfunction()
 
-
 #   Prepare the macro for compiling apps
 #   Name: App name
 #   Odd: Key words for source files are included in other source files and need no explicit compilation

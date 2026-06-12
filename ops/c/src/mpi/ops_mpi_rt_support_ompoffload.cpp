@@ -182,12 +182,12 @@ void ops_unpack_ompoffload_internal(ops_dat dat, const int dest_offset, const ch
 }
 
 void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
-		int rx_e, int ry_s, int ry_e, int rz_s, int rz_e,
-		int x_step, int y_step, int z_step, int buf_strides_x,
-		int buf_strides_y, int buf_strides_z, bool mixed_exchange, int storage_type_size) {
+                         int rx_e, int ry_s, int ry_e, int rz_s, int rz_e,
+                         int x_step, int y_step, int z_step, int buf_strides_x,
+                         int buf_strides_y, int buf_strides_z, bool mixed_exchange, int storage_type_size) {
 
-	dest += dest_offset;
-	int thr_x = abs(rx_s - rx_e);
+  dest += dest_offset;
+  int thr_x = abs(rx_s - rx_e);
 	int thr_y = abs(ry_s - ry_e);
 	int thr_z = abs(rz_s - rz_e);
 	int size = abs(src->elem_size * (rx_e - rx_s) * (ry_e - ry_s) * (rz_e - rz_s));
@@ -306,6 +306,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
                             dest_buff[i_size] = src_buff[i_size];
 #endif
                       }
+
 						if (OPS_soa) src_buff += size_x * size_y * size_z * type_size;
 						else src_buff += type_size;
 					}
@@ -324,6 +325,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
 		int x_step, int y_step, int z_step,
 		int buf_strides_x, int buf_strides_y,
 		int buf_strides_z, bool mixed_exchange, int storage_type_size) {
+
 
 	src += src_offset;
 	int thr_x = abs(rx_s - rx_e);
@@ -445,6 +447,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
                             dest_buff[i_size] = src_buff[i_size];
 #endif
                       }
+
 						if (OPS_soa) dest_buff += size_x * size_y * size_z * type_size;
 						else dest_buff += type_size;
 					}

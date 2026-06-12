@@ -128,6 +128,9 @@ void _ops_exit(OPS_instance *instance) {
   MPI_Finalized(&flag);
   if (!flag)
     MPI_Finalize();
+
+  ops_exit_particles(instance);
+  ops_exit_histories(instance);
   ops_exit_core(instance);
   ops_exit_device(instance);
 }
@@ -182,6 +185,7 @@ ops_dat ops_decl_dat_char(ops_block block, int size, int *dat_size, int *base,
 
 void ops_print_dat_to_txtfile(ops_dat dat, const char *file_name) {
   ops_check_lowdim_update(dat);
+
   if (OPS_sub_block_list[dat->block->index]->owned == 1) {
     ops_get_data(dat);
     ops_print_dat_to_txtfile_core(dat, file_name);
@@ -190,12 +194,14 @@ void ops_print_dat_to_txtfile(ops_dat dat, const char *file_name) {
 
 void ops_NaNcheck(ops_dat dat) {
   ops_check_lowdim_update(dat);
+
   if (OPS_sub_block_list[dat->block->index]->owned == 1) {
     ops_get_data(dat);
     char buffer[30];
     sprintf(buffer, "On rank %d \t", ops_my_global_rank);
     sub_dat *sd = OPS_sub_dat_list[dat->index];
     ops_NaNcheck_core(dat, buffer, sd->decomp_disp, sd->d_im);
+
   }
 }
 

@@ -434,5 +434,6 @@ void reduct21D_inc(const ACC<double> &dat3D, ACC<double> &dat1D_x, ACC<double> &
     dat1D_x.combine_inc(0,0,0,dat3D(0,0,0));
     dat1D_y.combine_inc(0,0,0,dat3D(0,0,0));
     dat1D_z.combine_inc(0,0,0,dat3D(0,0,0));
+
 }
 #endif

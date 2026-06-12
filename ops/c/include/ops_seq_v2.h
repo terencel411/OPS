@@ -247,6 +247,7 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
   }
   #endif //OPS_MPI
 
+
   #ifdef OPS_DEBUG
   ops_register_args(block->instance, args, name);
   #endif
@@ -255,6 +256,7 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
     {param_handler<param_remove_cvref_t<ParamType>>::construct(arguments, dim, ndim, start, block)...};
   //Offs decl
   int offs[N][OPS_MAX_DIM] = {};
+
   (void) std::initializer_list<int>{(initoffs(arguments, offs[J], ndim, start, end), 0)...};
 
   int total_range = 1;

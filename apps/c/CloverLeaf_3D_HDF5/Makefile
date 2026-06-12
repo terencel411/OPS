@@ -46,3 +46,4 @@ generate_file_mpi: generate_file.cpp build_field_hdf5.cpp read_input.cpp initial
                 initialise_chunk.cpp initialise.cpp generate_hdf5.cpp -lops_hdf5_mpi -lops_mpi $(HDF5_LIB_MPI) -o generate_file_mpi
 
 EXTRA_CLEAN_FILES = generate_file generate_file_mpi
+

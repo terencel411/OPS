@@ -348,6 +348,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
           int idx_z = rz_s + z_step * global_z_id;
           int idx_y = ry_s + y_step * global_y_id;
           int idx_x = rx_s + x_step * global_x_id;
+
           if ((x_step == 1 ? idx_x < rx_e : idx_x > rx_e) &&
               (y_step == 1 ? idx_y < ry_e : idx_y > ry_e) &&
               (z_step == 1 ? idx_z < rz_e : idx_z > rz_e)) {
@@ -398,6 +399,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
               } else {
                 memcpy(&gpu_ptr[d_offset+d*type_size], &src_buff[s_offset], type_size);
               }
+
               if (OPS_soa)
                 s_offset += size_x * size_y * size_z * type_size;
               else
@@ -478,7 +480,8 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
   block->instance->sycl_instance->queue->submit([&](cl::sycl::handler &cgh) {
 
     cgh.parallel_for<class copy_frombuf>(
-      cl::sycl::nd_range<3>(
+
+        cl::sycl::nd_range<3>(
         cl::sycl::range<3>(blk_z*thr_z,blk_y*thr_y,blk_x*thr_x),
         cl::sycl::range<3>(thr_z,thr_y,thr_x)),
    [=](cl::sycl::nd_item<3> item) {
@@ -492,6 +495,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
           int idx_z = rz_s + z_step * global_z_id;
           int idx_y = ry_s + y_step * global_y_id;
           int idx_x = rx_s + x_step * global_x_id;
+
           if ((x_step == 1 ? idx_x < rx_e : idx_x > rx_e) &&
               (y_step == 1 ? idx_y < ry_e : idx_y > ry_e) &&
               (z_step == 1 ? idx_z < rz_e : idx_z > rz_e)) {
@@ -542,6 +546,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
               } else {
                 memcpy(&dest_buff[d_offset], &gpu_ptr[s_offset+d*type_size], type_size);
               }
+
               if (OPS_soa)
                 d_offset += size_x * size_y * size_z * type_size;
               else

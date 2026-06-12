@@ -50,105 +50,106 @@ void OPS_instance::set_ostream(std::ostream &s) {
 
 void OPS_instance::init_globals() {
 
-  	//Blocks, Dats, Stencils Halos, Reductions
-	OPS_block_index=0; OPS_block_max=0; OPS_dat_index=0; OPS_dat_max=0;
-	OPS_halo_group_index=0; OPS_halo_group_max=0; OPS_halo_index=0; OPS_halo_max=0;
-	OPS_reduction_index=0; OPS_reduction_max=0; OPS_stencil_index=0; OPS_stencil_max=0;
-	OPS_block_list=NULL;
-	OPS_stencil_list=NULL;
-	OPS_halo_list=NULL;
-	OPS_halo_group_list=NULL;
-	OPS_reduction_list = NULL;
-	
 
-	// Checkpointing
-	OPS_enable_checkpointing=0;
-	OPS_checkpointing_time=0.0;
-	ops_thread_offload = 0;
-	ops_checkpoint_inmemory = 0;
-	ops_lock_file = 0;
-	backup_state=OPS_NONE;
-	OPS_dat_ever_written = 0;
-	OPS_dat_status=NULL;
-	OPS_ranks_per_node=0;
+  //Blocks, Dats, Stencils Halos, Reductions
+  OPS_block_index=0; OPS_block_max=0; OPS_dat_index=0; OPS_dat_max=0;
+  OPS_halo_group_index=0; OPS_halo_group_max=0; OPS_halo_index=0; OPS_halo_max=0;
+  OPS_reduction_index=0; OPS_reduction_max=0; OPS_stencil_index=0; OPS_stencil_max=0;
+  OPS_block_list=NULL;
+  OPS_stencil_list=NULL;
+  OPS_halo_list=NULL;
+  OPS_halo_group_list=NULL;
+  OPS_reduction_list = NULL;
 
 
-	// Debugging
-	OPS_curr_args = NULL;
-	OPS_curr_name = NULL;
+  // Checkpointing
+  OPS_enable_checkpointing=0;
+  OPS_checkpointing_time=0.0;
+  ops_thread_offload = 0;
+  ops_checkpoint_inmemory = 0;
+  ops_lock_file = 0;
+  backup_state=OPS_NONE;
+  OPS_dat_ever_written = 0;
+  OPS_dat_status=NULL;
+  OPS_ranks_per_node=0;
 
-	//Diagnostics
-	OPS_kern_max=0; OPS_kern_curr=0;
-	OPS_kernels=NULL;
-	ops_user_halo_exchanges_time = 0.0;
 
-	char default_paths[1024];
-	strcpy(&default_paths[0],"/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj;/sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj");
-	char default_dram_paths[1024];
-	strcpy(&default_dram_paths[0],"/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj;/sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/energy_uj");
-	char* env_paths = getenv("RAPL_PATH");
-	if (!env_paths) {
-		env_paths = default_paths;
-	}
-	char* env_dram_paths = getenv("RAPL_DRAM_PATH");
-	if (!env_dram_paths) {
-		env_dram_paths = default_dram_paths;
-	}
+  // Debugging
+  OPS_curr_args = NULL;
+  OPS_curr_name = NULL;
 
-	//concatenate the paths
-	char* paths = (char*)ops_malloc(sizeof(char)*(strlen(env_paths)+strlen(env_dram_paths)+2));
-	char* paths2 = (char*)ops_malloc(sizeof(char)*(strlen(env_paths)+strlen(env_dram_paths)+2));
-	strcpy(paths, env_paths);
-	strcat(paths, ";");
-	strcat(paths, env_dram_paths);
-	strcpy(paths2, paths);
+  //Diagnostics
+  OPS_kern_max=0; OPS_kern_curr=0;
+  OPS_kernels=NULL;
+  ops_user_halo_exchanges_time = 0.0;
 
-	ops_energy_paths_count = 0;
-    if (paths) {
-		// Count the number of paths
-		int num_paths = 0;
-		char* path = strtok(paths, ";");
-		while (path != NULL) {
-			num_paths++;
-			path = strtok(NULL, ";");
-		}
+  char default_paths[1024];
+  strcpy(&default_paths[0],"/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj;/sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj");
+  char default_dram_paths[1024];
+  strcpy(&default_dram_paths[0],"/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/energy_uj;/sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/intel-rapl:1:0/energy_uj");
+  char* env_paths = getenv("RAPL_PATH");
+  if (!env_paths) {
+    env_paths = default_paths;
+  }
+  char* env_dram_paths = getenv("RAPL_DRAM_PATH");
+  if (!env_dram_paths) {
+    env_dram_paths = default_dram_paths;
+  }
 
-		// Read the paths and initial energies
-		ops_energy_paths_count = num_paths;
-		ops_energy_paths = (char**)ops_malloc(sizeof(char*)*num_paths);
-		ops_energy_counters = (long long*)ops_malloc(sizeof(long long)*num_paths);
+  //concatenate the paths
+  char* paths = (char*)ops_malloc(sizeof(char)*(strlen(env_paths)+strlen(env_dram_paths)+2));
+  char* paths2 = (char*)ops_malloc(sizeof(char)*(strlen(env_paths)+strlen(env_dram_paths)+2));
+  strcpy(paths, env_paths);
+  strcat(paths, ";");
+  strcat(paths, env_dram_paths);
+  strcpy(paths2, paths);
 
-		num_paths = 0;
-		path = strtok(paths2, ";");
-		while (path != NULL) {
-			ops_energy_paths[num_paths] = strdup(path); // Duplicate the string for safekeeping
-			//check if path exists
-			if (access(path, R_OK) == -1) {
-				if (env_paths != default_paths)
-					ops_printf("Error: RAPL path %s does not exist or does not have the right permissions. Skipping.\n", path);
-				ops_energy_paths[num_paths] = NULL;
-			} else {
-				// Read initial energy
-				FILE* file = fopen(path, "r");
-				if (file == NULL) {
-					if (env_paths != default_paths)
-						ops_printf("Error: Could not open RAPL path %s. Skipping.\n", path);
-				} else {
-					fscanf(file, "%lld", &ops_energy_counters[num_paths]);
-					fclose(file);
-				}
-			}
-			num_paths++;
-			path = strtok(NULL, ";");
-		}
+  ops_energy_paths_count = 0;
+  if (paths) {
+    // Count the number of paths
+    int num_paths = 0;
+    char* path = strtok(paths, ";");
+    while (path != NULL) {
+      num_paths++;
+      path = strtok(NULL, ";");
     }
+
+    // Read the paths and initial energies
+    ops_energy_paths_count = num_paths;
+    ops_energy_paths = (char**)ops_malloc(sizeof(char*)*num_paths);
+    ops_energy_counters = (long long*)ops_malloc(sizeof(long long)*num_paths);
+
+    num_paths = 0;
+    path = strtok(paths2, ";");
+    while (path != NULL) {
+      ops_energy_paths[num_paths] = strdup(path); // Duplicate the string for safekeeping
+      //check if path exists
+      if (access(path, R_OK) == -1) {
+        if (env_paths != default_paths)
+          ops_printf("Error: RAPL path %s does not exist or does not have the right permissions. Skipping.\n", path);
+        ops_energy_paths[num_paths] = NULL;
+      } else {
+        // Read initial energy
+        FILE* file = fopen(path, "r");
+        if (file == NULL) {
+          if (env_paths != default_paths)
+            ops_printf("Error: Could not open RAPL path %s. Skipping.\n", path);
+        } else {
+          fscanf(file, "%lld", &ops_energy_counters[num_paths]);
+          fclose(file);
+        }
+      }
+      num_paths++;
+      path = strtok(NULL, ";");
+    }
+  }
 
 
 
   ops_message_count = 0;
   ops_message_size = 0;
   ops_reduction_time = 0.0;
-  
+
   // Initialize GPU power measurement
   ops_gpu_energy_consumed = 0.0;
   ops_gpu_power_measurement_start_time = 0.0;
@@ -158,45 +159,55 @@ void OPS_instance::init_globals() {
   ops_gpu_measurement_counter = 0;
   ops_gpu_measurement_frequency = 10;
 
-	//Tiling
-	ops_enable_tiling = 0;
-	ops_cache_size = 0;
-	ops_tiling_mpidepth = -1;
-	ops_tiled_halo_exchange_time=0.0;
-	tiling_instance=NULL;
-	checkpointing_instance=NULL;
-	tilesize_x=-1;
-	tilesize_y=-1;
-	tilesize_z=-1;
+  //Tiling
+  ops_enable_tiling = 0;
+  ops_cache_size = 0;
+  ops_tiling_mpidepth = -1;
+  ops_tiled_halo_exchange_time=0.0;
+  tiling_instance=NULL;
+  checkpointing_instance=NULL;
+  tilesize_x=-1;
+  tilesize_y=-1;
+  tilesize_z=-1;
 
-	//Other runtime configuration args
-	OPS_realloc = 0;
-	OPS_soa=0;
-	OPS_diags=0;
+  //Other runtime configuration args
+  OPS_realloc = 0;
+  OPS_soa=0;
+  OPS_diags=0;
 
-	// CUDA & OpenCL
-	OPS_hybrid_gpu=0; OPS_gpu_direct=0;
-	OPS_block_size_x = 32;
-	OPS_block_size_y = 4;
-	OPS_block_size_z = 1;
-	OPS_device_id = -1; // -1 means auto-select device
-	OPS_consts_h=NULL; OPS_consts_d=NULL; OPS_reduct_h=NULL; OPS_reduct_d=NULL;
-	OPS_consts_bytes = 0; OPS_reduct_bytes = 0;
-	OPS_cl_device=0;
-	ops_halo_buffer = NULL;
-	ops_halo_buffer_d = NULL;
-	ops_halo_buffer_size = 0;
-	OPS_gbl_changed = 1;
-	OPS_gbl_prev = NULL;
-	opencl_instance = NULL;
+  // CUDA & OpenCL
+  OPS_hybrid_gpu=0; OPS_gpu_direct=0;
+  OPS_block_size_x = 32;
+  OPS_block_size_y = 4;
+  OPS_block_size_z = 1;
+  OPS_device_id = -1; // -1 means auto-select device
+  OPS_consts_h=NULL; OPS_consts_d=NULL; OPS_reduct_h=NULL; OPS_reduct_d=NULL;
+  OPS_consts_bytes = 0; OPS_reduct_bytes = 0;
+  OPS_cl_device=0;
+  ops_halo_buffer = NULL;
+  ops_halo_buffer_d = NULL;
+  ops_halo_buffer_size = 0;
+  OPS_gbl_changed = 1;
+  OPS_gbl_prev = NULL;
+  opencl_instance = NULL;
 
-	is_initialised = 1;
-	char buf[20];
-	int points[OPS_MAX_DIM] = {0};
-	for (int i = 0; i < OPS_MAX_DIM; i++) {
-		snprintf(buf, 20, "OPS_internal_0_%d\n", i+1);
-		OPS_internal_0[i] = this->decl_stencil(i+1, 1, points, buf);
-	}
+  is_initialised = 1;
+  char buf[20];
+  int points[OPS_MAX_DIM] = {0};
+  for (int i = 0; i < OPS_MAX_DIM; i++) {
+    snprintf(buf, 20, "OPS_internal_0_%d\n", i+1);
+    OPS_internal_0[i] = this->decl_stencil(i+1, 1, points, buf);
+  }
+
+  /* Particle structures */
+  OPS_particle_halo_data_list = NULL;
+  OPS_particle_halo_data_max = 0; OPS_particle_halo_data_index = 0;
+  OPS_particle_halo_list = NULL;
+  OPS_particle_halo_max = 0; OPS_particle_halo_index = 0;
+
+  OPS_particle_halo_group_list = NULL;
+  OPS_particle_halo_group_max = 0; OPS_particle_halo_group_index = 0;
+
 }
 
 OPS_instance::OPS_instance(const int argc, const char * const argv[], const int diags_level, std::ostream &s) {
@@ -288,11 +299,6 @@ void OPS_instance::partition(const char *routine, std::map<std::string, void*>& 
 void OPS_instance::exit() {
   _ops_exit(this);
 }
-
-
-
-
-
 
 //Forwarding calls for ops_dat
 ops_dat_core::~ops_dat_core() {_ops_free_dat(this);}

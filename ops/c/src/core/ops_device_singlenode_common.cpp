@@ -100,7 +100,7 @@ ops_dat ops_decl_dat_char(ops_block block, int size, int *dat_size, int *base,
     cumsize *= dat->size[i];
   }
 
-
+  dat->is_particle = false;
   dat->x_pad = 0; // no padding for data alignment
 
   return dat;
@@ -340,6 +340,7 @@ void ops_halo_transfer(ops_halo_group group) {
                           ranges[2], ranges[3], ranges[4], ranges[5], step[0],
                           step[1], step[2], buf_strides[0], buf_strides[1],
                           buf_strides[2],mixed_exchange, storage_type_size);
+
 
     halo->to->dirty_hd = 2;
   }

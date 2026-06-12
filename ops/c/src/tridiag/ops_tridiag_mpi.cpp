@@ -281,6 +281,7 @@ void ops_tridMultiDimBatch_Inc(
   int host = OPS_HOST;
   ops_stencil S3D_000 = a->block->instance->OPS_internal_0[3];
 
+
   if(strcmp(a->type, "double") == 0) {
     const double *a_ptr = (double *)ops_dat_get_raw_pointer(a, 0, S3D_000, &host);
     const double *b_ptr = (double *)ops_dat_get_raw_pointer(b, 0, S3D_000, &host);

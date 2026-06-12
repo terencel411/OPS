@@ -75,6 +75,7 @@ void ops_init_device(OPS_instance *instance, const int argc, const char *const a
 
 //  int heapsize = 16*1024*1024;
 //  cutilSafeCall(instance->ostream(),cudaDeviceSetLimit(cudaLimitMallocHeapSize,heapsize));
+
 }
 
 void ops_device_malloc(OPS_instance *instance, void** ptr, size_t bytes) {
@@ -141,6 +142,7 @@ void cutilDeviceInit(OPS_instance *instance, const int argc, const char * const 
       throw OPSException(OPS_RUNTIME_CONFIGURATION_ERROR, "Error: specified CUDA device ID exceeds available device count");
     }
     cudaError_t err = cudaSetDevice(instance->OPS_device_id);
+
     if (err == cudaSuccess) {
       cudaError_t err2 = cudaMalloc((void **)&test, sizeof(float));
       if (err2 == cudaSuccess) {
@@ -161,6 +163,7 @@ void cutilDeviceInit(OPS_instance *instance, const int argc, const char * const 
           instance->OPS_hybrid_gpu = 1;
           break;
         }
+
       }
     }
   }
@@ -176,6 +179,7 @@ void cutilDeviceInit(OPS_instance *instance, const int argc, const char * const 
 
     // Initialize GPU power measurement
     _ops_reset_gpu_power_counters(instance);
+
   } else {
     throw OPSException(OPS_RUNTIME_CONFIGURATION_ERROR, "Error: no available CUDA devices");
   }
@@ -236,6 +240,7 @@ void ops_fill_random_uniform(ops_dat dat) {
   }
   ops_set_halo_dirtybit3(&arg, iter_range);
   delete[] iter_range;
+
 }
 
 void ops_fill_random_normal(ops_dat dat) {
@@ -390,3 +395,4 @@ void _ops_finalize_gpu_power_measurement(OPS_instance *instance) {
     }
 #endif
 }
+

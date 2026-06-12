@@ -125,6 +125,10 @@ fi
 echo "All Intel classic complier based applications ---- PASSED"
 
 if [[ -v TELOS || -v DEMOS ]]; then
+=======
+
+comment
+>>>>>>> mpi_zone
 
 cd $OPS_INSTALL_PATH/fortran
 source ../../scripts/$SOURCE_PGI
@@ -133,7 +137,9 @@ make
 cd -
 make clean
 make
+
 #shsgc_openmp  shsgc_mpi_openmp  shsgc_mpi  shsgc_cuda  shsgc_mpi_cuda
+
 
 #============================ Test SHSGC PGI Compilers ==========================================================
 echo '============> Running OpenMP'
@@ -242,6 +248,7 @@ rm perf_out
 
 echo '============> Running MPI+OMPOFFLOAD'
 $MPI_INSTALL_PATH/bin/mpirun -np 2 ./shsgc_mpi_ompoffload OPS_BLOCK_SIZE_X=64 OPS_BLOCK_SIZE_Y=4 > perf_out
+
 grep "RMS =" perf_out
 grep "Max total runtime" perf_out
 grep "PASSED" perf_out
@@ -262,3 +269,4 @@ echo "All PGI complier based applications ---- PASSED"
 fi
 
 echo "All Tests PASSED .. exiting script"
+

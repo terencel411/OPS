@@ -54,6 +54,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
                          int rx_e, int ry_s, int ry_e, int rz_s, int rz_e,
                          int x_step, int y_step, int z_step, int buf_strides_x,
                          int buf_strides_y, int buf_strides_z, bool mixed_exchange, int storage_type_size) {
+
   ops_block block = src->block;
 
   // dest += dest_offset; <- a kernelen belül kell
@@ -95,6 +96,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
         cl::sycl::range<3>(blk_z*thr_z,blk_y*thr_y,blk_x*thr_x),
         cl::sycl::range<3>(thr_z,thr_y,thr_x)),
    [=](cl::sycl::nd_item<3> item) {
+
       //get x dimension id
       int global_x_id = item.get_global_id()[2];
       //get y dimension id
@@ -155,6 +157,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
           } else {
             memcpy(&dest[d_offset + d*type_size], &src_buff[s_offset], type_size);
           }
+
           if (OPS_soa) s_offset += size_x * size_y * size_z * type_size;
           else s_offset += type_size;
         }
@@ -168,7 +171,6 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
                            int x_step, int y_step, int z_step,
                            int buf_strides_x, int buf_strides_y,
                            int buf_strides_z, bool mixed_exchange, int storage_type_size) {
-
 
   ops_block block = dest->block;
 
@@ -208,6 +210,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
         cl::sycl::range<3>(blk_z*thr_z,blk_y*thr_y,blk_x*thr_x),
         cl::sycl::range<3>(thr_z,thr_y,thr_x)),
    [=](cl::sycl::nd_item<3> item) {
+
       //get x dimension id
       int global_x_id = item.get_global_id()[2];
       //get y dimension id
@@ -268,6 +271,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
           } else {
             memcpy(&dest_buff[d_offset], &src[s_offset + d*type_size], type_size);
           }
+
           if (OPS_soa) d_offset += size_x * size_y * size_z * type_size;
           else d_offset += type_size;
         }

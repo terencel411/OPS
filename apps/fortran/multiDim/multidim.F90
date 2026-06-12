@@ -136,6 +136,7 @@ program MULTIDIM
 !  call ops_par_loop(multidim_print_kernel,"multidim_print_kernel", grid2D, 2, iter_range, &
 !               & ops_arg_dat(dat0, 2, S2D_00, "real(kind=8)", OPS_READ))
 
+
   call ops_par_loop(multidim_reduce_kernel,"multidim_reduce_kernel", grid2D, 2, iter_range, &
                & ops_arg_dat(dat1, 2, S2D_00, "real(kind=8)", OPS_READ), &
                & ops_arg_gbl(gbl_test, 2, "real(kind=8)", OPS_READ),     &
@@ -150,7 +151,6 @@ program MULTIDIM
   call ops_fetch_block_hdf5_file(grid2D, "multidim.h5")
   call ops_fetch_dat_hdf5_file(dat0, "multidim.h5")
   call ops_fetch_dat_hdf5_file(dat1, "multidim.h5")
-
 
   !call ops_timing_output (6) ! where is this printing to ? .. problem in what stdout is in fortran
   if (ops_is_root() .eq. 1) then

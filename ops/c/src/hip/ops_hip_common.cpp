@@ -81,6 +81,7 @@ void ops_device_malloc(OPS_instance *instance, void** ptr, size_t bytes) {
 
 void ops_device_mallochost(OPS_instance *instance, void** ptr, size_t bytes) {
   hipSafeCall(instance->ostream(), hipHostMalloc(ptr, bytes));
+
 }
 
 void ops_device_free(OPS_instance *instance, void** ptr) {
@@ -139,6 +140,7 @@ void cutilDeviceInit(OPS_instance *instance, const int argc, const char * const 
       throw OPSException(OPS_RUNTIME_CONFIGURATION_ERROR, "Error: specified HIP device ID exceeds available device count");
     }
     hipError_t err = hipSetDevice(instance->OPS_device_id);
+
     if (err == hipSuccess) {
       hipError_t err2 = hipMalloc((void **)&test, sizeof(float));
       if (err2 == hipSuccess) {
@@ -159,6 +161,7 @@ void cutilDeviceInit(OPS_instance *instance, const int argc, const char * const 
           instance->OPS_hybrid_gpu = 1;
           break;
         }
+
       }
     }
   }
@@ -174,6 +177,7 @@ void cutilDeviceInit(OPS_instance *instance, const int argc, const char * const 
 
     // Initialize GPU power measurement
     _ops_reset_gpu_power_counters(instance);
+
   } else {
     throw OPSException(OPS_RUNTIME_CONFIGURATION_ERROR, "Error: no available HIP devices");
   }
@@ -412,3 +416,4 @@ void _ops_finalize_gpu_power_measurement(OPS_instance *instance) {
     }
 #endif
 }
+

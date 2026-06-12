@@ -48,6 +48,7 @@
 
 #define AGGREGATE
 size_t ops_buffer_size = 0;
+
 char *ops_buffer_send_1 = NULL;
 char *ops_buffer_recv_1 = NULL;
 char *ops_buffer_send_2 = NULL;
@@ -56,6 +57,7 @@ size_t ops_buffer_send_1_size = 0;
 size_t ops_buffer_recv_1_size = 0;
 size_t ops_buffer_send_2_size = 0;
 size_t ops_buffer_recv_2_size = 0;
+
 int *mpi_neigh_size = NULL;
 
 extern double ops_gather_time;
@@ -163,6 +165,7 @@ int ops_compute_intersections(ops_dat dat, int d_pos, int d_neg,
   return 1;
 
 }
+
 void ops_exchange_halo_packer(ops_dat dat, int d_pos, int d_neg,
                               int *iter_range, int dim,
                               size_t *send_recv_offsets) {
@@ -213,6 +216,7 @@ void ops_exchange_halo_packer(ops_dat dat, int d_pos, int d_neg,
     throw ex;
   }
 
+
   // set up initial pointers
   int i2 = (-d_m[dim]) * prod[dim - 1];
   // int i4 = (prod[dim]/prod[dim-1] - (d_p[dim])    ) * prod[dim-1];
@@ -238,6 +242,7 @@ void ops_exchange_halo_packer(ops_dat dat, int d_pos, int d_neg,
   if (send_recv_offsets[0] + send_size > ops_buffer_send_1_size) {
 //    if (OPS_instance::getOPSInstance()->OPS_diags > 4)
 //      printf("Realloc ops_buffer_send_1\n");
+
     ops_buffer_send_1 = (char *)OPS_realloc_fast(ops_buffer_send_1, send_recv_offsets[0],
                                         send_recv_offsets[0] + 4 * send_size);
     ops_buffer_send_1_size = send_recv_offsets[0] + 4 * send_size;
@@ -245,6 +250,7 @@ void ops_exchange_halo_packer(ops_dat dat, int d_pos, int d_neg,
   if (send_recv_offsets[1] + recv_size > ops_buffer_recv_1_size) {
 //    if (OPS_instance::getOPSInstance()->OPS_diags > 4)
 //      printf("Realloc ops_buffer_recv_1\n");
+
     ops_buffer_recv_1 = (char *)OPS_realloc_fast(ops_buffer_recv_1, send_recv_offsets[1],
                                         send_recv_offsets[1] + 4 * recv_size);
     ops_buffer_recv_1_size = send_recv_offsets[1] + 4 * recv_size;
@@ -293,7 +299,6 @@ void ops_exchange_halo_packer(ops_dat dat, int d_pos, int d_neg,
     throw ex;
   }
 
-
   // set up initial pointers
   // int i1 = (-d_m[dim] - actual_depth_recv) * prod[dim-1];
   int i3 = (prod[dim] / prod[dim - 1] - (d_p[dim]) - actual_depth_send) *
@@ -319,6 +324,7 @@ void ops_exchange_halo_packer(ops_dat dat, int d_pos, int d_neg,
   if (send_recv_offsets[2] + send_size > ops_buffer_send_2_size) {
 //    if (OPS_instance::getOPSInstance()->OPS_diags > 4)
 //      printf("Realloc ops_buffer_send_2\n");
+
     ops_buffer_send_2 = (char *)OPS_realloc_fast(ops_buffer_send_2,  send_recv_offsets[2],
                                         send_recv_offsets[2] + 4 * send_size);
     ops_buffer_send_2_size = send_recv_offsets[2] + 4 * send_size;
@@ -349,7 +355,7 @@ void ops_exchange_halo_packer(ops_dat dat, int d_pos, int d_neg,
 }
 
 void ops_exchange_halo_packer_given(ops_dat dat, int *depths, int dim,
-                              size_t *send_recv_offsets) {
+                                    size_t *send_recv_offsets) {
   sub_block_list sb = OPS_sub_block_list[dat->block->index];
   sub_dat_list sd = OPS_sub_dat_list[dat->index];
 
@@ -444,8 +450,6 @@ void ops_exchange_halo_packer_given(ops_dat dat, int *depths, int dim,
     ops_buffer_send_1_size = send_recv_offsets[0] + 4 * send_size;
   }
   if (send_recv_offsets[1] + recv_size > ops_buffer_recv_1_size) {
-//    if (OPS_instance::getOPSInstance()->OPS_diags > 4)
-//      printf("Realloc ops_buffer_recv_1\n");
     ops_buffer_recv_1 = (char *)OPS_realloc_fast(ops_buffer_recv_1, send_recv_offsets[1],
                                         send_recv_offsets[1] + 4 * recv_size);
     ops_buffer_recv_1_size = send_recv_offsets[1] + 4 * recv_size;
@@ -547,6 +551,7 @@ void ops_exchange_halo_packer_given(ops_dat dat, int *depths, int dim,
 void ops_exchange_halo_unpacker(ops_dat dat, int d_pos, int d_neg,
                                 int *iter_range, int dim,
                                 size_t *send_recv_offsets) {
+
   sub_dat_list sd = OPS_sub_dat_list[dat->index];
   int left_recv_depth = 0;
   int right_recv_depth = 0;
@@ -620,7 +625,8 @@ void ops_exchange_halo_unpacker(ops_dat dat, int d_pos, int d_neg,
 
 
 void ops_exchange_halo_unpacker_given(ops_dat dat, int *depths, int dim,
-                              size_t *send_recv_offsets) {
+                                      size_t *send_recv_offsets) {
+
   sub_block_list sb = OPS_sub_block_list[dat->block->index];
   sub_dat_list sd = OPS_sub_dat_list[dat->index];
   int left_recv_depth = depths[1];
@@ -661,6 +667,7 @@ void ops_exchange_halo_unpacker_given(ops_dat dat, int *depths, int dim,
   // increase offset
   send_recv_offsets[1] += recv_size;
   // clear dirtybits
+
   for (int d = 0; d <= actual_depth_recv; d++)
     sd->dirty_dir_recv[2 * MAX_DEPTH * dim + MAX_DEPTH + d] = 0;
 
@@ -837,7 +844,7 @@ void ops_halo_exchanges(ops_arg* args, int nargs, int *range_in) {
   // printf("*************** range[i] %d %d %d %d\n",range[0],range[1],range[2],
   // range[3]);
   size_t send_recv_offsets[4]; //{send_1, recv_1, send_2, recv_2}, for the two
-                            // directions, negative then positive
+          // directions, negative then positive
   MPI_Comm comm = MPI_COMM_NULL;
 
   for (int dim = 0; dim < OPS_MAX_DIM; dim++) {
@@ -1102,6 +1109,7 @@ void ops_halo_exchanges(ops_arg* args, int nargs, int *range_in) {
 
       if (args[i].stencil->type == 1) d_neg--;
 
+
       if (d_pos > 0 || d_neg < 0)
         ops_exchange_halo_packer(dat, d_pos, d_neg, range, dim,
                                  send_recv_offsets);
@@ -1140,7 +1148,6 @@ void ops_halo_exchanges(ops_arg* args, int nargs, int *range_in) {
     OPS_instance::getOPSInstance()->ops_message_size +=
       send_recv_offsets[0] + send_recv_offsets[2];
     
-
     //  ops_timers_core(&c1,&t1);
     //  ops_sendrecv_time += t1-t2;
 
@@ -1189,7 +1196,9 @@ void ops_halo_exchanges(ops_arg* args, int nargs, int *range_in) {
 
 void ops_halo_exchanges_datlist(ops_dat *dats, int ndats, int *depths) {
   // double c1,c2,t1,t2;
+
   size_t send_recv_offsets[4]; //{send_1, recv_1, send_2, recv_2}, for the two
+
                             // directions, negative then positive
   MPI_Comm comm = MPI_COMM_NULL;
 
@@ -1244,6 +1253,7 @@ void ops_halo_exchanges_datlist(ops_dat *dats, int ndats, int *depths) {
       (send_recv_offsets[0] > 0) + (send_recv_offsets[2] > 0);
     OPS_instance::getOPSInstance()->ops_message_size +=
       send_recv_offsets[0] + send_recv_offsets[2];
+
 
     //  ops_timers_core(&c1,&t1);
     //  printf("1 %g %d\n", t1-t2, send_recv_offsets[0] + send_recv_offsets[2]);
@@ -1378,6 +1388,7 @@ void ops_execute_reduction(ops_reduction handle) {
   double c, t1, t2;
   if (OPS_instance::getOPSInstance()->OPS_diags > 1)
     ops_timers_core(&c, &t1);
+
   if (strcmp(handle->type, "int") == 0 ||
       strcmp(handle->type, "int(4)") == 0 ||
       strcmp(handle->type, "integer") == 0 ||
@@ -1648,6 +1659,7 @@ void ops_set_halo_dirtybit3(ops_arg *arg, int *iter_range) {
   }
 
   edge_dirtybit[dat->index] = 1;
+
   for (int dim = 0; dim < ndim; dim++) {
     int other_dims = 1;
     for (int d2 = 0; d2 < ndim; d2++)
@@ -1832,6 +1844,7 @@ void ops_set_halo_dirtybit3_tiled(ops_arg *arg, int *iter_range, int *left_bound
 
 }
 
+
 void ops_halo_transfer(ops_halo_group group) {
   ops_execute(group->instance);
   ops_mpi_halo_group *mpi_group = &OPS_mpi_halo_group_list[group->index];
@@ -1855,6 +1868,7 @@ void ops_halo_transfer(ops_halo_group group) {
       mpi_neigh_size[i] = mpi_neigh_size[i - 1] + mpi_group->send_sizes[i - 1];
     }
     
+
   // Loop over all the halos we own in the group
   for (int h = 0; h < mpi_group->nhalos; h++) {
     ops_mpi_halo *halo = mpi_group->mpi_halos[h];
@@ -1899,6 +1913,7 @@ void ops_halo_transfer(ops_halo_group group) {
                           ranges[3], ranges[4], ranges[5], step[0], step[1],
                           step[2], buf_strides[0], buf_strides[1],
                           buf_strides[2], mixed_exchange, storage_type_size);
+
       mpi_neigh_size[proc_grp_idx] += fragment_size;
     }
   }
@@ -1927,6 +1942,7 @@ void ops_halo_transfer(ops_halo_group group) {
               &mpi_group->requests[mpi_group->num_neighbors_send + i]);
 
   }
+
   MPI_Waitall(mpi_group->num_neighbors_recv,
               &mpi_group->requests[mpi_group->num_neighbors_send],
               &mpi_group->statuses[mpi_group->num_neighbors_send]);
@@ -1973,6 +1989,7 @@ void ops_halo_transfer(ops_halo_group group) {
                             ranges[2], ranges[3], ranges[4], ranges[5], step[0],
                             step[1], step[2], buf_strides[0], buf_strides[1],
                             buf_strides[2], mixed_exchange, storage_type_size);
+
       mpi_neigh_size[proc_grp_idx] += fragment_size;
     }
   }
@@ -2070,6 +2087,7 @@ void ops_dat_release_raw_data(ops_dat dat, int part, ops_access acc) {
     dat->dirty_hd = dat->locked_hd; // dirty on host or device depending on where the pointer was obtained
     sub_dat_list sd = OPS_sub_dat_list[dat->index];
     edge_dirtybit[dat->index] = 1;
+
     for (int i = 0; i < 2 * dat->block->dims * MAX_DEPTH; i++) {
       sd->dirty_dir_send[i] = 1;
       sd->dirty_dir_recv[i] = 1;
@@ -2088,6 +2106,7 @@ void ops_dat_release_raw_data_memspace(ops_dat dat, int part, ops_access acc, op
     dat->dirty_hd = *memspace; // dirty on host or device depending on argument
     sub_dat_list sd = OPS_sub_dat_list[dat->index];
     edge_dirtybit[dat->index] = 1;
+
     for (int i = 0; i < 2 * dat->block->dims * MAX_DEPTH; i++) {
       sd->dirty_dir_send[i] = 1;
       sd->dirty_dir_recv[i] = 1;
@@ -2106,6 +2125,7 @@ void ops_dat_fetch_data_slab_host(ops_dat dat, int part, char *data, int *range)
 void ops_dat_fetch_data(ops_dat dat, int part, char *data) {
   ops_execute(dat->block->instance);
   ops_check_lowdim_update(dat);
+
   ops_get_data(dat);
   sub_dat_list sd = OPS_sub_dat_list[dat->index];
   int lsize[OPS_MAX_DIM] = {1};
@@ -2162,6 +2182,7 @@ void ops_dat_set_data_slab_host(ops_dat dat, int part, char *local_buf,
 
   dat->dirty_hd = 1;
   edge_dirtybit[dat->index] = 1;
+
   for (int i = 0; i < 2 * dat->block->dims * MAX_DEPTH; i++) {
     sd->dirty_dir_send[i] = 1;
     sd->dirty_dir_recv[i] = 1;

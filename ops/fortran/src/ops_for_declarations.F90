@@ -80,6 +80,7 @@ module OPS_Fortran_Declarations
         integer(kind=c_int), dimension(OPS_MAX_DIM) :: base        ! base offset to 0,0,... from the start of each dimension
         integer(kind=c_int), dimension(OPS_MAX_DIM) :: d_m         ! halo depth in each dimension, negative direction (at 0 end)
         integer(kind=c_int), dimension(OPS_MAX_DIM) :: d_p         ! halo depth in each dimension, positive direction (at size end)
+
         integer(kind=c_int) :: x_pad       ! padding in x-dimension for allocating aligned memory
         type(c_ptr)         :: data        ! data on host
 #ifdef OPS_WITH_CUDAFOR
@@ -367,6 +368,7 @@ module OPS_Fortran_Declarations
             import :: ops_arg, ops_reduction
 
             type(ops_arg) :: ops_arg_reduce_c
+
             type(c_ptr), value, intent(in) :: handle
             integer(kind=c_int), value   :: dim
             character(kind=c_char,len=1) :: type(*)
@@ -378,6 +380,7 @@ module OPS_Fortran_Declarations
             import :: ops_arg
 
             type(ops_arg) :: ops_arg_gbl_c
+
             type(c_ptr), value :: data
             integer(kind=c_int), value :: dim, size
             integer(kind=c_int), value :: acc
@@ -537,9 +540,6 @@ module OPS_Fortran_Declarations
             integer(kind=c_int), value   :: index
             integer(kind=c_int), value   :: dim
             integer(kind=c_int), value   :: isdevice
-            type(c_ptr), value      :: range
-            type(c_ptr), value      :: block
-            type(c_funptr), value   :: func
 
         end subroutine create_kerneldesc_and_enque 
 
@@ -1452,6 +1452,7 @@ module OPS_Fortran_Declarations
         type(ops_dat) :: dat
         call ops_fill_random_normal_c( dat%dataCPtr )
     end subroutine ops_fill_random_normal
+
 
  !ops_decl_const -- various versions .. no-ops in ref ?
 

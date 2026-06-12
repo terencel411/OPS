@@ -14,7 +14,6 @@
 #include "ops_seq_v2.h"
 #include "lowdim_kernels.h"
 
-
 void checkError(int error_count, const char* test_name) {
   if (error_count > 0)
   {
@@ -24,7 +23,6 @@ void checkError(int error_count, const char* test_name) {
     exit(1);
   }
 }
-
 
 int main(int argc, char **argv) 
 {
@@ -88,8 +86,6 @@ int main(int argc, char **argv)
   // Init OPS partition
   ops_partition("");
 
-
-  
   int range_3D[] = {0, 10, 0, 10, 0, 10};
   int range_2D_XY[] = {0, 10, 0, 10, 0, 1};
   int range_2D_YZ[] = {9, 10, 0, 10, 0, 10};
@@ -462,7 +458,6 @@ int main(int argc, char **argv)
   ops_fetch_dat_hdf5_file(dat1D_X, name0);
   ops_fetch_dat_hdf5_file(dat1D_Y, name0);
   ops_fetch_dat_hdf5_file(dat1D_Z, name0);
-
 
   ops_printf("All checks PASSED\n");
 

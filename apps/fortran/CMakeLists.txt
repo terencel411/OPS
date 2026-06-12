@@ -797,6 +797,7 @@
                         target_link_libraries(${Name}_cuda PRIVATE ops_for_hdf5_seq hdf5::hdf5 hdf5::hdf5_hl)
                     endif()
                     target_link_libraries(${Name}_cuda PRIVATE ops_for_cuda "-cudalib=curand -lnvidia-ml -c++libs -lstdc++ -lcudart")
+
                     install(TARGETS ${Name}_cuda     DESTINATION ${APP_INSTALL_DIR}/${Name})
 
                     if((OPS_TEST)
@@ -883,6 +884,7 @@
                                                                 MPI::MPI_Fortran)
                         endif()
                         target_link_libraries(${Name}_mpi_cuda_tiled PRIVATE ops_for_mpi_cuda MPI::MPI_Fortran "${MPI_LINK}" "-cudalib=curand -c++libs -lstdc++ -lcudart -lnvidia-ml")
+
                         install(TARGETS ${Name}_mpi_cuda_tiled     DESTINATION ${APP_INSTALL_DIR}/${Name})
 
                         if((OPS_TEST)
@@ -907,5 +909,6 @@
 
 #       App: Laplace2d
         add_subdirectory(laplace2d_tutorial/step7)
+
 
     endif(CMAKE_Fortran_COMPILER)

@@ -25,9 +25,9 @@ cd $OPS_INSTALL_PATH/../apps/c/multiDim/
 
 make clean
 rm -f .generated
+
 make IEEE=1 multidim_dev_seq multidim_dev_mpi multidim_seq multidim_tiled multidim_openmp multidim_mpi \
 multidim_mpi_tiled multidim_mpi_openmp 
-
 
 echo '============> Running OpenMP'
 KMP_AFFINITY=compact OMP_NUM_THREADS=1,12 ./multidim_openmp > perf_out
@@ -64,6 +64,7 @@ rm perf_out
 
 if [[ -v CUDA_INSTALL_PATH ]]; then
 make IEEE=1 multidim_cuda multidim_mpi_cuda multidim_mpi_cuda_tiled
+
 echo '============> Running CUDA'
 ./multidim_cuda OPS_BLOCK_SIZE_X=64 OPS_BLOCK_SIZE_Y=4 > perf_out
 grep "Reduction result" perf_out
@@ -136,7 +137,6 @@ echo "All Intel SYCL complier based applications ---- PASSED"
 
 fi
 
-
 if [[ -v TELOS || -v DEMOS ]]; then
 
 #============================ Test with PGI Compilers==========================================
@@ -152,7 +152,9 @@ make clean
 make
 
 echo '============> Running OpenMP'
+
 KMP_AFFINITY=compact OMP_NUM_THREADS=12 ./multidim_openmp > perf_out
+
 grep "Reduction result" perf_out
 grep "Total Wall time" perf_out
 grep "PASSED" perf_out

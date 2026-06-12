@@ -22,6 +22,7 @@ make clean
 make
 cd -
 pwd
+
 make cleanall
 make
 

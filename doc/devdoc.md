@@ -456,4 +456,3 @@ To contribute to OPS, please use the following steps:
 4. Submit your changes by creating a pull request to the `develop` branch of the OPS repository.
 
 Contributions in the `develop` branch will be merged into the `master` branch when a new release is created.
-

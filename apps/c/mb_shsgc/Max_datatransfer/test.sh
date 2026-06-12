@@ -106,10 +106,10 @@ echo "All Intel classic complier based applications ---- PASSED"
 
 fi
 
-
 if [[ -v TELOS || -v DEMOS ]]; then
 
 #============================ Test with Intel SYCL Compilers==========================================
+
 echo "Testing Intel SYCL complier based applications ---- "
 cd $OPS_INSTALL_PATH/c
 source ../../scripts/$SOURCE_INTEL_SYCL
@@ -133,6 +133,7 @@ rm perf_out
 
 echo '============> Running MPI+SYCL on CPU'
 $MPI_INSTALL_PATH/bin/mpirun -np 12 ./shsgc_mpi_sycl OPS_SYCL_DEVICE=cpu OPS_BLOCK_SIZE_X=256 OPS_BLOCK_SIZE_Y=1 > perf_out
+
 grep "Pre shock error is:" perf_out
 grep "Post shock error is:" perf_out
 grep "Post shock Error is" perf_out
@@ -157,7 +158,6 @@ rm rhoin1.* x1.* rhoout1.*  rhoin1 rhoout1 x1
 echo "All Intel SYCL complier based applications ---- PASSED"
 
 fi
-
 
 if [[ -v TELOS || -v DEMOS ]]; then
 

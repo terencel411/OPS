@@ -4,6 +4,7 @@ for the original version and more details.
 
 This version utilizes the OPS library and pre-processor. With OPS a single
 application code is transformed to enable it to be run with a number of
+<<<<<<< HEAD
 parallelisations.
 
 Supported parallelisations (current):

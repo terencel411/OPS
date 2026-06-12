@@ -510,6 +510,7 @@ void determine_local_range(const ops_dat dat, const int *global_range,
   }
   else if (space_dim == 1) {
     dat_arg = ops_arg_dat(dat, dat->dim, dat->block->instance->OPS_internal_0[1], dat->type, OPS_READ);
+
   }
   else {
     OPSException ex(OPS_NOT_IMPLEMENTED);

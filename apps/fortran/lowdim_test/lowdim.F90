@@ -169,6 +169,7 @@ program lowdim
     !call ops_fetch_block_hdf5_file(grid3D, trim(fname))
     !call ops_fetch_dat_hdf5_file(d_dat3D, trim(fname))
 
+
     call ops_timers( endTime )
 
     IF (ops_is_root() == 1) THEN

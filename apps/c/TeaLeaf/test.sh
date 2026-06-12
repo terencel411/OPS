@@ -117,9 +117,8 @@ fi
 
 echo "All Intel classic complier based applications ---- PASSED"
 
-
-
 if [[ -v TELOS || -v DEMOS ]]; then
+
 
 #============================ Test with Intel SYCL Compilers==========================================
 echo "Testing Intel SYCL complier based applications ---- "
@@ -161,6 +160,7 @@ fi
 
 if [[ -v TELOS || -v DEMOS ]]; then
 
+
 #============================ Test with PGI Compilers==========================================
 echo "Testing PGI/NVHPC complier based applications ---- "
 cd $OPS_INSTALL_PATH/c
@@ -183,7 +183,9 @@ rc=$?; if [[ $rc != 0 ]]; then echo "TEST FAILED";exit $rc; fi
 rm -f tea.out
 
 echo '============> Running MPI+OpenMP'
+
 export OMP_NUM_THREADS=4;$MPI_INSTALL_PATH/bin/mpirun -np 4 ./tealeaf_mpi_openmp > perf_out
+
 grep "Total Wall time" tea.out
 #grep -e "step:    86" -e "step:    87" -e "step:    88"  tea.out
 grep "PASSED" tea.out
@@ -241,6 +243,7 @@ rm -f tea.out
 #grep "PASSED" tea.out
 #rc=$?; if [[ $rc != 0 ]]; then echo "TEST FAILED";exit $rc; fi
 #rm -f tea.out
+
 
 
 fi

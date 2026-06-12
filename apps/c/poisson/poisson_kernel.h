@@ -25,6 +25,7 @@ void poisson_kernel_stencil(const ACC<double> &u, const ACC<double> &f,
 
 void poisson_kernel_update(const ACC<double> &inp, ACC<double> &out) {
   out(0,0) = inp(0,0);
+
 }
 
 void poisson_kernel_error(const ACC<double> &u, const ACC<double> &ref, double *err) {

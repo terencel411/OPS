@@ -8,3 +8,4 @@ ifneq ($(strip $(MPI_INSTALL_PATH)),)
 	MPI_INC ?= $(MPI_INSTALL_PATH)/include
 	MPI_LIB ?= $(MPI_INSTALL_PATH)/lib
 endif
+

@@ -45,6 +45,7 @@ else
 ifeq ($(NV_ARCH),Blackwell)
 NVCCFLAGS+=-gencode arch=compute_100,code=sm_100
 endif
+
 endif
 endif
 endif

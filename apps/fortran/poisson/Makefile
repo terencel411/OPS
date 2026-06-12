@@ -1,8 +1,11 @@
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.common
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.mpi
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.cuda
+<<<<<<< HEAD
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hip
 #USE_HDF5=1
+=======
+>>>>>>> mpi_zone
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
 OTHER_FILES=constants.F90

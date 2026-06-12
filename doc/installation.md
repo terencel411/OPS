@@ -10,6 +10,7 @@ The following prerequisites and dependencies are required for building OPS. Buil
 
 CMake 3.18 or newer is required for using the CMake build system. If the latest version is not installed/shipped by default, it can be downloaded from https://cmake.org/download/, e.g., using the following script.
   ```bash
+
   version=3.19.0
   wget https://github.com/Kitware/CMake/releases/download/v$version/cmake-$version-Linux-x86_64.sh
   # Assume that CMake is going to be installed at /usr/local/cmake
@@ -84,6 +85,7 @@ git clone https://github.com/OP-DSL/OPS.git
     
 ## Build OPS
 ### Using CMake
+
 #### Build library and example applications together
 
   Create a build directory, and run CMake (version 3.18 or newer)
@@ -108,6 +110,7 @@ cd build
 cmake ${PATH_TO_OPS}   -DCMAKE_INSTALL_PREFIX=$HOME/OPS-INSTALL
 make # IEEE=1 enables IEEE flags in compiler
 make install # sudo is needed if a system directory is chosen
+
 ```
 Then the application can be built as:
 
@@ -141,6 +144,7 @@ The current tests are mainly based on the applications.
   <!-- * `-DBUILD_OPS_FORTRAN=ON` - enable building OPS Fortran libraries. -->
 
 <!-- 1. Set up environment variables:
+
 * `CUDA_PATH` - Installation directory of CUDA, usually `/usr/local/cuda` (to build CUDA libs and applications, only needed if CUDA cannot be found in standard locations, or to enable OpenCL)
 * `MPI_HOME` - Installation directory of MPI (to build MPI based distributed memory libs and applications) only needed if MPI not installed in standard locations
 * `HDF5_ROOT` - Installation directory of HDF5 (to support HDF5 based File I/O) if HDF5 not installed in standard location -->
@@ -161,15 +165,18 @@ See example scripts (e.g. `source_intel_2021.3_pythonenv`, `source_pgi_nvhpc_23_
 
 #### Build back-end library
 For C/C++ back-end use the Makefile under `OPS/ops/c` (modify the Makefile if required). The library will be built in `OPS/ops/c/lib`
+
 ```bash
 cd $OPS_INSTALL_PATH/c
 make
 ```
 For Fortran back-end use the Makefile under `OPS/ops/fortran` (modify the Makefile if required). The library will be built in `OPS/ops/fortran/lib`
+
 ```bash
 cd $OPS_INSTALL_PATH/fortran
 make
 ```
+
 #### Build example applications
 Once the back-end libraries are built, the example applications can be compiled for different supported architectures based on the configured environment using a simple `make` command:
 For example, to build CloverLeaf_3D under `OPS/apps/c/CloverLeaf_3D`:

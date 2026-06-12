@@ -94,7 +94,6 @@ char *OPS_realloc_fast(char *ptr, size_t olds, size_t news) {
   return (char*)ops_realloc(ptr, news);
 }
 
-
 char* get_data_ptr(ops_dat dat, int i, int j, int k, int d) {
   int OPS_soa = OPS_instance::getOPSInstance()->OPS_soa;
   return dat->data +
@@ -176,6 +175,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
                   storage_type_size);
           }
         } 
+
       }
     }
   }
@@ -254,6 +254,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
                         dest->dim*storage_type_size + d*dest->type_size,
                 dest->type_size);
         }
+
       }
     }
   }

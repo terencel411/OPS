@@ -228,6 +228,7 @@ rm -f perf_out
 #rm -f perf_out
 
 echo "All PGI complied applications PASSED : Exiting Test Script "
+
 fi
 
 

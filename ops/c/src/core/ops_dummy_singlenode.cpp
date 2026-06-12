@@ -220,6 +220,7 @@ void ops_set_halo_dirtybit3_tiled(ops_arg *arg, int *iter_range, int *left_bnd, 
   (void)right_halo;
 
   ops_set_halo_dirtybit3(arg, iter_range);
+
 }
 
 void ops_halo_exchanges_datlist(ops_dat *dats, int ndats, int *depths) {
@@ -388,6 +389,7 @@ void ops_halo_exchanges(ops_arg *args, int nargs, int *range) {
       }
     }
   }
+
 }
 
 void ops_mpi_reduce_float(ops_arg *args, float *data) {
@@ -509,11 +511,13 @@ int compute_ranges(ops_arg *args, int nargs, ops_block block, int *range, int * 
 }
 
 bool ops_get_abs_owned_range(ops_block block, int *range, int *start, int *end, int *disp, int *size) {
+
   for (int n = 0; n < block->dims; n++) {
     start[n] = range[2 * n];
     end[n] = range[2 * n + 1];
     disp[n] = 0;
     //size[n] = ?
+
   }
   return true;
 }
@@ -661,8 +665,10 @@ void ops_dat_get_raw_metadata(ops_dat dat, int part, int *disp, int *size, int *
 
 char* ops_dat_get_raw_pointer(ops_dat dat, int part, ops_stencil stencil, ops_memspace *memspace) {
     (void)stencil; (void)part;
+
     ops_execute(dat->block->instance);
     ops_check_lowdim_update(dat);
+
     if (dat->dirty_hd == OPS_DEVICE || *memspace == OPS_DEVICE) {
         if(dat->data_d == NULL) {
             OPSException ex(OPS_RUNTIME_ERROR);
@@ -875,27 +881,40 @@ void ops_NaNcheck(ops_dat dat) {
   ops_check_lowdim_update(dat);
   int disp[OPS_MAX_DIM] = {0};
   ops_NaNcheck_core(dat, buffer, disp, dat->d_m);
+
 }
 
 
 void _ops_partition(OPS_instance *instance, const char *routine) {
   (void)instance;
   (void)routine;
+
+  _ops_particle_setup_tmp_array(instance); //TODO:
 }
 
 void _ops_partition(OPS_instance *instance, const char *routine, std::map<std::string, void*>& opts) {
   (void)instance;
   (void)routine;
   (void)opts;
+
+  _ops_particle_setup_tmp_array(instance); //TODO:
 }
 
 void ops_partition(const char *routine) {
   (void)routine;
+
+  _ops_particle_setup_tmp_array(OPS_instance::getOPSInstance()); //TODO:
+}
+
+bool ops_partitioned() {
+  return true;
 }
 
 void ops_partition_opts(const char *routine, std::map<std::string, void*>& opts) {
   (void)routine;
   (void)opts;
+
+  _ops_particle_setup_tmp_array(OPS_instance::getOPSInstance()); //TODO:
 }
 
 void ops_timers(double *cpu, double *et) {
@@ -914,6 +933,10 @@ void _ops_exit(OPS_instance *instance) {
     ops_free(instance->OPS_reduct_h);
     if (instance->OPS_reduct_d!=NULL) ops_device_free(instance, (void**)&instance->OPS_reduct_d);
   }
+
+  //TODO: Correct issue with particle halos
+  ops_exit_particles(instance);
+  ops_exit_histories(instance);
 
   ops_exit_core(instance);
   ops_exit_device(instance);

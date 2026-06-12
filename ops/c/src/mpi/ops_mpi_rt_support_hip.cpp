@@ -1,4 +1,5 @@
 #include "hip/hip_runtime.h"
+
 /*
 * Open source copyright declaration based on BSD open source template:
 * http://www.opensource.org/licenses/bsd-license.php
@@ -117,6 +118,7 @@ __global__ void ops_hip_unpacker_4(const int *__restrict src,
 void ops_pack_hip_internal(ops_dat dat, const int src_offset, char *__restrict dest,
               const int halo_blocklength, const int halo_stride, const int halo_count) {
 
+
   if (dat->dirty_hd == 1) {
     ops_put_data(dat);
     dat->dirty_hd = 0;
@@ -159,6 +161,7 @@ void ops_pack_hip_internal(ops_dat dat, const int src_offset, char *__restrict d
         src, device_buf, halo_count, halo_blocklength*dat->dim, halo_stride*dat->dim);
     hipSafeCall(OPS_instance::getOPSInstance()->ostream(),hipGetLastError());
   }
+
   if (!OPS_instance::getOPSInstance()->OPS_gpu_direct)
     hipSafeCall(OPS_instance::getOPSInstance()->ostream(),hipMemcpy(dest, halo_buffer_d,
                              halo_count * halo_blocklength * dat->dim,
@@ -174,6 +177,7 @@ void ops_unpack_hip_internal(ops_dat dat, const int dest_offset, const char *__r
     ops_put_data(dat);
     dat->dirty_hd = 0;
   }
+
   char *__restrict dest = dat->data_d + dest_offset * (OPS_instance::getOPSInstance()->OPS_soa ? dat->type_size : dat->elem_size);
   if (halo_buffer_size < halo_count * halo_blocklength * dat->dim && !OPS_instance::getOPSInstance()->OPS_gpu_direct) {
     if (halo_buffer_d != NULL)
@@ -193,6 +197,7 @@ void ops_unpack_hip_internal(ops_dat dat, const int dest_offset, const char *__r
     hipSafeCall(OPS_instance::getOPSInstance()->ostream(),hipMemcpy(halo_buffer_d, src,
                              halo_count * halo_blocklength * dat->dim,
                              hipMemcpyHostToDevice));
+
   if (OPS_instance::getOPSInstance()->OPS_soa) {
     int num_threads = 128;
     int num_blocks = ((halo_blocklength * halo_count) - 1) / num_threads + 1;
@@ -215,6 +220,7 @@ void ops_unpack_hip_internal(ops_dat dat, const int dest_offset, const char *__r
         device_buf, dest, halo_count, halo_blocklength*dat->dim, halo_stride*dat->dim);
     hipSafeCall(OPS_instance::getOPSInstance()->ostream(),hipGetLastError());
   }
+
 
   dat->dirty_hd = 2;
 }
@@ -245,7 +251,9 @@ char* OPS_realloc_fast(char *ptr, size_t olds, size_t news) {
     }
   } else {
     char *ptr2;
+
     hipSafeCall(OPS_instance::getOPSInstance()->ostream(),hipHostMalloc((void**)&ptr2,news)); //TODO: is this aligned??
+
     if (olds > 0)
   	  memcpy(ptr2, ptr, olds);
     if (ptr != NULL) hipSafeCall(OPS_instance::getOPSInstance()->ostream(),hipHostFree(ptr));
@@ -260,6 +268,7 @@ __global__ void copy_kernel_tobuf(char *dest, char *src, int rx_s, int rx_e,
                                   int buf_strides_x, int buf_strides_y,
                                   int buf_strides_z, int type_size, int dim, int OPS_soa,
                                   bool mixed_exchange, int storage_type_size) {
+
 
   int idx_z = rz_s + z_step * (blockDim.z * blockIdx.z + threadIdx.z);
   int idx_y = ry_s + y_step * (blockDim.y * blockIdx.y + threadIdx.y);
@@ -311,6 +320,7 @@ __global__ void copy_kernel_tobuf(char *dest, char *src, int rx_s, int rx_e,
       } else {
         memcpy(dest+d*type_size, src, type_size);
       }
+
       if (OPS_soa) src += size_x * size_y * size_z * type_size;
       else src += type_size;
     }
@@ -324,6 +334,7 @@ __global__ void copy_kernel_frombuf(char *dest, char *src, int rx_s, int rx_e,
                                     int buf_strides_x, int buf_strides_y,
                                     int buf_strides_z, int type_size, int dim, int OPS_soa,
                                     bool mixed_exchange, int storage_type_size) {
+
 
   int idx_z = rz_s + z_step * (blockDim.z * blockIdx.z + threadIdx.z);
   int idx_y = ry_s + y_step * (blockDim.y * blockIdx.y + threadIdx.y);
@@ -375,6 +386,7 @@ __global__ void copy_kernel_frombuf(char *dest, char *src, int rx_s, int rx_e,
       } else {
         memcpy(dest, src + d * type_size, type_size);
       }      
+
       if (OPS_soa) dest += size_x * size_y * size_z * type_size;
       else dest += type_size;
     }
@@ -385,6 +397,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
                          int rx_e, int ry_s, int ry_e, int rz_s, int rz_e,
                          int x_step, int y_step, int z_step, int buf_strides_x,
                          int buf_strides_y, int buf_strides_z, bool mixed_exchange, int storage_type_size) {
+
   dest += dest_offset;
   int thr_x = abs(rx_s - rx_e);
   int blk_x = 1;
@@ -434,6 +447,7 @@ void ops_halo_copy_tobuf(char *dest, int dest_offset, ops_dat src, int rx_s,
   hipSafeCall(OPS_instance::getOPSInstance()->ostream(),hipGetLastError());
   ops_device_sync(OPS_instance::getOPSInstance());
 
+
   if (!OPS_instance::getOPSInstance()->OPS_gpu_direct)
     hipSafeCall(OPS_instance::getOPSInstance()->ostream(),hipMemcpy(dest, halo_buffer_d, size * sizeof(char),
                              hipMemcpyDeviceToHost));
@@ -444,6 +458,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
                            int x_step, int y_step, int z_step,
                            int buf_strides_x, int buf_strides_y,
                            int buf_strides_z, bool mixed_exchange, int storage_type_size) {
+
 
   src += src_offset;
   int thr_x = abs(rx_s - rx_e);
@@ -495,6 +510,7 @@ void ops_halo_copy_frombuf(ops_dat dest, char *src, int src_offset, int rx_s,
       buf_strides_y, buf_strides_z, dest->type_size, dest->dim, OPS_instance::getOPSInstance()->OPS_soa, mixed_exchange, storage_type_size);
   hipSafeCall(OPS_instance::getOPSInstance()->ostream(),hipGetLastError());
   ops_device_sync(OPS_instance::getOPSInstance());
+
   dest->dirty_hd = 2;
 }
 
@@ -565,6 +581,7 @@ __global__ void ops_internal_copy_hip_kernel(char * dat0_p, char *dat1_p,
         dat1_p[idx+d] = dat0_p[idx+d];
     }
   }
+
 }
 
 

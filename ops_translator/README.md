@@ -44,4 +44,3 @@ In normal use the translator is called automatically by each application's Makef
 ./translator_setup.sh [ops_translator options] --file_paths <source_files>
 ```
 
-

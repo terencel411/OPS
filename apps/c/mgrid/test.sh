@@ -22,6 +22,7 @@ source ../../scripts/$SOURCE_INTEL
 make clean
 make
 cd $OPS_INSTALL_PATH/../apps/c/mgrid/
+
 make cleanall
 rm -f .generated
 make IEEE=1

@@ -41,12 +41,14 @@ Both C and C++ style APIs are provided for utilizing the capabilities provided b
 To enable the C++ API, a compiler directive ``OPS_CPP_API`` is required.
 
 ### Initialization and termination routines
+
 #### C Style
 ##### ops_init
 
 __void ops_init(int argc, char** argv, int diags_level)__
 
 This routine must be called before all other OPS routines.
+
 
 | Arguments      | Description |
 | ----------- | ----------- |
@@ -67,6 +69,7 @@ Currently, higher diags_levels do the following checks:
 
 __void ops_exit()__
 
+<<<<<<< HEAD
 This routine must be called at the end to ensure a clean termination of the OPS computation.
 
 #### C++ style
@@ -82,6 +85,7 @@ where the meaning of arguments is the same as in the C API, while the extra argu
 
 An explicit termination is not required for the C++ API. However, if an instance is allocated through a pointer, it must be properly deleted to release resources.
 ```c++
+
 delete instance;
 ```
 
@@ -103,6 +107,7 @@ This routine defines a structured grid block.
 This method of the OPS_instance class is used to declare a block and accepts the same arguments as the C-style function. An OPS_instance object must be constructed before calling this method. The method returns a pointer to a variable of type ops_block, which is an alias for a pointer type of ops_block_core. An example is as follows:
 
 ```c++
+
 ops_block grid2D = instance->decl_block(2, "grid2D");
 ```
 
@@ -145,8 +150,10 @@ indicate the offset from the edge of a block (in both the negative and
 positive directions of each dimension). The data pointer can be either NULL, in which case OPS will allocate and manage the memory, or non-NULL (currently only supported in non-MPI environments), where the user specifies an existing allocated dataset that is sufficiently large to accommodate both the data and the block halo.
 
 ##### ops_block_core::decl_dat (C++)
+
 The method ops_block_core::decl_dat is used to define an ops_dat object, which accepts almost the same arguments as the C counterpart, except the block argument is not necessary, e.g.,
 ```c++
+
 //declare ops_dat with dim = 2
 ops_dat dat0    = grid2D->decl_dat(2, size, base, d_m, d_p, temp, "double", "dat0");
 ops_dat dat1    = grid2D->decl_dat(2, size, base, d_m, d_p, temp, "double", "dat1");
@@ -277,6 +284,7 @@ and ops_decl_dat statements have been declared.
 
 The method accepts the same arguments as its C counterpart.
 
+
 ### Diagnostic and output routines
 
 #### ops_diagnostic_output (C)
@@ -317,6 +325,7 @@ HDF5 file using MPI I/O).
 | ----------- | ----------- |
 | block|  ops_block to be written|
 | file|     hdf5 file to write to|
+
 
 #### ops_fetch_stencil_hdf5_file
 
@@ -530,6 +539,7 @@ dimension equal to the number of remaining dimensions.
 
 See *OPS/apps/c/CloverLeaf/build_field.cpp* and *OPS/apps/c/CloverLeaf/generate.cpp* for an example *ops_decl_strided_stencil* declaration and its use in a loop, respectively.
 
+
 These two stencil definitions probably take care of all of the
 cases in the Introduction except for multiblock applications with interfaces
 with different orientations -- this will need a third, even more general,
@@ -587,7 +597,6 @@ ops_par_loop(reduct22D_max, "reduct22D_max", block, 3, range_3D,
 
 OPS supports the automatic checkpointing of applications. Using the API below, the user specifies the file name for the checkpoint and an average time interval between checkpoints. OPS will then automatically save all necessary information periodically that is required to fast-forward to the last checkpoint if a crash occurred. Currently, when re-launching after a crash, the same number of MPI processes have to be used. To enable checkpointing mode, the *OPS_CHECKPOINT* runtime argument has to be used. 
 
-
 #### ops_checkpointing_init
 
 __bool ops_checkpointing_init(const char *filename, double interval, int options)__
@@ -604,9 +613,7 @@ mode, false otherwise.
 * OPS_CHECKPOINT_INITPHASE - indicates that there are a number of parallel loops at the very beginning of the simulations which should be excluded from any checkpoint; mainly because they initialize datasets that do not change during the main body of the execution. During restore mode, these loops are executed as usual. The API call *void ops_checkpointing_initphase_done()* indicates the end of this initial phase.
 
 * OPS_CHECKPOINT_MANUAL_DATLIST - Indicates that the user manually controls the location of the checkpoint, and explicitly specifies the list of *ops_dat*s to be saved.
-
 * OPS_CHECKPOINT_FASTFW - Indicates that the user manually controls the location of the checkpoint, and it also enables fast-forwarding, by skipping the execution of the application (even though none of the parallel loops would actually execute, there may be significant work outside of those) up to the checkpoint.
-
 * OPS_CHECKPOINT_MANUAL - Indicates that when the corresponding API function is called, the checkpoint should be created. Assumes the presence of the above two options as well.
 
 #### ops_checkpointing_manual_datlist
@@ -685,6 +692,9 @@ This routine returns the number of chunks of the given dataset held by the curre
 
 #### ops_dat_core::get_local_npartitions (C++)
 The C++ version of ``ops_dat_get_local_npartitions``, which does not require input.
+
+=======
+|dat|         the dataset|
 
 #### ops_dat_get_global_npartitions (C)
 
@@ -807,7 +817,6 @@ This routine copies the data given by the user to the internal data structure us
 | part|        the chunk index (has to be 0)|
 | data|        pointer to memory which should be copied to OPS |
 
-
 #### ops_dat_set_data_memspace (C)
 
 __void ops_dat_set_data_memspace(ops_dat dat, int part, char *data, ops_memspace memspace)__
@@ -822,6 +831,7 @@ This routine copies the data given by the user to the internal data structure us
 | memspace| the memory space where the data pointer is|
 
 #### ops_dat_core::set_data (C++)
+
 The C++ version of ``ops_dat_set_data_memspace`` where the arguments are the same except no need for the ops_dat argument.
 
 ### Random Number Initialization

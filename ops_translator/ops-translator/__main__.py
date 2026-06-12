@@ -17,7 +17,10 @@ from scheme import Scheme
 from store import Application, ParseError
 from target import Target
 from util import getVersion, safeFind
+<<<<<<< HEAD
 from util import create_cpp_main, replace_fortran_program_with_subroutine
+=======
+>>>>>>> mpi_zone
 
 def main(argv=None) -> None:
 
@@ -123,6 +126,7 @@ def main(argv=None) -> None:
 
     # Generate program translations
     print("Code-gen : Program translation phase started......")
+
     for i, program in enumerate(app.programs, 1):
         include_dirs = set([Path(dir) for [dir] in args.I])
         defines = [define for [define] in args.D]
@@ -228,7 +232,7 @@ def codegen(args: Namespace, scheme: Scheme, app: Application, force_soa: bool =
     for i, (loop, program) in enumerate(app.uniqueLoops(), 1):
         # Generate loop host source
         source, extension, kernel_func = scheme.genLoopHost(include_dirs, defines, env, loop, program, app, i, force_soa)
-
+        
         new_source = re.sub(r'\n\s*\n', '\n\n', source)
 
         # From output files path
@@ -295,6 +299,7 @@ def codegen(args: Namespace, scheme: Scheme, app: Application, force_soa: bool =
                 file.write(f"// Auto-generated at {datetime.now()} by ops-translator\n")
             else:
                 file.write(f"{scheme.lang.com_delim} Auto-generated at {datetime.now()} by ops-translator\n")
+
             file.write(new_source)
 
             if args.verbose:

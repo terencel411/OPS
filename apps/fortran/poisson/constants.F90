@@ -10,5 +10,4 @@ real(8), parameter :: dy = 0.01_8
 real(8) :: dx
 real(8), parameter :: dy = 0.01_8
 #endif
-
 END MODULE OPS_CONSTANTS

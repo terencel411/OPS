@@ -1142,6 +1142,7 @@ extern "C" char *ops_fetch_dat_char(ops_dat dat, char *u_dat) {
   // fetch data onto the host ( if needed ) based on the backend
   ops_get_data(dat);
   ops_check_lowdim_update(dat);
+
   hsize_t t_size = 1;
   for (int d = 0; d < dat->block->dims; d++)
     t_size *= dat->size[d];

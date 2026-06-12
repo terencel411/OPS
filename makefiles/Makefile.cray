@@ -29,7 +29,6 @@ MPI_LINK = -lmpi
 #$PE_MPICH_GTL_LIBS_amd_gfx90a = -lmpi_gtl_hsa
 MPI_OMPOFFLOAD_LINK = -lmpi_gtl_hsa
 
-
 ifeq ($(AMD_ARCH),MI100)
 HIP_ARCH=gfx908
 else
@@ -51,3 +50,4 @@ MPI_HIP_LINK = -lmpi_gtl_hsa
 
 OMPOFFLOADFLAGS=#-fopenmp
 OMPOFFLOADFOR = -DOPS_WITH_OMPOFFLOADFOR
+

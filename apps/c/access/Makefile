@@ -22,7 +22,6 @@ OPS_GENERATED=access_ops.cpp
 
 OTHER_FILES = fetch_data.cu
 
-
 APP=access
 MAIN_SRC=access
 

@@ -269,3 +269,4 @@ echo "All AMD HIP complier based applications ---- PASSED"
 fi
 
 echo "---------- Exiting Test Script "
+

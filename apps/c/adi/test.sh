@@ -23,6 +23,7 @@ source $OPS_INSTALL_PATH/../scripts/$SOURCE_INTEL
 
 source ../../scripts/$SOURCE_INTEL
 
+
 # Build and copy Referance application from the TDMA Library
 # build lib first
 cd $TDMA_INSTALL_PATH/../build
@@ -54,6 +55,7 @@ cd $OPS_INSTALL_PATH/../apps/c/adi
 make IEEE=1 compare adi_dev_seq adi_dev_mpi adi_seq adi_mpi adi_openmp adi_mpi_openmp adi_cuda adi_mpi_cuda
 
 rm -rf h_u.dat adi_orig.dat adi_seq.dat adi_dev_seq.dat adi_cuda.dat adi_openmp.dat  *.h5
+
 # set Relative Tolarance for solution check -- h5diff check only
 export TOL="1.000E-14"
 

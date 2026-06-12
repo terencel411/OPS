@@ -10,6 +10,7 @@ export SOURCE_AMD_HIP=source_amd_rocm-5.4.3_pythonenv
 #export AMOS=TRUE
 #export TELOS=TRUE
 export DEMOS=TRUE
+
 #export KOS=TRUE
 
 #<<comment
@@ -97,6 +98,7 @@ fi
 #comment
 
 if [[ -v TELOS || -v DEMOS ]]; then
+
 #============================ Test with Intel SYCL Compilers==========================================
 echo "Testing Intel SYCL complier based applications ---- "
 cd $OPS_INSTALL_PATH/c
@@ -119,13 +121,17 @@ echo '============> Running SYCL on CPU'
 rm -rf write_data.h5 read_data.h5;
 KMP_AFFINITY=compact OMP_NUM_THREADS=20 ./write_sycl OPS_SYCL_DEVICE=cpu OPS_BLOCK_SIZE_X=512 OPS_BLOCK_SIZE_Y=1
 KMP_AFFINITY=compact OMP_NUM_THREADS=20 ./read_sycl OPS_SYCL_DEVICE=cpu OPS_BLOCK_SIZE_X=512 OPS_BLOCK_SIZE_Y=1
+MP_NUM_THREADS=20 ./read_sycl OPS_CL_DEVICE=0 OPS_BLOCK_SIZE_X=512 OPS_BLOCK_SIZE_Y=1
+>>>>>>> mpi_zone
 $HDF5_INSTALL_PATH/bin/h5diff write_data.h5 read_data.h5
 rc=$?; if [[ $rc != 0 ]]; then echo "TEST FAILED";exit $rc; else echo "TEST PASSED"; fi
 
 echo '============> Running MPI+SYCL on CPU'
 rm -rf write_data.h5 read_data.h5;
+
 export OMP_NUM_THREADS=2;$MPI_INSTALL_PATH/bin/mpirun -np 10 ./write_mpi_sycl OPS_SYCL_DEVICE=cpu OPS_BLOCK_SIZE_X=64 OPS_BLOCK_SIZE_Y=4
 export OMP_NUM_THREADS=2;$MPI_INSTALL_PATH/bin/mpirun -np 10 ./read_mpi_sycl OPS_SYCL_DEVICE=cpu OPS_BLOCK_SIZE_X=64 OPS_BLOCK_SIZE_Y=4
+
 $HDF5_INSTALL_PATH/bin/h5diff write_data.h5 read_data.h5
 rc=$?; if [[ $rc != 0 ]]; then echo "TEST FAILED";exit $rc; else echo "TEST PASSED"; fi
 
@@ -143,8 +149,8 @@ echo "All Intel SYCL complier based applications ---- PASSED"
 
 fi
 
-
 if [[ -v TELOS || -v DEMOS ]]; then
+
 #============================ Test with PGI Compilers==========================================
 echo "Testing PGI/NVHPC complier based applications ---- "
 cd $OPS_INSTALL_PATH/c

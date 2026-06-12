@@ -175,6 +175,7 @@ int main(int argc, char **argv)
   //We time the main computational part below, we only want energy consumption
   // for the same region of code
   clover_grid->instance->reset_power_counters();
+
 #ifdef PROFILE_ITT
   __itt_resume();
 #endif

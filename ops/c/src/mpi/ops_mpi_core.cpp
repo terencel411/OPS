@@ -163,6 +163,7 @@ void ops_fprintf(FILE *stream, const char *format, ...) {
 
 void printf2(OPS_instance *instance, const char *format, ...) {
   // if (ops_my_global_rank == MPI_ROOT) {
+
     char buf[1000];
     va_list argptr;
     va_start(argptr, format);
@@ -181,6 +182,7 @@ void ops_printf2(OPS_instance *instance, const char *format, ...) {
     va_end(argptr);
     instance->ostream() << buf;
   // }
+
 }
 
 
@@ -330,6 +332,16 @@ bool ops_checkpointing_filename(const char *file_name, std::string &filename_out
   return (OPS_instance::getOPSInstance()->OPS_enable_checkpointing > 1);
 }
 
+bool ops_checkpoint_filename_txt(const char *filename, std::string &filename_out) {
+  filename_out = filename;
+  filename_out += "_";
+  filename_out += std::to_string(ops_my_global_rank);
+  filename_out += ".txt";
+
+  return (OPS_instance::getOPSInstance()->OPS_enable_checkpointing > 1);
+
+}
+
 void ops_checkpointing_calc_range(ops_dat dat, const int *range,
                                   int *discarded_range) {
   for (int d = 0; d < OPS_MAX_DIM; d++) {
@@ -409,6 +421,7 @@ void ops_get_dat_full_range(ops_dat dat, int **full_range) {
 }
 
 bool ops_get_abs_owned_range(ops_block block, int *range, int *start, int *end, int *disp, int *size) {
+
   sub_block_list sb = OPS_sub_block_list[block->index];
   if (!sb->owned) {
     for (int n = 0; n < block->dims; n++) {
@@ -433,6 +446,7 @@ bool ops_get_abs_owned_range(ops_block block, int *range, int *start, int *end, 
 
     disp[n] = sb->decomp_disp[n];
     size[n] = sb->decomp_size[n];
+
   }
   return true;
 }
@@ -449,6 +463,7 @@ extern "C" int getRange(ops_block block, int *start, int *end, int *range) {
   if (sb->owned) {
     owned = 1;
     for (int n = 0; n < block_dim; n++) {
+
       start[n] = sb->decomp_disp[n];
       end[n] = sb->decomp_disp[n] + sb->decomp_size[n];
       if (start[n] >= range[2 * n]) {
@@ -471,6 +486,7 @@ extern "C" int getRange(ops_block block, int *start, int *end, int *range) {
     /*revert to Fortran indexing*/
     for (int n = 0; n < block_dim; n++) {
       // range[2 * n] += 1;  -- no need, passed temporary array here
+
       start[n] += 1;
       // end[n] += 1; -- no need as fortran indexing is inclusive
     }
@@ -591,6 +607,7 @@ ops_dat ops_dat_copy_mpi_core(ops_dat orig_dat) {
       OPS_sub_dat_list, OPS_instance::getOPSInstance()->OPS_dat_index * sizeof(sub_dat_list));
 
   sub_dat_list sd = (sub_dat_list)ops_calloc(1, sizeof(sub_dat));
+
   sd->dirty_dir_send =
       (int *)ops_malloc(sizeof(int) * 2 * dat->block->dims * MAX_DEPTH);
   sd->dirty_dir_recv =

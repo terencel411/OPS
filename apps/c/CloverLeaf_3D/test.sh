@@ -115,8 +115,8 @@ fi
 
 echo "All Intel classic complier based applications ---- PASSED"
 
-
 if [[ -v TELOS || -v DEMOS ]]; then
+
 
 #============================ Test with Intel SYCL Compilers==========================================
 echo "Testing Intel SYCL complier based applications ---- "
@@ -132,7 +132,9 @@ make clean
 make IEEE=1 cloverleaf_sycl cloverleaf_mpi_sycl cloverleaf_mpi_sycl_tiled
 
 echo '============> Running SYCL on CPU'
+
 ./cloverleaf_sycl OPS_SYCL_DEVICE=cpu OPS_BLOCK_SIZE_X=512 OPS_BLOCK_SIZE_Y=1 > perf_out
+
 grep "Total Wall time" perf_out
 grep "PASSED" perf_out
 rc=$?; if [[ $rc != 0 ]]; then echo "TEST FAILED";exit $rc; fi
@@ -140,13 +142,16 @@ rm perf_out
 
 echo '============> Running MPI+SYCL on CPU'
 $MPI_INSTALL_PATH/bin/mpirun -np 20 ./cloverleaf_mpi_sycl OPS_SYCL_DEVICE=cpu OPS_BLOCK_SIZE_X=256 OPS_BLOCK_SIZE_Y=1 > perf_out
+
 grep "Total Wall time" perf_out
 grep "PASSED" perf_out
 rc=$?; if [[ $rc != 0 ]]; then echo "TEST FAILED";exit $rc; fi
 rm perf_out
 
 echo '============> Running MPI+SYCL Tiled on CPU'
+
 $MPI_INSTALL_PATH/bin/mpirun -np 2 ./cloverleaf_mpi_sycl_tiled OPS_SYCL_DEVICE=cpu OPS_BLOCK_SIZE_X=32 OPS_BLOCK_SIZE_Y=4 > perf_out
+
 grep "Total Wall time" perf_out
 grep "PASSED" perf_out
 rc=$?; if [[ $rc != 0 ]]; then echo "TEST FAILED";exit $rc; fi

@@ -21,6 +21,7 @@ int main(int argc, const char** argv)
   jmax = 4094;//*2;
   //Size along x
   imax = 4094;//*2;
+
   int iter_max = 100;
 
   const double tol = 1.0e-6;
@@ -131,6 +132,7 @@ int main(int argc, const char** argv)
   ops_timing_output(std::cout);
   ops_printf("\nTotal Wall time %lf\n",et1-et0);
   
+
   double err_diff = fabs((100.0*(error/2.421354960840227e-03))-100.0);
   printf("Total error is within %3.15E %% of the expected error\n",err_diff);
   if(err_diff < 0.001)

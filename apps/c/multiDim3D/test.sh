@@ -89,6 +89,7 @@ rm perf_out
 
 #cleanup
 rm -rf multidim.dat*
+
 fi
 echo "All Intel classic complier based applications ---- PASSED"
 
@@ -139,9 +140,6 @@ rm perf_out
 echo "All Intel SYCL complier based applications ---- PASSED"
 
 fi
-
-
-
 
 if [[ -v TELOS || -v DEMOS ]]; then
 
@@ -247,6 +245,7 @@ rc=$?; if [[ $rc != 0 ]]; then echo "TEST FAILED";exit $rc; fi
 rm perf_out
 
 #cleanup
+
 rm -rf multidim.dat*
 
 echo "All PGI complier based applications ---- PASSED"

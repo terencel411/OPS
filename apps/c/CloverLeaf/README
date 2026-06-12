@@ -48,7 +48,6 @@ Building Cloverleaf
 
    all: clean core seq openmp mpi #cuda
 
-
 3. Build the Cloverleaf applications. The following will build the developer
    version, MPI, MPI+OpenMP, CUDA and MPI+CUDA. OpenCL/OpenACC targets are
    legacy and may not build or run; migrate to supported backends where

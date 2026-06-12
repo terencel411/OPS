@@ -9,6 +9,7 @@ export SOURCE_AMD_HIP=source_amd_rocm-5.4.3_pythonenv
 
 #export AMOS=TRUE
 export DEMOS=TRUE
+
 #export TELOS=TRUE
 #export KOS=TRUE
 
@@ -105,7 +106,6 @@ fi
 echo "All Intel classic complier based applications ---- PASSED"
 
 fi
-
 
 if [[ -v TELOS || -v DEMOS ]]; then
 

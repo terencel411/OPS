@@ -11,8 +11,10 @@ subroutine initialize_kernel(x, rho_new, rhou_new, rhoE_new, rhoin, idx)
     rho_new(OPS_ACC2(0)) = rhol
     rhou_new(OPS_ACC3(0)) = shsgcul * rho_new(OPS_ACC2(0))
     rhoE_new(OPS_ACC4(0)) = (pl / gam1) + 0.5_8 * (rhou_new(OPS_ACC3(0))**2.0_8)/rho_new(OPS_ACC2(0))
+
   end if
 
   rhoin(OPS_ACC5(0)) = gam1 * (rhoE_new(OPS_ACC4(0)) - 0.5_8 * rhou_new(OPS_ACC3(0)) * rhou_new(OPS_ACC3(0)) / rho_new(OPS_ACC2(0)))
 
 end subroutine
+

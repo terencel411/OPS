@@ -15,3 +15,4 @@ subroutine poisson_populate_kernel(dispx, dispy, idx, u, f, ref)
   ref(OPS_ACC6(0,0)) = SIN(M_PI*x) * COS(2.0_8*M_PI*y)
 
 end subroutine poisson_populate_kernel
+

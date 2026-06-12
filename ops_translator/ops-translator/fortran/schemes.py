@@ -6,6 +6,7 @@ from typing import Dict, Any
 
 import fortran.translator.kernels as ftk
 import fortran.translator.kernels_c as ftk_c
+
 from fortran.parser import getChild, parseIdentifier
 
 import ops as OPS
@@ -14,6 +15,7 @@ from scheme import Scheme
 from store import Application, ParseError, Program
 from target import Target
 from util import find, extract_arglist_fortran, KernelProcess
+
 
 import fparser.two.Fortran2003 as f2003
 from fparser.common.readfortran import FortranStringReader
@@ -255,7 +257,6 @@ def retrieve_subroutine_by_name(file_path, subroutine_name):
 
     return None
 
-
 def retrieve_subroutine_by_name_regex(file_path, subroutine_name):
     if not os.path.exists(file_path):
         raise ParseError(f"Unable to find file {file_path} for subroutine: {subroutine_name}")
@@ -276,7 +277,6 @@ def retrieve_subroutine_by_name_regex(file_path, subroutine_name):
     req_kernel = fortran_code[beg_pos:beg_pos+end.end()]
     return req_kernel+'\n'
 
-
 class FortranMPIOpenMP(Scheme):
     lang = Lang.find("F90")
     target = Target.find("mpi_openmp")
@@ -285,6 +285,7 @@ class FortranMPIOpenMP(Scheme):
 
     loop_host_template = Path("fortran/mpi_openmp/loop_host.F90.j2")
     loop_host_f2c_template = None
+
     master_kernel_template = None    
 
     loop_kernel_extension = "F90"
@@ -308,7 +309,6 @@ class FortranMPIOpenMP(Scheme):
         return kernel_entities.strip()
 
 Scheme.register(FortranMPIOpenMP)
-
 
 class F2CMPIOpenMP(Scheme):
     lang = Lang.find("F90")
@@ -353,6 +353,7 @@ class FortranCuda(Scheme):
 
     loop_host_template = Path("fortran/cuda/loop_host.F90.j2")
     loop_host_f2c_template = None
+
     master_kernel_template = None
 
     loop_kernel_extension = "CUF"
@@ -399,7 +400,6 @@ class FortranCuda(Scheme):
         return output_string.strip()
 
 Scheme.register(FortranCuda)
-
 
 class F2CCuda(Scheme):
     lang = Lang.find("F90")

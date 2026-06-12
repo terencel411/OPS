@@ -109,6 +109,7 @@
 //  Halo exchanges
 //  ==============
 #ifndef OPS_LAZY
+
     ops_H_D_exchanges_host(args, {{lh.args|length}});
     ops_halo_exchanges(args, {{lh.args|length}}, range);
     ops_H_D_exchanges_host(args, {{lh.args|length}});
@@ -351,6 +352,7 @@
     ops_set_dirtybit_host(args, {{lh.args|length}});
     {% for arg in lh.args %}
         {% if arg is ops_dat and (arg is ops_write or arg is ops_rw or arg is ops_inc or arg is ops_max or arg is ops_min) %}
+
     ops_set_halo_dirtybit3(&args[{{arg.id}}], range);
         {% endif %}
     {% endfor %}
