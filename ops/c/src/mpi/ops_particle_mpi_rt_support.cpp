@@ -42,6 +42,8 @@
 #include <mpi.h>
 #include <ops_mpi_core.h>
 #include <ops_mpi_particle_core.h>
+
+#include <ops_particle_mapping_functions.h>
 #include <ops_exceptions.h>
 #include <cassert>
 
@@ -182,6 +184,9 @@ void _ops_particle_halo_border_transfer_map(OPS_instance *instance,
 
   ops_mpi_particle_halo_group *mpi_group =
       &OPS_mpi_particle_halo_group_list[halo_grp->index];
+
+
+  printf("Entering herein for number of halos: %d\n", mpi_group->nhalos);
 
   if (mpi_group->nhalos == 0) return;
   double c, t1, t2;
@@ -511,12 +516,16 @@ void _ops_particle_halo_border_transfer(OPS_instance  *instance,
       mpi_group->num_neighbors_recv * mpi_group->nhalos : 1;
   int *nrecv = (int *) ops_malloc(size * sizeof(int));
 
-  for (int i = 0; i <mpi_group->num_neighbors_send * mpi_group->nhalos; nsend++) {
+
+  printf("R %d mpi_group->num_neighbors_Send = %d nhalos = %d\n", ops_get_proc(),mpi_group->num_neighbors_send);
+
+
+  for (int i = 0; i <mpi_group->num_neighbors_send * mpi_group->nhalos; i++) {
     nsend[i] = 0;
     mpi_group->halo_info[i]->nsend = 0;
   }
 
-  for (int i = 0; i <mpi_group->num_neighbors_recv * mpi_group->nhalos; nsend++)
+  for (int i = 0; i <mpi_group->num_neighbors_recv * mpi_group->nhalos; i++)
     nrecv[i] = 0;
 
   size = (mpi_group->num_neighbors_send > 0) ? mpi_group->num_neighbors_send : 1;
@@ -538,13 +547,12 @@ void _ops_particle_halo_border_transfer(OPS_instance  *instance,
 
 
   /* Part II: Find number of particles to send in each proc */
-  double xminBox[OPS_MAX_DIM], xmaxBox[OPS_MAX_DIM];
   for (int h = 0; h < mpi_group->nhalos; h++) {
     ops_mpi_particle_halo *halo = mpi_group->mpi_halos[h];
     int nproc_to = halo->nproc_to;
     int dim = instance->OPS_particle_halo_list[halo->index]->particle_from->block->dims;
-    double *xcrds
-    = (double *)instance->OPS_particle_halo_list[halo->index]->particle_from->particle_pos_dat->data;
+    char *xcrds
+    = instance->OPS_particle_halo_list[halo->index]->particle_from->particle_pos_dat->data;
     int noParticles = instance->OPS_particle_halo_list[halo->index]->particle_from->no_particles
                     + instance->OPS_particle_halo_list[halo->index]->particle_from->no_virtual;
     int bites = instance->OPS_particle_halo_list[halo->index]->nbites;
@@ -562,10 +570,24 @@ void _ops_particle_halo_border_transfer(OPS_instance  *instance,
       }
 
       ops_particle_halo_exchange halo_info = mpi_group->halo_info[nhalos * iloc + h];
-      halo->sendBox[isend]->getLocalMaxMin(xminBox, xmaxBox);
 
-      _ops_particle_number_of_particles_in_range(halo->sendBox[isend], dim, xcrds, noParticles,
-                                                 &nsend[nhalos * iloc + h]); //TODO
+      switch(instance->OPS_particle_halo_list[halo->index]->particle_from->type_box) {
+      case sizeof(float):
+        _ops_particle_no_particles_in_range_by_box((BoundingBox<float> *)halo->sendBox[isend],
+                                                   dim, (float *) xcrds, noParticles, &nsend[nhalos * iloc + h]);
+        break;
+      case sizeof(double):
+        _ops_particle_no_particles_in_range_by_box((BoundingBox<double> *)halo->sendBox[isend],
+                                                   dim, (double *) xcrds, noParticles,
+                                                   &nsend[nhalos * iloc + h]);
+        break;
+      case sizeof(long double):
+      _ops_particle_no_particles_in_range_by_box((BoundingBox<long double> *)halo->sendBox[isend],
+                                                 dim, (long double *) xcrds, noParticles,
+                                                 &nsend[nhalos * iloc + h]);
+        break;
+      }
+
       halo_info->nsend = nsend[nhalos * iloc + h];
 
       if (halo_info->nsend > halo_info->nmax) {
@@ -575,8 +597,23 @@ void _ops_particle_halo_border_transfer(OPS_instance  *instance,
         halo_info->nmax = halo_info->nsend + 10;
       }
 
-      _ops_particle_mapped_into_region(halo->sendBox[isend], dim, xcrds,
-                                       noParticles, halo_info->sendlist);
+      switch(instance->OPS_particle_halo_list[halo->index]->particle_from->type_box) {
+      case sizeof(float):
+         _ops_particle_mapped_into_region_by_block((BoundingBox<float> *)halo->sendBox[isend], dim,
+                                                   (float *) xcrds, noParticles,
+                                                  halo_info->sendlist);
+        break;
+      case sizeof(double):
+        _ops_particle_mapped_into_region_by_block((BoundingBox<double> *)halo->sendBox[isend], dim,
+                                                 (double *) xcrds, noParticles,
+                                                  halo_info->sendlist);
+        break;
+      case sizeof(long double):
+        _ops_particle_mapped_into_region_by_block((BoundingBox<long double> *)halo->sendBox[isend], dim,
+                                                 (long double *) xcrds, noParticles,
+                                                  halo_info->sendlist);
+        break;
+      }
 
       mpi_group->send_bites[iloc]+= bites * halo_info->nsend;
       mpi_group->send_pos_bites[iloc] += bites_coords * halo_info->nsend;
@@ -704,7 +741,7 @@ void _ops_particle_halo_border_transfer(OPS_instance  *instance,
       int shift = nsend_shift[iloc];
       _ops_particle_halo_copy_tobuf(ops_buffer_send_1 + shift, halo_data, halo->nhalos,
                                     halo_info, &ntot_bites, 1);
-      nsend_shift[iproc] += ntot_bites;
+      nsend_shift[iloc] += ntot_bites;
     }
   }
 
@@ -783,6 +820,7 @@ void _ops_particle_halo_border_transfer(OPS_instance  *instance,
 
 }
 
+//TODO:
 void _ops_particle_halo_exchange_transfer(OPS_instance *instance,
                                           ops_particle_halo_group halo_grp) {
 
@@ -819,7 +857,6 @@ void _ops_particle_halo_exchange_transfer(OPS_instance *instance,
 
   for (int i = 0; i <mpi_group->num_neighbors_recv * mpi_group->nhalos; i++) {
     nrecv[i] = 0;
-    int input = mpi_group->num_neighbors_send * mpi_group->nhalos;
 //    mpi_group->halo_info[input + i]->nrecv = 0;
   }
 
@@ -836,9 +873,6 @@ void _ops_particle_halo_exchange_transfer(OPS_instance *instance,
     ops_particle particle = instance->OPS_particle_halo_list[halo->index]->particle_from;
     double *xcrds =(double *)particle->particle_pos_dat->data;
     int noParticles = particle->no_particles;
-    int *mark_deletion = particle->mark_deletion;
-    double *env = (particle->particle_envelope != nullptr) ?
-         (double *)particle->particle_envelope->data : nullptr;
 
     int bites = instance->OPS_particle_halo_list[halo->index]->nbites;
 
@@ -853,8 +887,22 @@ void _ops_particle_halo_exchange_transfer(OPS_instance *instance,
       }
 
       ops_particle_halo_exchange halo_info = mpi_group->halo_info[nhalos * iloc + h];
-      _ops_particle_number_of_particles_in_range(halo->sendBox[isend], dim, xcrds, noParticles,
-                                                  &nsend[nhalos * iloc + h]);
+      switch(instance->OPS_particle_halo_list[halo->index]->particle_from->type_box) {
+      case sizeof(float):
+        _ops_particle_no_particles_in_range_by_box((BoundingBox<float> *)halo->sendBox[isend],
+                                                   dim, (float *) xcrds, noParticles, &nsend[nhalos * iloc + h]);
+        break;
+      case sizeof(double):
+        _ops_particle_no_particles_in_range_by_box((BoundingBox<double> *)halo->sendBox[isend],
+                                                   dim, (double *) xcrds, noParticles,
+                                                   &nsend[nhalos * iloc + h]);
+        break;
+      case sizeof(long double):
+      _ops_particle_no_particles_in_range_by_box((BoundingBox<long double> *)halo->sendBox[isend],
+                                                 dim, (long double *) xcrds, noParticles,
+                                                 &nsend[nhalos * iloc + h]);
+        break;
+      }
 
       halo_info->nsend  = nsend[nhalos * iloc + h]; ///out of memory
 
@@ -865,10 +913,23 @@ void _ops_particle_halo_exchange_transfer(OPS_instance *instance,
          halo_info->nmax = halo_info->nsend + 10;
       }
 
-      if (halo_info->nsend > 0)
-        _ops_particle_remove_from_region(halo->sendBox[isend], env, xcrds, mark_deletion,
-                                         particle->no_particles, particle->block->dims,
-                                         halo_info->sendlist);
+      switch(instance->OPS_particle_halo_list[halo->index]->particle_from->type_box) {
+      case sizeof(float):
+         _ops_particle_mapped_into_region_by_block((BoundingBox<float> *)halo->sendBox[isend], dim,
+                                                   (float *) xcrds, noParticles,
+                                                  halo_info->sendlist);
+        break;
+      case sizeof(double):
+        _ops_particle_mapped_into_region_by_block((BoundingBox<double> *)halo->sendBox[isend], dim,
+                                                 (double *) xcrds, noParticles,
+                                                  halo_info->sendlist);
+        break;
+      case sizeof(long double):
+        _ops_particle_mapped_into_region_by_block((BoundingBox<long double> *)halo->sendBox[isend], dim,
+                                                 (long double *) xcrds, noParticles,
+                                                  halo_info->sendlist);
+        break;
+      }
 
 
       mpi_group->send_bites[iloc] += bites * halo_info->nsend;
@@ -1007,7 +1068,6 @@ void _ops_particle_halo_exchange_transfer(OPS_instance *instance,
   for (int h = 0; h < mpi_group->nhalos; h++) {
     ops_mpi_particle_halo *halo_mpi = mpi_group->mpi_halos[h];
     ops_particle_halo halo = instance->OPS_particle_halo_list[halo_mpi->index];
-    int nrecv1 = 0;
     for (int irecv = 0; irecv < halo_mpi->nproc_from; irecv++) {
       int iproc = halo_mpi->proclist[halo_mpi->nproc_to + irecv];
       int iloc =-1;
@@ -1061,13 +1121,25 @@ void _ops_particle_halo_exchange_transfer(OPS_instance *instance,
 
        //TODO: Mark for deletion or not
 
-       double *xcrds = (double *)to->particle_pos_dat->data;
+       char *xcrds = to->particle_pos_dat->data;
 
-
-      _ops_particle_mark_for_removal(to->box_block, xcrds, mark_del,
-                                     to->block->dims, halo_info->firstrecv,
-                                     halo_info->firstrecv + halo_info->nrecv);
-
+      switch (instance->OPS_particle_halo_list[halo->index]->particle_from->type_box) {
+      case sizeof(float):
+        _ops_particle_mark_for_removal((BoundingBox<float> *)to->box_block, (float *)xcrds, mark_del,
+                                       to->block->dims, halo_info->firstrecv,
+                                       halo_info->firstrecv + halo_info->nrecv);
+        break;
+      case sizeof(double):
+         _ops_particle_mark_for_removal((BoundingBox<double> *)to->box_block, (double *)xcrds, mark_del,
+                                        to->block->dims, halo_info->firstrecv,
+                                        halo_info->firstrecv + halo_info->nrecv);
+        break;
+      case sizeof(long double):
+         _ops_particle_mark_for_removal((BoundingBox<long double> *)to->box_block, (long double *)xcrds, mark_del,
+                                        to->block->dims, halo_info->firstrecv,
+                                        halo_info->firstrecv + halo_info->nrecv);
+        break;
+      }
 
      }
 
@@ -1139,11 +1211,11 @@ void _ops_particle_halo_exchange_transfer_map(OPS_instance   *instance,
     int dim = instance->OPS_particle_halo_list[halo->index]->particle_from->block->dims;
 
     ops_particle particle = instance->OPS_particle_halo_list[halo->index]->particle_from;
-    double *xcrds =(double *)particle->particle_pos_dat->data;
+    char *xcrds = particle->particle_pos_dat->data;
     int noParticles = particle->no_particles;
     int *mark_deletion = particle->mark_deletion;
-    double *env = (particle->particle_envelope != nullptr) ?
-        (double *)particle->particle_envelope->data : nullptr;
+    char *env = (particle->particle_envelope != nullptr) ?
+                 particle->particle_envelope->data : nullptr;
 
     int bites = instance->OPS_particle_halo_list[halo->index]->nbites;
     for (int isend = 0; isend < halo->nproc_to; isend++) {
@@ -1154,8 +1226,24 @@ void _ops_particle_halo_exchange_transfer_map(OPS_instance   *instance,
         if (mpi_group->neighbors_send[iloc] == iproc) break;
 
       ops_particle_halo_exchange halo_info = mpi_group->halo_info[nhalos * iloc + h];
-      _ops_particle_number_of_particles_in_range(halo->sendBox[isend], dim, xcrds, noParticles,
+
+      switch(instance->OPS_particle_halo_list[halo->index]->particle_from->type_box) {
+      case sizeof(float):
+        _ops_particle_no_particles_in_range_by_box((BoundingBox<float> *)halo->sendBox[isend],
+                                                   dim, (float *) xcrds, noParticles, &nsend[nhalos * iloc + h]);
+        break;
+      case sizeof(double):
+        _ops_particle_no_particles_in_range_by_box((BoundingBox<double> *)halo->sendBox[isend],
+                                                   dim, (double *) xcrds, noParticles,
+                                                   &nsend[nhalos * iloc + h]);
+        break;
+      case sizeof(long double):
+      _ops_particle_no_particles_in_range_by_box((BoundingBox<long double> *)halo->sendBox[isend],
+                                                 dim, (long double *) xcrds, noParticles,
                                                  &nsend[nhalos * iloc + h]);
+        break;
+      }
+
       halo_info->nsend  = nsend[nhalos * iloc + h];
 
       if (halo_info->nsend > halo_info->nmax) {
@@ -1165,9 +1253,27 @@ void _ops_particle_halo_exchange_transfer_map(OPS_instance   *instance,
         halo_info->nmax = halo_info->nsend + 10;
       }
 
-      _ops_particle_remove_from_region(halo->sendBox[isend], env, xcrds, mark_deletion,
-                                       particle->no_particles, particle->block->dims,
-                                       halo_info->sendlist);
+      switch (instance->OPS_particle_halo_list[halo->index]->particle_from->type_box) {
+      case sizeof(float):
+          _ops_particle_remove_from_region((BoundingBox<float> *) halo->sendBox[isend], (float *)env,
+                                           (float *) xcrds, mark_deletion,
+                                           particle->no_particles, particle->block->dims,
+                                           halo_info->sendlist);
+        break;
+      case sizeof(double):
+        _ops_particle_remove_from_region((BoundingBox<double> *) halo->sendBox[isend], (double *)env,
+                                         (double *) xcrds, mark_deletion,
+                                         particle->no_particles, particle->block->dims,
+                                         halo_info->sendlist);
+        break;
+      case sizeof(long double):
+        _ops_particle_remove_from_region((BoundingBox<long double> *) halo->sendBox[isend],
+                                         (long double *)env,
+                                         (long double *) xcrds, mark_deletion,
+                                         particle->no_particles, particle->block->dims,
+                                         halo_info->sendlist);
+        break;
+      }
 
       mpi_group->send_bites[iloc] += bites * halo_info->nsend;
     }
@@ -1695,7 +1801,7 @@ void _ops_particle_halo_border_pos_transfer(OPS_instance *instance,
 
   if (mpi_group->nhalos == 0) return;
   int nhalos = mpi_group->nhalos;
-  double c, t1, t2;
+  double c, t1;
   ops_timers_core(&c, &t1);
 
   int size = (mpi_group->num_neighbors_send > 0)
@@ -1715,8 +1821,6 @@ void _ops_particle_halo_border_pos_transfer(OPS_instance *instance,
 
   size = (mpi_group->num_neighbors_send > 0) ? mpi_group->num_neighbors_send : 1;
   int *nsend_shift = (int *)ops_malloc(size * sizeof(int));
-  int *nsend_pos_shift = (int *) ops_malloc(size * sizeof(int));
-
 
   size = (mpi_group->num_neighbors_recv > 0) ? mpi_group->num_neighbors_recv : 1;
   int *nrecv_shift = (int *) ops_malloc(size * sizeof(int));
@@ -1996,12 +2100,12 @@ void _ops_particle_exchange(ops_particle particle) {
 
   for (int idir = 0; idir < dim; idir++) {
 
-    int nsend_recv_bites[4];
+    size_t nsend_recv_bites[4];
     for (int i = 0; i < 4; i++)
       nsend_recv_bites[i] = 0;
 
     ops_int_particle_halos halo_int = sp->particle_halos[idir];
-    for (int ipart = 0; ipart < particle->no_particles; ipart++) {
+    for (size_t ipart = 0; ipart < particle->no_particles; ipart++) {
       if (mark_deletion[ipart] == 1) {
         //Check if particle would be mapped for allocation
         if (xpos[dim * ipart + idir] < halo_int->region_exch_neg[1]
@@ -2282,10 +2386,21 @@ void _ops_particle_exchange(ops_particle particle) {
     MPI_Waitall(2, &request[0], &status[0]);
 
     //TODO: Set and shift for non-local if not-within
-    double *xcrds = (double *)pos_dat->data;
-    for (int ipart = nexist; ipart < particle->no_particles; ipart++) {
-      particle->mark_deletion[ipart] =
-          (! particle->box_block->isCoordinateInBoundingBox(xcrds + ipart * dim)) ? 1 : 0;
+    for (size_t ipart = nexist; ipart < particle->no_particles; ipart++) {
+      switch(particle->type_box) {
+      case sizeof(float):
+        particle->mark_deletion[ipart] =
+              (! ((BoundingBox<float> *)particle->box_block)->isCoordinateInBoundingBox((float *) particle->particle_pos_dat->data + ipart * dim)) ? 1 : 0;
+      break;
+      case sizeof(double):
+        particle->mark_deletion[ipart] =
+         (! ((BoundingBox<double> *)particle->box_block)->isCoordinateInBoundingBox((double *) particle->particle_pos_dat->data + ipart * dim)) ? 1 : 0;
+      break;
+      case sizeof(long double):
+        particle->mark_deletion[ipart] =
+                  (! ((BoundingBox<long double> *)particle->box_block)->isCoordinateInBoundingBox((long double *) particle->particle_pos_dat->data + ipart * dim)) ? 1 : 0;
+      }
+
     }
   }
 
@@ -2306,7 +2421,6 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
   sub_particle sp = sb->sb_particle_list[particle->index];
 
   int *mark_deletion = particle->mark_deletion;
-  double  *xpos =(double *) particle->particle_pos_dat->data;
 
   for (int idir = 0; idir < dim; idir++) {
     int nsend_recv[4];
@@ -2318,18 +2432,55 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
     ops_int_particle_halos halo_int = sp->particle_halos[idir];
     for (int ipart = 0; ipart < particle->no_particles; ipart++) {
       if (mark_deletion[ipart] == 1) {
+        switch(particle->type_box) {
+        case sizeof(float): {
+          if (((float *)particle->particle_pos_dat->data)[ipart * dim + idir] <
+              ((float *)halo_int->region_exch_neg)[1] &&
+                sb->id_m[idir] != MPI_PROC_NULL) {
+            nsend_recv[0]++;
+            mark_deletion[ipart] = 2;
+            continue;
+          }
 
-        if (xpos[dim * ipart + idir] < halo_int->region_exch_neg[1] &&
-            sb->id_m[idir] != MPI_PROC_NULL) {
-          nsend_recv[0]++;
-          mark_deletion[ipart] = 2;
-          continue;
-        }
+          if (((float *) particle->particle_pos_dat->data)[ipart * dim + idir] >
+              ((float *) halo_int->region_exch_pos)[0] &&
+              sb->id_p[idir] != MPI_PROC_NULL) {
+                nsend_recv[1]++;
+                mark_deletion[ipart] = 3;
+          }
+          } break;
+        case sizeof(double): {
+          if (((double *)particle->particle_pos_dat->data)[ipart * dim + idir] <
+              ((double *)halo_int->region_exch_neg)[1] &&
+              sb->id_m[idir] != MPI_PROC_NULL) {
+            nsend_recv[0]++;
+            mark_deletion[ipart] = 2;
+            continue;
+          }
 
-        if (xpos[dim * ipart + idir] >= halo_int->region_exch_pos[0] &&
-            sb->id_p[idir] != MPI_PROC_NULL) {
-          nsend_recv[1]++;
-          mark_deletion[ipart] = 3;
+          if (((double *) particle->particle_pos_dat->data)[ipart * dim + idir] >
+              ((double *) halo_int->region_exch_pos)[0] &&
+              sb->id_p[idir] != MPI_PROC_NULL) {
+                nsend_recv[1]++;
+                mark_deletion[ipart] = 3;
+          }
+          } break;
+        case sizeof(long double): {
+          if (((long double *)particle->particle_pos_dat->data)[ipart * dim + idir] <
+              ((long double *)halo_int->region_exch_neg)[1] &&
+                sb->id_m[idir] != MPI_PROC_NULL) {
+             nsend_recv[0]++;
+             mark_deletion[ipart] = 2;
+             continue;
+          }
+
+          if (((long double *) particle->particle_pos_dat->data)[ipart * dim + idir] >
+              ((long double *) halo_int->region_exch_pos)[0] &&
+              sb->id_p[idir] != MPI_PROC_NULL) {
+                nsend_recv[1]++;
+                mark_deletion[ipart] = 3;
+          }
+          } break;
         }
       }
     }
@@ -2491,7 +2642,7 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
     MPI_Waitall(2, &request[2], &status[2]);
 
 
-    int nexist = particle->no_particles;
+    size_t nexist = particle->no_particles;
     particle->no_particles += nsend_recv[2] + nsend_recv[3];
 
     if (particle->no_particles > particle->Nmax) {
@@ -2564,9 +2715,21 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
     MPI_Waitall(2, &request[0], &status[0]);
 
     double *xcrds = (double *) particle->particle_pos_dat->data;
-    for (int ipart = nexist; ipart < particle->no_particles; ipart++) {
-      particle->mark_deletion[ipart] =
-          (! particle->box_block->isCoordinateInBoundingBox(xcrds + ipart * dim)) ? 1 : 0;
+    for (size_t ipart = nexist; ipart < particle->no_particles; ipart++) {
+      switch(particle->type_box) {
+      case sizeof(float):
+        particle->mark_deletion[ipart] =
+             (! ((BoundingBox<float> *)particle->box_block)->isCoordinateInBoundingBox((float *)particle->particle_pos_dat->data + ipart * dim)) ? 1 : 0;
+      break;
+      case sizeof(double):
+        particle->mark_deletion[ipart] =
+             (! ((BoundingBox<double> *)particle->box_block)->isCoordinateInBoundingBox((double *)particle->particle_pos_dat->data + ipart * dim)) ? 1 : 0;
+      break;
+      case sizeof(long double):
+        particle->mark_deletion[ipart] =
+             (! ((BoundingBox<long double> *)particle->box_block)->isCoordinateInBoundingBox((long double *)particle->particle_pos_dat->data + ipart * dim)) ? 1 : 0;
+      break;
+      }
     }
   }
 
@@ -2599,8 +2762,8 @@ void _ops_particle_build_border(ops_particle particle){
 
     ops_int_particle_halos halo_int = sp->particle_halos[idir];
     int nswaps = halo_int->nswaps;
-    int ntot_neg = 0;
-    int ntot_pos = 0;
+    size_t ntot_neg = 0;
+    size_t ntot_pos = 0;
     int nswap_bites  =0;
 
     int ishift_neg = 0;
@@ -2788,13 +2951,13 @@ void _ops_particle_border_dats(ops_particle particle, ops_dat *dats,
 
  //   printf("Number of swaps R %d dir %d: %d\n", ops_get_proc(), idir,sp->particle_halos[idir]->nswaps);
 
-    int nsend_recv[4];
+//    int nsend_recv[4];
     int nfirst = particle->no_particles + particle->no_virtual;
 
     ops_int_particle_halos halo_int = sp->particle_halos[idir];
     int nswaps = halo_int->nswaps;
-    int ntot_neg = 0;
-    int ntot_pos = 0;
+    size_t ntot_neg = 0;
+    size_t ntot_pos = 0;
     int nswap_bites = 0;
 
     int ishift_neg = 0;
@@ -3107,8 +3270,8 @@ void _ops_particle_border_dats_with_maps(ops_particle particle, ops_dat *dats,
     }
 
 
-    //Part IVa: Pack history-data
-    for (int ihis = 0; ihis < ndats; ihis++) {
+    //Part IVa: Pack history-data-TODO: Need a modification but this will be after
+    for (int ihis = 0; ihis < nhistories; ihis++) {
       ishift_neg_buf += _ops_particle_intra_hist_to_buff(ops_buffer_send_1 + ishift_neg_buf,
                                                          histories[ihis],
                                                          halo_int->particle_send_neg + ishift_neg,
@@ -3200,7 +3363,7 @@ void _ops_particle_border_dats_with_maps(ops_particle particle, ops_dat *dats,
       irecv_shift_pos += halo_int->nrecv_pos[0] * dats[idat]->elem_size;
     }
 
-    for (int ihis = 0; ihis < ndats; ihis++) {
+    for (int ihis = 0; ihis < nhistories; ihis++) {
       irecv_shift_neg += _ops_particle_intra_buff_to_hist(ops_buffer_recv_2 + irecv_shift_neg,
                                                           histories[ihis],
                                                           halo_int->irecv_neg[0],

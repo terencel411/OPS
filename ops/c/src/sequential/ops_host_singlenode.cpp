@@ -103,6 +103,16 @@ ops_dat ops_decl_dat_char(ops_block block, int size, int *dat_size, int *base,
   return dat;
 }
 
+bool ops_checkpoint_filename_txt(const char *filename, std::string &filename_out) {
+  filename_out = filename;
+  //filename_out += "_";
+  filename_out += ".txt";
+
+  return (OPS_instance::getOPSInstance()->OPS_enable_checkpointing > 1);
+
+}
+
+
 char *get_buffer_ptr(char *ops_halo_buffer, int i, int j, int k, int l, int m, int d, int elem_size, int *ranges, int *step, int *buf_strides, int buf_type_size) {
   return ops_halo_buffer +
           (

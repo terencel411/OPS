@@ -71,7 +71,6 @@ void (*ops_read_dat_hdf5_dynamic)(ops_dat dat) = NULL;
 * backends
 */
 
-<<<<<<< HEAD
 int ops_comm_global_size;
 int ops_my_global_rank;
 
@@ -90,10 +89,6 @@ int intersection(int range1_beg, int range1_end, int range2_beg,
  * Returns a CSR-like array, listing the processes assigned to each block and
  * describing their sub-dimensions
  * This one is just a really primitive initial implementation
-<<<<<<< HEAD
-=======
- *
->>>>>>> mpi_zone
  */
 void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
                           int **proc_sizes, int **proc_dimsplit, std::map<std::string, void*> &opts) {
@@ -435,9 +430,6 @@ void ops_decomp_particle(sub_block  *sb) {
 
 
   int no_particle_lists = OPS_instance::getOPSInstance()->OPS_block_list[block->index].no_particle_structures;
-  for (int i = 0; i < no_particle_lists; i++)
-    printf("Particle %s: index = %d\n", particle[i]->name, particle[i]->index);
-
 
   if (no_particle_lists == 0) return;
 
@@ -467,7 +459,6 @@ void ops_decomp_particle(sub_block  *sb) {
       sp->bites_in_exchange += (dat->is_particle && dat->is_exchangable) ? dat->elem_size : 0;
     }
 
-    OPS_instance *instance = OPS_instance::getOPSInstance();
     ops_block block = particle[idef]->block;
 
    // instance->OPS_block_list[block->index].no_history_structures++;
@@ -547,11 +538,36 @@ void ops_decomp_particle(sub_block  *sb) {
         sp->particle_halos[idir]->nrecv_neg[i] = 0;
       }
 
-      sp->particle_halos[idir]->region_exch_neg[0] = 0;
-      sp->particle_halos[idir]->region_exch_neg[1] = 0;
+      int size_elem = particle[idef]->type_box;
+      sp->particle_halos[idir]->region_exch_neg = (char *) ops_malloc(size_elem * 2);
+      sp->particle_halos[idir]->region_exch_pos = (char *) ops_malloc(size_elem * 2);
+
+      switch(size_elem) {
+      case sizeof(float):
+        ((float *)sp->particle_halos[idir]->region_exch_neg)[0] = 0;
+        ((float *)sp->particle_halos[idir]->region_exch_neg)[1] = 0;
+        ((float *)sp->particle_halos[idir]->region_exch_pos)[0] = 0;
+        ((float *)sp->particle_halos[idir]->region_exch_pos)[1] = 0;
+        break;
+      case sizeof(double):
+        ((double *)sp->particle_halos[idir]->region_exch_neg)[0] = 0;
+        ((double *)sp->particle_halos[idir]->region_exch_neg)[1] = 0;
+        ((double *)sp->particle_halos[idir]->region_exch_pos)[0] = 0;
+        ((double *)sp->particle_halos[idir]->region_exch_pos)[1] = 0;
+        break;
+      case sizeof(long double):
+        ((long double *)sp->particle_halos[idir]->region_exch_neg)[0] = 0;
+        ((long double *)sp->particle_halos[idir]->region_exch_neg)[1] = 0;
+        ((long double *)sp->particle_halos[idir]->region_exch_pos)[0] = 0;
+        ((long double *)sp->particle_halos[idir]->region_exch_pos)[1] = 0;
+        break;
+      }
 
      //Allocate in positive direction
       nalloc = nswap;
+
+
+      printf("nalloc = %d\n", nalloc);
 
       //TODO: NEED AN ALLOCATION ON THE FLY
       sp->particle_halos[idir]->nforward_pos = (int *) ops_malloc(nalloc * sizeof(int));
@@ -567,8 +583,12 @@ void ops_decomp_particle(sub_block  *sb) {
         sp->particle_halos[idir]->nrecv_pos[i] = 0;
       }
 
-      sp->particle_halos[idir]->region_exch_pos[0] = 0;
-      sp->particle_halos[idir]->region_exch_pos[1] = 0;
+
+      //allocations for border structures
+      sp->particle_halos[idir]->region_bord_neg =
+          (char *) ops_malloc(2 * block->dims * size_elem);
+      sp->particle_halos[idir]->region_bord_pos =
+          (char *) ops_malloc(2 * block->dims * size_elem);
 
       //Initialize regions
       for (int isou = 0; isou < block->dims; isou++) {
@@ -1328,7 +1348,7 @@ void   ops_partition_particle_halos(int *processes, int *proc_offsets) {
 
       //TODO: Set it in setup
       OPS_mpi_particle_halo_list[i].sendBox =
-          (BoundingBox **)ops_malloc(max_dest * sizeof(BoundingBox *));
+          (void **)ops_malloc(max_dest * sizeof(void *));
 
       //TODO: Set it in setup
       int dim = halo->particle_from->block->dims;
@@ -1357,7 +1377,6 @@ void   ops_partition_particle_halos(int *processes, int *proc_offsets) {
                                    sizeof(int)
                                    * (max_recv + OPS_mpi_particle_halo_list[i].nproc_to_max));
 
-      printf("Max recv is %d\n", max_recv);
       OPS_mpi_particle_halo_list[i].nproc_from_max = max_recv;
 
       int ientry = OPS_mpi_particle_halo_list[i].nproc_to_max;
@@ -1582,6 +1601,11 @@ void ops_mpi_exit(OPS_instance *instance) {
         ops_free(sp->particle_halos[idir]->nrecv_pos);
         ops_free(sp->particle_halos[idir]->particle_send_pos);
 
+        ops_free(sp->particle_halos[idir]->region_exch_neg);
+        ops_free(sp->particle_halos[idir]->region_exch_pos);
+
+        ops_free(sp->particle_halos[idir]->region_bord_neg);
+        ops_free(sp->particle_halos[idir]->region_bord_pos);
 
         ops_free(sp->particle_halos[idir]);
       }
@@ -1608,6 +1632,8 @@ void ops_mpi_exit(OPS_instance *instance) {
     }
 
     MPI_Group_free(&(sb->grp));
+
+    ops_free(sb->pdims);
     ops_free(OPS_sub_block_list[b]);
   }
   ops_free(OPS_sub_block_list);

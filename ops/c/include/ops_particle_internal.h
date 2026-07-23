@@ -62,13 +62,6 @@ enum ops_particle_iterate_type {
 };
 
 /*-------------------------------------------------------------------------------------*/
-/* Auxiliary BoundingBox Functions                                                     */
-/*                                                                                     */
-
-void _ops_construct_local_box_from_dat(ops_dat coords, double  *grid_Size, int dim,
-                                      double* xmin, double* xmax);
-
-/*-------------------------------------------------------------------------------------*/
 /* Particle auxiliary functions                                                        */
 /*-------------------------------------------------------------------------------------*/
 
@@ -107,7 +100,7 @@ void _ops_particle_halo_reverse_copy_from_buff(char *buff, ops_particle_halo_dat
 
 void _ops_particle_halo_copy_from_buff(char *buff, ops_particle_halo_data *halo_data,
                                        int nhalos, ops_particle_halo_exchange halo_info,
-                                       int dir_to[], int dir_from[], double translate[],
+                                       int dir_to[], int dir_from[], char* translate,
                                        int *ntot_bites, int flag = 0);
 
 void _ops_particle_copy_mapping_data_to(ops_particle_mapping map, int to, int from);
@@ -128,6 +121,7 @@ void _ops_particle_allocate_tmp_array(int size_elem);
 
 void _ops_particle_free_tmp_array();
 
+
 /*-------------------------------------------------------------------------------------*/
 /* Particle halo and halo group auxiliary functions                                    */
 /*------------------------------------------------------------------------------------ */
@@ -146,9 +140,9 @@ ops_particle_halo _ops_particle_decl_halo(OPS_instance *instance, ops_particle f
 ops_particle_halo _ops_particle_decl_halo(OPS_instance *instance, ops_particle from,
                                           ops_particle to, int nhalos,
                                           ops_particle_halo_data halos[],
-                                          double sending_region[],
+                                          char *sending_region,
                                           int *dir_from, int *dir_to,
-                                          double *translate);
+                                          char *translate, int type_size);
 
 ops_particle_halo_group _ops_particle_decl_halo_group(OPS_instance *instance,
                                                       ops_particle_halo particle_halos[],
@@ -211,11 +205,11 @@ void _ops_mapping_def_core(ops_particle particle, ops_dat grid, ops_stencil sten
                           ops_with_virtual &include_virtual, int size[],
                           int base[], int d_m[], int d_p[]);
 
-void _ops_mapping_set_structures(ops_particle particle, double skin[], int  d_m[],
+void _ops_mapping_set_structures(ops_particle particle, char *skin, int  d_m[],
                                  int d_p[], int d_mb[], int d_pb[], int size[],
-                                 double dx_map[],  ops_with_virtual &include_virtual);
+                                 char *dx_map,  ops_with_virtual &include_virtual);
 
-ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, double *skin,
+ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, char *skin,
                                            int size[], int d_m[],
                                            int d_p[], int base[],
                                            ops_with_virtual with_virtual,
@@ -223,16 +217,16 @@ ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, double *skin,
                                            int Ng);
 
 ops_particle_mapping  _ops_decl_mapping_core(ops_particle particle, ops_dat grid,
-                                             ops_dat radius, int size[],
-                                             int d_m[], int d_p[], int base[],
-                                             int stride[],
+                                             int size[], int d_m[], int d_p[],
+                                             int base[], int stride[],
                                              ops_stencil stencil,
                                              ops_with_virtual include_virtual,
-                                             ops_shape_evolve particle_changes,
                                              ops_grid_type grid_type,
                                              double skin, int Ng);
 
 void _ops_particle_map_validation(ops_particle_mapping map);
+
+void _ops_partition_flat_wall(ops_particle particle);
 
 void  _ops_particle_init_map(ops_particle_mapping map);
 
@@ -296,53 +290,13 @@ void _ops_particle_forward_dats(ops_particle particle, ops_dat *dats,
 /* Mapping auxiliary functions                                                          */
 /*--------------------------------------------------------------------------------------*/
 
-void _ops_get_max_min(double &minv, double &maxv, const double* dat, const size_t size);
-
-void  _ops_compute_bin_size(const ops_point xmin, const ops_point xmax, const int dim,
-                            const double dx, int &Nx, double &dx_x, int &Ny,
-                            double &dx_y, int &Nz, double &dx_z);
-
-int _ops_coord_to_bin(const int dim, const ops_point xmin,const  ops_point xmax,
-                      const double *dx, const int *Ngrid, const double *xp);
-
-int _ops_coord_to_bin_dir(const int dir, const int dim, const ops_point xmin,
-                          const double *dx, const int *Ngrid, const double *xp);
-
-void _ops_uniform_build_map(const int init, const int dim, const size_t Np,
-                            const int *Ngrid, const double* xp, const ops_point xmin,
-                            const ops_point xmax, const double *dx, int *binhead,
-                            int *bin);
-
-void _ops_build_uniform_dats(const int init, const int dim, const ops_dat grid,
-                             const ops_dat xp, const size_t Np, const double *dx,
-                             const ops_point xmin, const ops_point xmax,
-                             ops_dat binhead, ops_dat bin);
 
 bool _ops_particle_moved_to_exchange_zone(int bin_old[], int bin_new[], int rmv_limits[],
                                           int dim);
 
-void _ops_get_grid_size_per_node(const int dims, const ops_dat grid,
-                                 const ops_point xmin, const ops_point xmax,
-                                 double *grid_dx, double *grid_shape);
-
-int _ops_particle_check_for_deletion(int ipart, int bin_part[], int dim, int rmv_limits[],
-                                     double *xpos, BoundingBox *box);
-
-
 int _ops_check_particle_nunif_grid_inters(const int dim,const double *xGrid,
                                           const double *dxGrid, const double *xp);
 
-
-
-void _ops_particle_to_non_uniform_grid_intersection(const int init, const int dim,
-                                                    const ops_point xmin,
-                                                    const int *binhead_grids, const int *Npoints,
-                                                    const int *bin_grid, const double* xGrid,
-                                                    const double *grid_dx, const int Ngrid,
-                                                    const int *binhead_particles, const int *Ng_parts,
-                                                    const int *bin_parts, const double *xp, const int Np,
-                                                    const double *dx_grid, const double *dx_p_grid,
-                                                    int *binhead, const int *size, int *bin);
 
 int _ops_particle_moved_outside(ops_particle particle);
 

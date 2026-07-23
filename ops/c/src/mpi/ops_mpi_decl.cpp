@@ -109,6 +109,9 @@ void _ops_exit(OPS_instance *instance) {
     if (instance->OPS_reduct_d!=NULL) ops_device_free(instance, (void**)&instance->OPS_reduct_d);
   }
   
+  ops_exit_particles(instance);
+  ops_exit_histories(instance);
+
   ops_mpi_exit(instance);
 
   if (instance->OPS_hybrid_gpu) {
@@ -129,8 +132,7 @@ void _ops_exit(OPS_instance *instance) {
   if (!flag)
     MPI_Finalize();
 
-  ops_exit_particles(instance);
-  ops_exit_histories(instance);
+
   ops_exit_core(instance);
   ops_exit_device(instance);
 }

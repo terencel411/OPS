@@ -333,6 +333,7 @@ void ops_exit_core(OPS_instance *instance) {
   // free storage and pointers for blocks
   for (int i = 0; i < instance->OPS_block_index; i++) {
     ops_free((char *)(instance->OPS_block_list[i].block->name));
+    ops_free((char *)(instance->OPS_block_list[i].box));
     item = TAILQ_FIRST(&(instance->OPS_block_list[i].datasets));
     while (item) {
       TAILQ_REMOVE(&(instance->OPS_block_list[i].datasets), item, entries);
@@ -464,6 +465,7 @@ ops_block _ops_decl_block(OPS_instance *instance, int dims, const char *name) {
 
       //TODO: Check if assignment works fine
       OPS_block_list_new[i].particle = instance->OPS_block_list[i].particle;
+      OPS_block_list_new[i].box = instance->OPS_block_list[i].box;
       OPS_block_list_new[i].no_particle_structures
                          = instance->OPS_block_list[i].no_particle_structures;
       OPS_block_list_new[i].histories = instance->OPS_block_list[i].histories;
@@ -485,7 +487,7 @@ ops_block _ops_decl_block(OPS_instance *instance, int dims, const char *name) {
 
   instance->OPS_block_list[instance->OPS_block_index].no_particle_structures = 0;
   instance->OPS_block_list[instance->OPS_block_index].no_history_structures = 0;
-
+  instance->OPS_block_list[instance->OPS_block_index].box = nullptr;
   TAILQ_INIT(&(instance->OPS_block_list[instance->OPS_block_index].datasets));
   instance->OPS_block_index++;
 
@@ -546,7 +548,7 @@ void ops_dat_init_metadata_core(
 
   for (int n = 0; n < block->dims; n++) {
     if (d_m[n] <= 0)
-      dat->d_m[n] = d_m[n];
+      dat->d_m[n] = (dat->size[n] != 1) ? d_m[n] : 0;
     else {
       OPSException ex(OPS_INVALID_ARGUMENT);
       ex << "Error: ops_decl_dat -- Non negative d_m during declaration of: " << name;
@@ -556,7 +558,7 @@ void ops_dat_init_metadata_core(
 
   for (int n = 0; n < block->dims; n++) {
     if (d_p[n] >= 0)
-      dat->d_p[n] = d_p[n];
+      dat->d_p[n] = (dat->size[n] == 1) ? 0 : d_p[n];
     else {
       OPSException ex(OPS_INVALID_ARGUMENT);
       ex << "Error: ops_decl_dat -- Non positive d_p during declaration of: " << name;
@@ -573,6 +575,8 @@ void ops_dat_init_metadata_core(
     dat->d_m[n] = 0;
     dat->d_p[n] = 0;
   }
+
+
 
   dat->data = (char *)data;
   dat->user_managed = 1;
@@ -1223,9 +1227,10 @@ ops_arg ops_arg_dat(ops_dat dat, int dim, ops_stencil stencil, char const *type,
                     ops_access acc) {
     (void)type;
 
-    if (dat->is_particle)
+    if (dat->is_particle) {
       throw OPSException(OPS_INVALID_ARGUMENT,"Error: ops_arg_dat_opt cannot be called for "
                                               "particle_ops_dat structure");
+    }
     // return ops_arg_dat_core( dat, stencil, acc );
   ops_arg temp = ops_arg_dat_core(dat, stencil, acc);
   (&temp)->dim = dim;
@@ -2795,84 +2800,6 @@ static inline bool near_integer(double x, int ulps) {
            fractional >= mask - (uint64_t)ulps;
 }
 
-
-double ops_floor(double x, double epsilon) {
-
-  if (epsilon < 0) epsilon = -epsilon;
-
-  double ipart = (double)(int64_t)x;
-  double frac = x - ipart;
-
-  if (fabs(frac) <= epsilon)
-    return ipart;
-
-  if (frac >= 1.0 - epsilon)
-    return ipart + 1.0;
-
-  if (frac <= -1. + epsilon)
-    return ipart - 1.0;
-
-  return floor(x);
-
-
-}
-
-float ops_floor(float x, float epsilon) {
-
-  if (epsilon < 0) epsilon = -epsilon;
-
-  float ipart = (float)(int64_t)x;
-  float frac = x - ipart;
-
-  if (fabsf(x) <= epsilon)
-    return ipart;
-
-  if (frac >= 1. - epsilon)
-    return ipart + 1.0;
-
-  if (frac <= - 1. + epsilon)
-    return ipart - 1.0;
-
-  return floorf(x);
-}
-
-double ops_ceil(double x, double epsilon) {
-  if (epsilon < 0) epsilon = -epsilon;
-
-  double ipart = (double)(int64_t)x;
-  double frac = x - ipart;
-
-  //Treated as exactly when close to integer
-  if (fabs(frac) <= epsilon)
-    return ipart;
-
-  if (frac >= 1. - epsilon)
-    return ipart + 1.0;
-
-  if (frac <= -1.0 + epsilon)
-    return ipart - 1.0;
-
-  return ceil(x);
-}
-
-float ops_ceil(float x, float epsilon) {
-  if (epsilon < 0) epsilon = -epsilon;
-
-  float ipart = (float)(int64_t)x;
-  float frac = x - ipart;
-
-  //Treated as exactly when close to integer
-  if (fabs(frac) <= epsilon)
-    return ipart;
-
-  if (frac >= 1. - epsilon)
-    return ipart + 1.0;
-
-  if (frac <= -1.0 + epsilon)
-    return ipart - 1.0;
-
-  return ceil(x);
-}
 /************* Functions only use in the Fortran Backend ************/
 
 extern "C" int getOPS_block_size_x() { return OPS_instance::getOPSInstance()->OPS_block_size_x; }

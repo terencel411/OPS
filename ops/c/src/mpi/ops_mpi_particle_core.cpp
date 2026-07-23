@@ -49,193 +49,372 @@
 #include <array>
 #include <limits>
 
+#include "ops_bounding_box.h"
+#include "ops_particle_box_mpi_funcs.h"
+#include "ops_particle_mapping_functions.h"
 
-void BoundingBox::partitionBoundingBox(ops_block block, ops_dat map_bin, double *dx) {
+static void  _compute_local_region(char *send_local, const char *box_block, const int dim,
+                                   const int type_size) {
 
-  if (owned) return;
-
-  if (!ops_partitioned())
-    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: BoundingBox decomposition "
-                                          "failed. Box cannot be decomposed before "
-                                          "the domain partition");
-
-  if (!OPS_sub_block_list[block->index]->owned) return;
-
-  if (this->volume < DBL_EPSILON) {
-
-    sub_block *sb = OPS_sub_block_list[block->index];
-
-
-    double xmin[OPS_MAX_DIM];
-    double xmax[OPS_MAX_DIM] = {};
-    double x_min_glob[OPS_MAX_DIM], x_max_glob[OPS_MAX_DIM];
-    double xmax_loc[OPS_MAX_DIM];
-
-
-    _ops_construct_local_box_from_dat(this->coords, nullptr,
-                                      block->dims, xmin, xmax);
-
-
-
-    MPI_Status status;
-    for (int isou = 0; isou < dim; isou++) {
-      xmax_loc[isou] = xmax[isou];
-      MPI_Sendrecv(&xmin[isou], 1, MPI_DOUBLE, sb->id_m[isou], 10 + isou,
-                   &xmax_loc[isou], 1, MPI_DOUBLE, sb->id_p[isou],
-                   10+isou, sb->comm, &status);
+  switch(type_size) {
+  case sizeof(float): {
+    float *send = (float *)send_local;
+    BoundingBox<float> *box = (BoundingBox<float> *)box_block;
+    for (int i = 0; i < dim; i++)  {
+      send[2 * i] = box->getMinCoordDir(i);
+      send[2 * i + 1] = box->getMaxCoordDir(i);
     }
-
-    this->setBoundingBoxLocalBound(xmin, xmax_loc);
-
-    //Setting global box: TODO: Change it
-    MPI_Allreduce(xmin, x_min_glob, block->dims, MPI_DOUBLE, MPI_MIN,
-                  sb->comm);
-    MPI_Allreduce(xmax, x_max_glob, block->dims, MPI_DOUBLE, MPI_MAX,
-                  sb->comm);
-
-    this->setBoundingBoxGlobalBound(x_min_glob, x_max_glob);
-    this->owned = true;
-
-  }
-  else {
-    if (map_bin == nullptr)
-      throw OPSException(OPS_RUNTIME_ERROR, "ERROR: BoundingBox cannot be defined unless"
-                                            "one of the following is not specified: "
-                                            "i. Grid structure"
-                                            "ii. Mapping structure");
-
-    //Get points
-    ops_point xGl_max = this->getGlobalMax();
-    ops_point xGl_min = this->getGlobalMin();
-    int dim = block->dims;
-    double xmin[OPS_MAX_DIM], xmax[OPS_MAX_DIM];
-    sub_dat *sdat = OPS_sub_dat_list[map_bin->index];
-    int size[OPS_MAX_DIM];
-
-    //Uniform grid
+  } break;
+  case sizeof(double): {
+    double *send = (double *)send_local;
+    BoundingBox<double> *box = (BoundingBox<double> *)box_block;
     for (int i = 0; i < dim; i++) {
-      int ifirst = sdat->decomp_disp[i] - map_bin->base[i] -map_bin->d_m[i]; //TODO Check
+      send[2 * i] = box->getMinCoordDir(i);
+      send[2 * i + 1] = box->getMaxCoordDir(i);
+    }
+  } break;
+  case sizeof(long double): {
+    long double *send = (long double *)send_local;
+    BoundingBox<long double> *box = (BoundingBox<long double> *)box_block;
+    for (int i = 0; i < dim; i++) {
+      send[2 * i] = box->getMinCoordDir(i);
+      send[2 * i + 1] = box->getMaxCoordDir(i);
+    }
+  } break;
+  }
+}
 
-      int isize = sdat->decomp_size[i]  + map_bin->base[i] + map_bin->d_m[i] - map_bin->d_p[i];
+static void _get_halo_recv_region(char *xrecv_min, char *xrecv_max, char *recv_box_regions,
+                                  char *translate, const int i, const int dir_to[],
+                                  const int dir_from[], const int dim, const int type_size) {
 
-      int ilast = ifirst + isize;
-
-      xmin[i] = this->getGlobalMin(i) + static_cast<double>(ifirst) * dx[i];
-      xmax[i] = this->getGlobalMin(i) + static_cast<double>(ilast) * dx[i];
+  switch(type_size) {
+  case sizeof(float): {
+   for (int isou = 0; isou < dim; isou++) {
+     int irecv_dir = dir_to[isou];
+     int isend_dir = dir_from[isou];
+     ((float *)xrecv_min)[isend_dir] = ((float *) recv_box_regions)[2 * dim * i + 2 * irecv_dir]
+                                      - ((float *)translate)[isend_dir];
+     ((float *)xrecv_max)[isend_dir] = ((float *) recv_box_regions)[2 * dim * i + 2 * irecv_dir + 1]
+                                      - ((float *) translate)[isend_dir];
+   }
+  } break;
+  case sizeof(double): {
+    for (int isou = 0; isou < dim; isou++) {
+      int irecv_dir = dir_to[isou];
+      int isend_dir = dir_from[isou];
+      ((double *)xrecv_min)[isend_dir] = ((double *) recv_box_regions)[2 * dim * i + 2 * irecv_dir]
+                                     - ((double *)translate)[isend_dir];
+      ((double *)xrecv_max)[isend_dir] = ((double *) recv_box_regions)[2 * dim * i + 2 * irecv_dir + 1]
+                                        - ((double *) translate)[isend_dir];
+    }
+  } break;
+  case sizeof(long double): {
+    for (int isou = 0; isou < dim; isou++) {
+      int irecv_dir = dir_to[isou];
+      int isend_dir = dir_from[isou];
+      ((long double *)xrecv_min)[isend_dir] = ((long double *) recv_box_regions)[2 * dim * i + 2 * irecv_dir]
+                                          - ((long double *)translate)[isend_dir];
+      ((long double *)xrecv_max)[isend_dir] = ((long double *) recv_box_regions)[2 * dim * i + 2 * irecv_dir + 1]
+                                        - ((long double *) translate)[isend_dir];
     }
 
-    this->setBoundingBoxLocalBound(xmin, xmax);
-
-    this->owned = true;
-
+  } break;
   }
+}
 
-  sub_block *sb = OPS_sub_block_list[block->index];
-  if (sb->owned && OPS_instance::getOPSInstance()->OPS_diags>2) {
-    printf("Rank %d: Local box [%f %f]x[%f %f]x[%f %f]\n", ops_get_proc(),
-           boundingBox[0].x, boundingBox[1].x, boundingBox[0].y, boundingBox[1].y,
-           boundingBox[0].z, boundingBox[1].z);
+static void _get_halo_send_region(char *xsend_min, char *xsend_max, char *send_box_regions,
+                                  char *translate, const int i, const int dir_to[],
+                                  const int dir_from[], const int dim, const int type_size) {
+
+  switch(type_size) {
+  case sizeof(float): {
+    for (int isou = 0; isou < dim; isou++) {
+      int isend_dir = dir_to[isou];
+      int irecv_dir = dir_from[isou];
+      ((float *)xsend_min)[irecv_dir] = ((float *)send_box_regions)[2 * dim * i + 2 * isend_dir]
+                                      + ((float *)translate)[irecv_dir];
+      ((float *)xsend_max)[irecv_dir] = ((float *)send_box_regions)[2 * dim * i + 2 * isend_dir + 1]
+                                      + ((float *)translate)[irecv_dir];
+
+    }
+
+  } break;
+  case sizeof(double): {
+    for (int isou = 0; isou < dim; isou++) {
+      int isend_dir = dir_to[isou];
+      int irecv_dir = dir_from[isou];
+      ((double *)xsend_min)[irecv_dir] = ((double *)send_box_regions)[2 * dim * i + 2 * isend_dir]
+                                      + ((double *)translate)[irecv_dir];
+      ((double *)xsend_max)[irecv_dir] = ((double *)send_box_regions)[2 * dim * i + 2 * isend_dir + 1]
+                                      + ((double *)translate)[irecv_dir];
+
+    }
+  } break;
+  case sizeof(long double): {
+    for (int isou = 0; isou < dim; isou++) {
+      int isend_dir = dir_to[isou];
+      int irecv_dir = dir_from[isou];
+      ((long double *)xsend_min)[irecv_dir] = ((long double *)send_box_regions)[2 * dim * i + 2 * isend_dir]
+                                      + ((long  double *)translate)[irecv_dir];
+      ((long double *)xsend_max)[irecv_dir] = ((long double *)send_box_regions)[2 * dim * i + 2 * isend_dir + 1]
+                                      + ((long double *)translate)[irecv_dir];
+
+    }
+  } break;
   }
-
 }
 
 
-static void _compute_mapping_region(BoundingBox *box, int *sending_reg, int dim,
-                                    ops_particle particle, ops_particle_mapping map)
-{
-  int size[OPS_MAX_DIM];
-  for (int i = 0; i < dim; i++) {
-    size[i] = (map != nullptr) ? map->binhead->size[i] : 0;
+
+
+static void * _declaire_exchange_sending_box(const char *xmin, const char *xmax,const int dim,
+                                             const char *xrecv_min, const char *xrecv_max,
+                                             int idir, int iswap, int type_size) {
+
+
+  if (type_size == sizeof(float)) {
+
+    float xsend_min[OPS_MAX_DIM], xsend_max[OPS_MAX_DIM];
+    for (int j = 0; j < dim; j++) {
+      xsend_min[j] = ((float *)xmin)[j];
+      xsend_max[j] = ((float *)xmax)[j];
+    }
+
+    xsend_min[idir] = (iswap == 0) ? ((float *)xmin)[idir] - 0.5 * BIG : ((float *)xmax)[idir];
+    xsend_max[idir] = (iswap == 0) ? ((float *)xmin)[idir] : ((float *)xmax)[idir] + 0.5 * BIG;
+
+    int a1 = ops_check_box_intersections2(dim, xsend_min, xsend_max,
+                                          (float *)xrecv_min, (float *)xrecv_max);
+
+    if (a1 == 1) {
+      for (int j = 0; j < dim; j++) {
+        if (j != idir) {
+          xsend_min[j]
+               = (ops_abs(xsend_min[j] - ((float *)xrecv_min)[j]) < std::numeric_limits<float>::epsilon()) ? -BIG :
+                   MAX(xsend_min[j], ((float *)xrecv_min)[j]);
+          xsend_max[j]
+               = ops_abs(xsend_max[j] - ((float *) xrecv_max)[j]) < std::numeric_limits<float>::epsilon() ? BIG :
+                   MIN(xsend_max[j], ((float *)xrecv_max)[j]);
+        }
+      }
+
+      BoundingBox<float> *box = new BoundingBox<float>(dim);
+      box->setBoundingBoxLocalBound(xsend_min, xsend_max);
+
+      return (void *) box;
+    }
+  }
+  else if (type_size == sizeof(double)) {
+    double xsend_min[OPS_MAX_DIM], xsend_max[OPS_MAX_DIM];
+    for (int j = 0; j < dim; j++) {
+      xsend_min[j] = ((double *)xmin)[j];
+      xsend_max[j] = ((double *)xmax)[j];
+    }
+
+    xsend_min[idir] = (iswap == 0) ? ((double *)xmin)[idir] - 0.5 * BIG : ((double *)xmax)[idir];
+    xsend_max[idir] = (iswap == 0) ? ((double *)xmin)[idir] : ((double *)xmax)[idir] + 0.5 * BIG;
+
+
+    int a1 = ops_check_box_intersections2(dim, xsend_min, xsend_max,
+                                          (double *)xrecv_min, (double *)xrecv_max);
+
+    if (a1 == 1) {
+      for (int j = 0; j < dim; j++) {
+        if (j != idir) {
+          xsend_min[j]
+               = (ops_abs(xsend_min[j] - ((double *)xrecv_min)[j]) < std::numeric_limits<double>::epsilon()) ? -BIG :
+                   MAX(xsend_min[j], ((double *)xrecv_min)[j]);
+          xsend_max[j]
+               = ops_abs(xsend_max[j] - ((double *) xrecv_max)[j]) < std::numeric_limits<double>::epsilon() ? BIG :
+                   MIN(xsend_max[j], ((double *)xrecv_max)[j]);
+        }
+      }
+
+      BoundingBox<double> *box = new BoundingBox<double>(dim);
+      box->setBoundingBoxLocalBound(xsend_min, xsend_max);
+
+      return (void *) box;
+    }
+  }
+  else if (type_size == sizeof(long double)) {
+    long double xsend_min[OPS_MAX_DIM], xsend_max[OPS_MAX_DIM];
+    for (int j = 0; j < dim; j++) {
+      xsend_min[j] = ((long double *) xmin)[j];
+      xsend_max[j] = ((long double *) xmax)[j];
+    }
+
+    xsend_min[idir] = (iswap == 0) ? ((long double *)xmin)[idir] - 0.5 * BIG : ((long double *)xmax)[idir];
+    xsend_max[idir] = (iswap == 0) ? ((long double *)xmin)[idir] : ((long double *)xmax)[idir] + 0.5 * BIG;
+
+    int a1 = ops_check_box_intersections2(dim, xsend_min, xsend_max,
+                                          (long double *)xrecv_min, (long double *)xrecv_max);
+
+    if (a1 == 1) {
+      for (int j = 0; j < dim; j++) {
+        if (j != idir) {
+          xsend_min[j]
+               = (ops_abs(xsend_min[j] - ((long double *)xrecv_min)[j]) < std::numeric_limits<long double>::epsilon()) ? -BIG :
+                   MAX(xsend_min[j], ((long double *)xrecv_min)[j]);
+          xsend_max[j]
+               = ops_abs(xsend_max[j] - ((long double *) xrecv_max)[j]) < std::numeric_limits<long double>::epsilon() ? BIG :
+                   MIN(xsend_max[j], ((long double *)xrecv_max)[j]);
+        }
+      }
+
+      BoundingBox<long double> *box = new BoundingBox<long double>(dim);
+      box->setBoundingBoxLocalBound(xsend_min, xsend_max);
+
+      return (void *) box;
+    }
+
   }
 
-  ops_point xmin, xmax, xmin_send, xmax_send;
-  double dx[OPS_MAX_DIM];
+  return nullptr;
+}
 
-  for (int i = 0; i < box->getDim(); i++) dx[i] = map->dx[i];
+static void * _declaire_border_sending_box(const char *xrecv_min, const char *xrecv_max,
+                                           const char * xmin, const char *xmax, const char *dx,
+                                           const int dim, const int idir, const int iswap,
+                                           const int size_type) {
 
-  xmin =particle->box_block->getLocalMin();
-  xmax = particle->box_block->getLocalMax();
+  if (size_type == sizeof(float)) {
+    float xsend_min[OPS_MAX_DIM], xsend_max[OPS_MAX_DIM];
+    for (int j = 0; j < dim; j++) {
+      xsend_min[j] = ((float *)xmin)[j];
+      xsend_max[j] = ((float *)xmax)[j];
+    }
 
-  xmin_send = box->getLocalMin();
-  xmax_send = box->getLocalMax();
+    float dx[OPS_MAX_DIM];
+    xsend_min[idir] = (iswap == 0) ? ((float *)xmin)[idir] - 0.5 * BIG :
+                                     ((float *)xmax)[idir] - ((float *)dx)[idir];
+    xsend_max[idir] = (iswap == 0) ? ((float *)xmin)[idir] + ((float *)dx)[idir] :
+                                     ((float *)xmax)[idir] + 0.5 * BIG;
 
-  ops_dat binhead = map->binhead;
-  ops_dat grid = map->grid;
+    int a1 = ops_check_box_intersection2(dim, xsend_min, xsend_max,
+                                         (float *) xrecv_min, (float *) xrecv_max);
 
-  int d_p[OPS_MAX_DIM], d_m[OPS_MAX_DIM];
-  for (int isou = 0; isou < dim; isou++) {
-    d_m[isou] = binhead->d_m[isou] + OPS_sub_dat_list[binhead->index]->d_im[isou];
-    d_p[isou] = binhead->d_p[isou] + OPS_sub_dat_list[binhead->index]->d_ip[isou];
+    if (a1 == 1) {
+      for (int j = 0; j < dim; j++) {
+        if (idir != j) {
+          xsend_min[j] = (ops_abs(xsend_min[j] - ((float *)xrecv_min)[j])
+              < std::numeric_limits<float>::epsilon()) ?
+                          -BIG : MAX(xsend_min[j], ((float *)xrecv_min)[j]);
+          xsend_max[j] = (ops_abs(xsend_max[j] - ((float *)xrecv_max)[j])
+              < std::numeric_limits<float>::epsilon()) ?
+                           BIG : MIN(xsend_max[j], ((float *)xrecv_max)[j]);
+        }
+      }
+
+      BoundingBox<float> * box = new BoundingBox<float>(dim);
+      box->setBoundingBoxLocalBound(xsend_min, xsend_max);
+      return (void *) box;
+
+    }
+  }
+  else if (size_type == sizeof(double)) {
+    double xsend_min[OPS_MAX_DIM], xsend_max[OPS_MAX_DIM];
+    for (int j = 0; j < dim; j++) {
+      xsend_min[j] = ((double *)xmin)[j];
+      xsend_max[j] = ((double *)xmax)[j];
+    }
+
+    xsend_min[idir] = (iswap == 0) ? ((double *)xmin)[idir] - 0.5 * BIG :
+                                     ((double *)xmax)[idir] - ((double *)dx)[idir];
+    xsend_max[idir] = (iswap == 0) ? ((double *)xmin)[idir] + ((double *)dx)[idir] :
+                                     ((double *)xmax)[idir] + 0.5 * BIG;
+
+    int a1 = ops_check_box_intersection2(dim, xsend_min, xsend_max,
+                                         (double *) xrecv_min, (double *) xrecv_max);
+
+    if (a1 == 1) {
+      for (int j = 0; j < dim; j++) {
+        if (idir != j) {
+          xsend_min[j] = (ops_abs(xsend_min[j] - ((double *)xrecv_min)[j])
+              < std::numeric_limits<double>::epsilon()) ?
+                          -BIG : MAX(xsend_min[j], ((double *)xrecv_min)[j]);
+          xsend_max[j] = (ops_abs(xsend_max[j] - ((double *)xrecv_max)[j])
+              < std::numeric_limits<double>::epsilon()) ?
+                           BIG : MIN(xsend_max[j], ((double *)xrecv_max)[j]);
+        }
+      }
+
+      BoundingBox<double> *box = new BoundingBox<double>(dim);
+      box->setBoundingBoxLocalBound(xsend_min, xsend_max);
+      return (void *) box;
+    }
+  }
+  else if (size_type == sizeof(long double)) {
+    long double xsend_min[OPS_MAX_DIM], xsend_max[OPS_MAX_DIM];
+    for (int j = 0; j < dim; j++) {
+      xsend_min[j] = ((long double *)xmin)[j];
+      xsend_max[j] = ((long double *)xmax)[j];
+    }
+
+    xsend_min[idir] = (iswap == 0) ? ((long double *)xmin)[idir] - 0.5 * BIG :
+                                     ((long double *)xmax)[idir] - ((long double *)dx)[idir];
+    xsend_max[idir] = (iswap == 0) ? ((long double *)xmin)[idir] + ((long double *)dx)[idir] :
+                                     ((long double *)xmax)[idir] + 0.5 * BIG;
+
+    int a1 = ops_check_box_intersection2(dim, xsend_min, xsend_max,
+                                         (long double *) xrecv_min, (long double *) xrecv_max);
+
+    if (a1 == 1) {
+      for (int j = 0; j < dim; j++) {
+        if (idir != j) {
+          xsend_min[j] = (ops_abs(xsend_min[j] - ((long double *)xrecv_min)[j])
+              < std::numeric_limits<long double>::epsilon()) ?
+                          -BIG : MAX(xsend_min[j], ((long double *)xrecv_min)[j]);
+          xsend_max[j] = (ops_abs(xsend_max[j] - ((long double *)xrecv_max)[j])
+              < std::numeric_limits<long double>::epsilon()) ?
+                           BIG : MIN(xsend_max[j], ((long double *)xrecv_max)[j]);
+        }
+      }
+
+      BoundingBox<long double> * box = new BoundingBox<long double>(dim);
+      box->setBoundingBoxLocalBound(xsend_min, xsend_max);
+      return (void *) box;
+    }
   }
 
-  if (box->getOwnership() && OPS_instance::getOPSInstance()->OPS_diags > 2) {
-    printf("dx = [%f %f]\n",dx[0], dx[1]);
-    printf("Block region [%f %f]x[%f %f] sending reg [%f %f]x[%f %f] dx = [%f %f]\n", xmin.x, xmax.x,
-         xmin.y, xmax.y, xmin_send.x, xmax_send.x, xmin_send.y, xmax_send.y, dx[0], dx[1]);
+  return nullptr;
+}
+
+static bool _ops_box_get_ownership(char *box, int size_type) {
+
+  switch (size_type) {
+  case sizeof(float):
+    return ((BoundingBox<float> *) box)->getOwnership();
+    break;
+  case sizeof(double):
+    return ((BoundingBox<double> *) box)->getOwnership();
+    break;
+  case sizeof(long double):
+    return ((BoundingBox<long double> *) box)->getOwnership();
+    break;
   }
 
-  xmin.x += static_cast<double>(d_m[0]) * dx[0];
-  xmax.x += static_cast<double>(d_p[0]) * dx[0];
+  return false;
+}
 
-  xmin.y += static_cast<double>(d_m[1]) * dx[1];
-  xmax.y += static_cast<double>(d_p[1]) * dx[1];
+static void   _get_local_box(char *xmin, char *xmax, char *box_block,
+                             const int dim, const int size_type) {
 
-  if (dim == 3) {
-    xmin.z += static_cast<double>(d_m[2]) * dx[2];
-    xmax.z += static_cast<double>(d_p[2]) * dx[2];
+  switch(size_type) {
+  case sizeof(float): {
+    ((BoundingBox<float > * ) box_block)->getLocalMaxMin((float *) xmin, (float *) xmax);
+  } break;
+  case sizeof(double): {
+    ((BoundingBox<double> * ) box_block)->getLocalMaxMin((double *) xmin, (double *) xmax);
+  } break;
+  case sizeof(long double): {
+    ((BoundingBox<long double> *) box_block)->getLocalMaxMin((long double *) xmin,
+                                                             (long double *) xmax);
+  } break;
   }
-
-  double inv_dx = 1./ dx[0];
-
-  sending_reg[0] = (xmin_send.x < xmin.x) ? 0 : (int) ops_floor((xmin_send.x - xmin.x) / dx[0]);
-  sending_reg[1] = (xmax_send.x > xmax.x) ? size[0] : (int) ops_ceil((xmax_send.x - xmin.x) / dx[0]);
-
-  sending_reg[2] = (xmin_send.y < xmin.y) ? 0 : (int ) ops_floor((xmin_send.y - xmin.y) / dx[1]);
-  sending_reg[3] =  (xmax_send.y > xmax.y) ? size[1] : (int ) ops_ceil((xmax_send.y - xmin.y) / dx[1]);
-
-  sending_reg[4] = 0;
-  sending_reg[5] = 1;
-  if (dim == 3) {
-    sending_reg[4] = (xmin_send.z < xmin.z) ? 0 : (int ) ops_floor((xmin_send.z - xmin.z) / dx[2]);
-    sending_reg[5] = (xmax_send.z > xmax.z) ? size[2] : (int ) ops_ceil((xmax_send.z - xmin.z) / dx[2]);
-
-  }
-
 }
 
 
-static int _check_box_intersection(int dim, double xmin[], double xmax[],
-                                   double xmin2[], double xmax2[]) {
-
-  int a1{1};
-
-  int i{0};
-
-  double R1 = 0.0;
-  double R2 = 0.0;
-  double h = 0.0;
-
-  for (i = 0; i < dim; i++) {
-    double hA = 0.5 * (xmin[i] + xmax[i]);
-    double hB = 0.5 * (xmin2[i] + xmax2[i]);
-
-    double rA = 0.5 * fabs(xmax[i] - xmin[i]);
-    double rB = 0.5 * fabs(xmax2[i] - xmin2[i]);
-
-    if (fabs(hB-hA) > rA + rB) a1 = 0;
-
-    h += (hB - hA) * (hB - hA);
-    R1 += rA * rA;
-    R2 += rB * rB;
-  }
-
-  if (a1 == 1) {
-    if (h >= R1 + R2) a1 = 0;
-  }
-
-  return a1;
-
-}
 
 
 void _ops_mapping_def_core(ops_particle particle, ops_dat grid, ops_stencil stencil,
@@ -279,27 +458,57 @@ void _ops_mapping_def_core(ops_particle particle, ops_dat grid, ops_stencil sten
 }
 
 //TODO: Need to pass them to template structures use size to handle them
-void _ops_mapping_set_structures(ops_particle particle, double skin[], int  d_m[],
+void _ops_mapping_set_structures(ops_particle particle, char *skin, int  d_m[],
                                  int d_p[], int d_mb[], int d_pb[], int size[],
-                                 double dx_map[],  ops_with_virtual &include_virtual) {
-
-  if (particle->box_block->getBlockVolume() < DBL_EPSILON)
-    throw OPSException(OPS_RUNTIME_ERROR,"ERROR: Block of non-positive volume\n");
-
-//Sanity checks for skin
-  for (int i = 0; i < particle->block->dims; i++)
-    if (skin[i] < DBL_EPSILON)
-      throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Bin cells have non-positive volume ");
+                                 char *dx_map,  ops_with_virtual &include_virtual) {
 
 
-  //Finding particle per direction
-  for (int i = 0; i < particle->block->dims; i++) {
-    double length
-    = particle->box_block->getGlobalMax(i) - particle->box_block->getGlobalMin(i);
-    int icells = floor(length / skin[i]);
-    size[i] = (icells > 0) ? icells : 1;
-    dx_map[i] = (length) / static_cast<double>(size[i]);
+  switch(particle->particle_pos_dat->type_size) {
+  case sizeof(float):
+    if (((BoundingBox<float> *) particle->box_block)->getBlockVolume() < std::numeric_limits<float>::epsilon())
+      throw OPSException(OPS_RUNTIME_ERROR, "Error: Block of non-positive volume\n");
+    break;
+  case sizeof(double):
+    if (((BoundingBox<double> *) particle->box_block)->getBlockVolume() < std::numeric_limits<double>::epsilon())
+      throw OPSException(OPS_RUNTIME_ERROR, "Error: Block of non-positive volume\n");
+    break;
+  case sizeof(long double):
+    if (((BoundingBox<long double> *) particle->box_block)->getBlockVolume() <
+           std::numeric_limits<long double>::epsilon())
+      throw OPSException(OPS_RUNTIME_ERROR, "Error: Block of non-positive volume\n");
+    break;
+  }
 
+
+  if (particle->particle_pos_dat->type_size == sizeof(float)) {
+    float length[OPS_MAX_DIM];
+    for (int i = 0; i < particle->block->dims; i++)
+      length[i] = ((BoundingBox<float> *) particle->box_block)->getGlobalMax(i)
+                - ((BoundingBox<float> *) particle->box_block)->getGlobalMin(i);
+
+
+    _ops_map_compute_dx((float *)skin, length, particle->block->dims, (float *) dx_map, size);//TODO
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+    double length[OPS_MAX_DIM];
+    for (int i = 0; i < particle->block->dims; i++)
+      length[i] = ((BoundingBox<double> *) particle->box_block)->getGlobalMax(i)
+                - ((BoundingBox<double> *) particle->box_block)->getGlobalMin(i);
+    _ops_map_compute_dx((double *)skin, length, particle->block->dims, (double *)dx_map, size);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+    long double length[OPS_MAX_DIM];
+    for (int i = 0; i < particle->block->dims; i++)
+      length[i] = ((BoundingBox<long double> *) particle->box_block)->getGlobalMax(i)
+                - ((BoundingBox<long double> *) particle->box_block)->getGlobalMin(i);
+    _ops_map_compute_dx((long double *)skin, length, particle->block->dims, (long double *)dx_map,
+                        size);
+
+  } //TODO: We may want
+  else
+    throw OPSException(OPS_RUNTIME_ERROR, "Error: This type of float is not supported\n");
+
+  for (int i = 0; particle->block->dims; i++) {
     d_mb[i] = (d_m != nullptr) ? MIN(d_m[i], -1) : -1;
     d_pb[i] = (d_p != nullptr) ? MAX(d_m[i], 1) : 1;
   }
@@ -317,9 +526,27 @@ void ops_build_bounding_box(ops_particle particle) {
 
   //TODO: Predifine communication map if necessary-
   //For the moment is the first entry map
-  particle->box_block->partitionBoundingBox(particle->block,
-                                            particle->map_list[0]->binhead,
-                                            particle->map_list[0]->dx);
+
+  if (particle->type_box == sizeof(float)) {
+    BoundingBox<float> *boxT = (BoundingBox<float> *)particle->box_block;
+    boxT->partitionBoundingBox(particle->block,
+                               particle->map_list[0]->binhead,
+                               (float *)particle->map_list[0]->dx);
+  }
+  else if (particle->type_box == sizeof(double)) {
+    BoundingBox<double> *boxT = (BoundingBox<double> *)particle->box_block;
+    boxT->partitionBoundingBox(particle->block,
+                               particle->map_list[0]->binhead,
+                               (double *)particle->map_list[0]->dx);
+  }
+  else if (particle->type_box == sizeof(long double)) {
+    BoundingBox<long double> *boxT = (BoundingBox<long double> *)particle->box_block;
+    boxT->partitionBoundingBox(particle->block,
+                               particle->map_list[0]->binhead,
+                               (long double *)particle->map_list[0]->dx);
+  }
+
+
 }
 
 void   ops_particle_update_intra_halo_maps(ops_particle particle, int ifirst,
@@ -344,7 +571,7 @@ bool ops_particle_global_rebuild(bool flag) {
  *              HALO DEFINITIONS FOR PARALLEL COMMS                                                                       *
  *=====================================================================================*/
 
-void ops_get_send_recv_box(double *recv_box_regions, double *send_box_regions,
+void ops_get_send_recv_box(char *recv_box_regions, char *send_box_regions,
                            const ops_mpi_particle_halo *mpi_halo, int dim) {
 
   ops_particle_halo halo
@@ -352,65 +579,63 @@ void ops_get_send_recv_box(double *recv_box_regions, double *send_box_regions,
   sub_block *sb_from = OPS_sub_block_list[halo->particle_from->block->index];
   sub_block *sb_to = OPS_sub_block_list[halo->particle_to->block->index];
 
-  double send_local[2 * OPS_MAX_DIM] = { };
-  double recv_local[2 * OPS_MAX_DIM] = { };
-
+  char *send_local = (char *) ops_malloc(2 * OPS_MAX_DIM * halo->particle_from->type_box);
+  char *recv_local = (char *) ops_malloc(2 * OPS_MAX_DIM * halo->particle_to->type_box);
 
 
   MPI_Request request_send[mpi_halo->nproc_from_max + mpi_halo->nproc_to_max];
   MPI_Request request_recv[mpi_halo->nproc_from_max + mpi_halo->nproc_to_max];
 
   if (sb_from->owned) {
-    if (!halo->particle_from->box_block->getOwnership())
+    if (!_ops_box_get_ownership(halo->particle_from->box_block, halo->particle_from->type_box))
       throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Local Boxes need to be defined prior to "
                          " halo setup (sending block)");
 
-    for (int i = 0; i < dim; i++) {
-      send_local[2 * i] = halo->particle_from->box_block->getMinCoordDir(i);
-      send_local[2 * i + 1] = halo->particle_to->box_block->getMaxCoordDir(i);
-    }
-
+    _compute_local_region(send_local, halo->particle_from->box_block, dim,
+                          halo->particle_from->type_box);
 
     //Send data
+    int box_type = halo->particle_from->type_box;
     for (int i = 0; i < mpi_halo->nproc_to_max; i++) {
       int idp = mpi_halo->proclist_complete[i];
-      MPI_Isend(send_local, 2 * dim, MPI_DOUBLE, idp, 200,
+      MPI_Isend(send_local, 2 * dim * box_type, MPI_CHAR, idp, 200,
                 OPS_MPI_GLOBAL, &request_send[i]);
     }
 
   }
 
   if (sb_to->owned) {
-    if (!halo->particle_to->box_block->getOwnership())
+    if (!_ops_box_get_ownership(halo->particle_to->box_block, halo->particle_to->type_box))
       throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Setting up particle communications"
                                             " require the partition of bounding box");
 
-    for (int i = 0; i < dim; i++) {
-      recv_local[2 * i] = halo->particle_to->box_block->getMinCoordDir(i);
-      recv_local[2 * i + 1] = halo->particle_to->box_block->getMaxCoordDir(i);
-    }
+    _compute_local_region(recv_local, halo->particle_to->box_block, dim,
+                          halo->particle_to->type_box);
 
+    int box_type = halo->particle_to->type_box;
     for (int i = 0; i < mpi_halo->nproc_from_max; i++) {
       int idp = mpi_halo->proclist_complete[mpi_halo->nproc_to_max + i];
 
-      MPI_Isend(recv_local, 2 * dim, MPI_DOUBLE, idp, 100, OPS_MPI_GLOBAL,
+      MPI_Isend(recv_local, 2 * dim * box_type, MPI_CHAR, idp, 100, OPS_MPI_GLOBAL,
                 &request_send[i +  mpi_halo->nproc_to_max]);
     }
   }
 
+  //Received boxes
+
   //Perform receive and unpack
-  double buff[2 * OPS_MAX_DIM];
+  int buffsize = MAX(halo->particle_from->type_box, halo->particle_to->type_box);
+  char *buff = (char *) ops_malloc(2 * OPS_MAX_DIM * buffsize);
   if (sb_from->owned) {
     for (int i = mpi_halo->nproc_to_max - 1; i >= 0; i--) {
       int idp = mpi_halo->proclist_complete[i];
-      MPI_Irecv(buff, 2 * dim, MPI_DOUBLE, idp, 100, OPS_MPI_GLOBAL,
+      int type_size = halo->particle_to->type_box;
+      MPI_Irecv(buff, 2 * dim * type_size, MPI_CHAR, idp, 100, OPS_MPI_GLOBAL,
                 &request_recv[i]);
       MPI_Status status;
       MPI_Wait(&request_recv[i], &status);
-      for (int j = 0; j < dim; j++)  {
-        recv_box_regions[2 * dim * i + 2 * j] = buff[2 * j];
-        recv_box_regions[2 * dim * i + 2 * j + 1] = buff[2 * j + 1];
-      }
+
+      memcpy(recv_box_regions + 2 * i * dim * type_size , buff, 2 * dim * type_size);
 
     }
 
@@ -419,17 +644,16 @@ void ops_get_send_recv_box(double *recv_box_regions, double *send_box_regions,
   if (sb_to->owned) {
     for (int  i = mpi_halo->nproc_from_max - 1; i >= 0; i--) {
       int idp = mpi_halo->proclist_complete[mpi_halo->nproc_to_max + i];
-      MPI_Irecv(buff, 2 * dim, MPI_DOUBLE, idp, 200, OPS_MPI_GLOBAL,
+      int type_size = halo->particle_to->type_box;
+      MPI_Irecv(buff, 2 * dim * type_size, MPI_CHAR, idp, 200, OPS_MPI_GLOBAL,
                 &request_recv[i + mpi_halo->nproc_to]);
 
       MPI_Status status;
       MPI_Wait(&request_recv[i + mpi_halo->nproc_to], &status);
 
-      for (int j = 0; j < dim; j++) {
-        send_box_regions[2 * dim * i + 2 * j] = buff[2 * j];
-        send_box_regions[2 * dim * i + 2 * j + 1] = buff[2 * j + 1];
 
-      }
+      memcpy(send_box_regions + 2 * i * dim * type_size, buff, 2 * dim * type_size);
+     // _copy_regions(send_box_regions + 2 * i * dim * type_size , buff, dim, type_size); //TODO: memcpy
 
     }
 
@@ -444,10 +668,15 @@ void ops_get_send_recv_box(double *recv_box_regions, double *send_box_regions,
                 &status_recv[mpi_halo->nproc_to_max]);
   }
 
+  ops_free(send_local);
+  ops_free(recv_local);
+  ops_free(buff);
+
 }
 
+//TODO: TOUGH FUNCTION
 void _ops_particle_halo_set_exchange_send(ops_mpi_particle_halo *mpi_halo,
-                                          double *recv_box_regions,
+                                          char *recv_box_regions,
                                           int dim) {
 
   ops_particle_halo halo =
@@ -459,90 +688,79 @@ void _ops_particle_halo_set_exchange_send(ops_mpi_particle_halo *mpi_halo,
   int nsend_max = mpi_halo->nproc_to_max;
   int nsend = 0;
 
-
-  BoundingBox *sendBox = halo->particle_from->box_block;
-  if (!sendBox->getOwnership())
+  if (!_ops_box_get_ownership(halo->particle_from->box_block, halo->particle_from->type_box))
     throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Setting up particle communications "
                                           " requires the partition of BoundingBoxes");
-  double xmin[OPS_MAX_DIM], xmax[OPS_MAX_DIM];
-  sendBox->getLocalMaxMin(xmin, xmax);
-  double xrecv_min[OPS_MAX_DIM], xrecv_max[OPS_MAX_DIM];
-  double xsend_min[OPS_MAX_DIM], xsend_max[OPS_MAX_DIM];
+
+
+  int halo_size = halo->particle_from->type_box;
+  char *xmin = (char *)ops_malloc(dim * halo_size);
+  char *xmax = (char *)ops_malloc(dim * halo_size);
+  char *xrecv_min = (char *)ops_malloc(dim * halo_size);
+  char *xrecv_max = (char *) ops_malloc(dim * halo_size);
+
+
+  //TODO: ADD addition
+  _get_local_box(xmin, xmax, halo->particle_from->box_block, dim,
+                 halo->particle_from->type_box);
+
 
   int nmax = mpi_halo->nproc_from_max + mpi_halo->nproc_to_max;
+
   int *proclist = (int *) ops_malloc(nmax * sizeof(int));
-  BoundingBox **boxes =
-      (BoundingBox **)ops_malloc(mpi_halo->nproc_to_max *sizeof(BoundingBox *));
+  void **boxes = (void **) ops_malloc(mpi_halo->nproc_to_max * sizeof(void *));
 
 
   for (int i = 0; i < nsend_max; i++) {
     //Set box to identify region
-    for (int isou = 0; isou < dim; isou++) {
+    _get_halo_recv_region(xrecv_min, xrecv_max, recv_box_regions, halo->translate, i,
+                          halo->dir_to, halo->dir_from, dim, halo->particle_to->type_box);
 
-      int irecv_dir = halo->dir_to[isou];
-      int isend_dir = halo->dir_from[isou];
-      xrecv_min[isend_dir] = recv_box_regions[2 * dim * i + 2 * irecv_dir]
-                      - halo->translate[isend_dir];
-      xrecv_max[isend_dir] = recv_box_regions[2 * dim * i + 2 * irecv_dir + 1]
-                      - halo->translate[isend_dir];
-    } //tODO: Check
-
-
-    int intersect = ops_check_box_intersections2(dim, xmin, xmax,
-                                               xrecv_min, xrecv_max);
+    int intersect;
+    switch(halo->particle_to->type_box) {
+    case sizeof(float):
+      intersect = ops_check_box_intersections2(dim, (float *) xmin, (float *) xmax,
+                                              (float *) xrecv_min, (float *) xrecv_max);
+      break;
+    case sizeof(double):
+      intersect = ops_check_box_intersections2(dim, (double *) xmin, (double *) xmax,
+                                              (double *) xrecv_min, (double *) xrecv_max);
+      break;
+    case sizeof(long double):
+      intersect = ops_check_box_intersections2(dim, (long double *) xmin, (long double *) xmax,
+                                              (long double *) xrecv_min, (long double *) xrecv_max);
+      break;
+    }
 
     if (intersect == 1) {
       for (int is = 0; is < dim; is++) {
         for (int iswap = 0; iswap < 2; iswap++) {
-          for (int j = 0; j < dim; j++) {
-            xsend_min[j] = xmin[j];
-            xsend_max[j] = xmax[j];
-          }
+          void *pointer_box = _declaire_exchange_sending_box(xmin, xmax, dim, xrecv_min, xrecv_max,
+                                                         is, iswap, halo->particle_to->type_box);
 
-          xsend_min[is] = (iswap == 0) ? xmin[is] - 0.5 * BIG : xmax[is];
-          xsend_max[is] = (iswap == 0) ? xmin[is] : xmax[is] + 0.5 * BIG; //0.5 * fabs(xmax[is]);
+           if (pointer_box != nullptr) {
 
 
-
-          int a1 = ops_check_box_intersections2(dim, xsend_min, xsend_max,
-                                              xrecv_min, xrecv_max);
-
-          if (a1 == 1) {
-
-            for (int j = 0; j < dim; j++) {
-              if (j != is) {
-                xsend_min[j] = (fabs(xsend_min[j] - xrecv_min[j]) < 1.e-9) ?
-                  -BIG : MAX(xrecv_min[j], xrecv_min[j]);
-                xsend_max[j] = (fabs(xsend_max[j] - xrecv_max[j]) < 1.e-9) ?
-                  BIG : MIN(xsend_max[j], xrecv_max[j]);
-              }
-            }
-
-            proclist[nsend] = mpi_halo->proclist_complete[i];
-
-            boxes[nsend] = new BoundingBox(dim);
-            boxes[nsend]->setBoundingBoxLocalBound(xsend_min, xsend_max);
-            nsend++;
-              //goto endline;
-            }
+             proclist[nsend] = mpi_halo->proclist_complete[i];
+             boxes[nsend] = pointer_box;
+             nsend++;
+             goto endline;
+           }
         }
       }
     }
 
     endline:
     int a1 = 0;
-
-
   }
 
   mpi_halo->nproc_to = nsend;
-
   //Allocation of arrays
 
   if (mpi_halo->nproc_to > 0) {
 
     mpi_halo->proclist = (int *) ops_malloc(mpi_halo->nproc_to * sizeof(int));
-    mpi_halo->sendBox = (BoundingBox **) ops_malloc(mpi_halo->nproc_to * sizeof(BoundingBox *));
+    mpi_halo->sendBox = (void **) ops_malloc(mpi_halo->nproc_to * sizeof(void *));
     mpi_halo->send_region = (int *) ops_malloc(mpi_halo->nproc_to * 6  * sizeof(int));
 
      for (int i = 0; i < mpi_halo->nproc_to; i++) {
@@ -551,31 +769,70 @@ void _ops_particle_halo_set_exchange_send(ops_mpi_particle_halo *mpi_halo,
     }
   }
 
+/*  for (int i = 0l i < mpi_halo->nproc_to; i++) {
 
-
+  }*/
 
   ops_free(boxes);
   ops_free(proclist);
+  ops_free(xmin);
+  ops_free(xmax);
+  ops_free(xrecv_max);
+  ops_free(xrecv_min);
+
 
   if (OPS_instance::getOPSInstance()->OPS_diags > 2) {
-    printf("Halo %d: Number of processes to send from rank %d\n",
+    printf("Halo %d: Number of processes %d to send from rank %d\n",
            mpi_halo->index, mpi_halo->nproc_to, ops_get_proc());
     if (mpi_halo->nproc_to > 0) {
       printf("Rank %d: Processes to send ", ops_get_proc());
-      for (int i = 0; i < mpi_halo->nproc_to; i++)
-        printf("%d Region [%f %f]x[%f %f] ", mpi_halo->proclist[i],
-               mpi_halo->sendBox[i]->getMinCoordDir(0),
-               mpi_halo->sendBox[i]->getMaxCoordDir(0),
-               mpi_halo->sendBox[i]->getMinCoordDir(1),
-               mpi_halo->sendBox[i]->getMaxCoordDir(1));
-        printf("\n");
+      if (halo->particle_from->type_box == sizeof(float)) {
+        for (int i = 0; i < mpi_halo->nproc_to; i++) {
+          printf("%d Region [%f %f]x[%f %f]", mpi_halo->proclist[i],
+               ((BoundingBox<float> *)mpi_halo->sendBox[i])->getMinCoordDir(0),
+               ((BoundingBox<float> *)mpi_halo->sendBox[i])->getMaxCoordDir(0),
+               ((BoundingBox<float> *)mpi_halo->sendBox[i])->getMinCoordDir(1),
+               ((BoundingBox<float> *)mpi_halo->sendBox[i])->getMaxCoordDir(1));
+          if (dim == 3)
+            printf("x[%f %f]\n",
+                   ((BoundingBox<float> *) mpi_halo->sendBox[i])->getMinCoordDir(2),
+                   ((BoundingBox<float> *) mpi_halo->sendBox[i])->getMaxCoordDir(2));
+        }
+      }
+      else if (halo->particle_from->type_box == sizeof(double)) {
+        for (int i = 0; i < mpi_halo->nproc_to; i++) {
+          printf("%d Region [%f %f]x[%f %f]", mpi_halo->proclist[i],
+               ((BoundingBox<double> *)mpi_halo->sendBox[i])->getMinCoordDir(0),
+               ((BoundingBox<double> *)mpi_halo->sendBox[i])->getMaxCoordDir(0),
+               ((BoundingBox<double> *)mpi_halo->sendBox[i])->getMinCoordDir(1),
+               ((BoundingBox<double> *)mpi_halo->sendBox[i])->getMaxCoordDir(1));
+          if (dim == 3)
+            printf("x[%f %f]\n",
+                   ((BoundingBox<double> *) mpi_halo->sendBox[i])->getMinCoordDir(2),
+                   ((BoundingBox<double> *) mpi_halo->sendBox[i])->getMaxCoordDir(2));
+        }
+      }
+      else if (halo->particle_from->type_box == sizeof(long double)) {
+        for (int i = 0; i < mpi_halo->nproc_to; i++) {
+          printf("%d Region [%Lf %Lf]x[%Lf %Lf]", mpi_halo->proclist[i],
+               ((BoundingBox<long double> *)mpi_halo->sendBox[i])->getMinCoordDir(0),
+               ((BoundingBox<long double> *)mpi_halo->sendBox[i])->getMaxCoordDir(0),
+               ((BoundingBox<long double> *)mpi_halo->sendBox[i])->getMinCoordDir(1),
+               ((BoundingBox<long double> *)mpi_halo->sendBox[i])->getMaxCoordDir(1));
+          if (dim == 3)
+            printf("x[%Lf %Lf]\n",
+                   ((BoundingBox<long double> *) mpi_halo->sendBox[i])->getMinCoordDir(2),
+                   ((BoundingBox<long double> *) mpi_halo->sendBox[i])->getMaxCoordDir(2));
+        }
+      }
+
     }
   }
 
 }
 
 void ops_particle_halo_set_border_send(ops_mpi_particle_halo *mpi_halo,
-                                       double *recv_box_regions, int dim) {
+                                       char *recv_box_regions, int dim) {
 
   ops_particle_halo halo = OPS_instance::getOPSInstance()->OPS_particle_halo_list[mpi_halo->index];
 
@@ -587,82 +844,73 @@ void ops_particle_halo_set_border_send(ops_mpi_particle_halo *mpi_halo,
 
   int nmax = mpi_halo->nproc_to_max;
   int *proclist = (int *) ops_malloc(nmax * sizeof(int));
-  BoundingBox **boxes =
-      (BoundingBox **)ops_malloc(mpi_halo->nproc_to_max *sizeof(BoundingBox *));
+  void **boxes =
+      (void **)ops_malloc(mpi_halo->nproc_to_max *sizeof(void *));
   int *sending_reg = (int *) ops_malloc(mpi_halo->nproc_to_max * 6 * sizeof(int));
 
-  BoundingBox *sendBox = halo->particle_from->box_block;
-  if (!sendBox->getOwnership())
-    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: For setting inter-block halos "
-                                          "require the partition of Bounding Boxes\n");
+  if (!_ops_box_get_ownership(halo->particle_from->box_block, halo->particle_from->type_box))
+    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Setting up particle communications "
+                                          " requires the partition of BoundingBoxes");
 
-  double xmin[OPS_MAX_DIM], xmax[OPS_MAX_DIM];
-  sendBox->getLocalMaxMin(xmin, xmax);
-  double xrecv_min[OPS_MAX_DIM], xrecv_max[OPS_MAX_DIM];
-  double xsend_min[OPS_MAX_DIM], xsend_max[OPS_MAX_DIM];
+  int max_size = MAX(halo->particle_from->type_box, halo->particle_to->type_box);
+  char *xmin = (char *)ops_malloc(dim * max_size);
+  char *xmax = (char *)ops_malloc(dim * max_size);
+
+  char *xrecv_min = (char *) ops_malloc(dim * max_size);
+  char *xrecv_max = (char *) ops_malloc(dim * max_size);
+
+  _get_local_box(xmin, xmax, halo->particle_from->box_block, dim,
+                 halo->particle_from->type_box);
+
 
   for (int i = 0; i < nsend_max; i++) {
-    for (int isou = 0; isou < dim; isou++) {
-      int isend_dir = halo->dir_from[isou];
-      int irecv_dir = halo->dir_to[isou];
+    _get_halo_recv_region(xrecv_min, xrecv_max, recv_box_regions, halo->translate, i,
+                          halo->dir_to, halo->dir_from, dim, halo->particle_to->type_box);
 
-      xrecv_min[isend_dir] = recv_box_regions[2 * dim * i + 2 *  irecv_dir]
-                           - halo->translate[isend_dir];
-      xrecv_max[isend_dir] = recv_box_regions[2 * dim * i + 2* irecv_dir + 1]
-                           - halo->translate[isend_dir];
+    int intersect;
+    switch(halo->particle_to->type_box) {
+    case sizeof(float):
+      intersect = ops_check_box_intersections2(dim, (float *) xmin, (float *) xmax,
+                                              (float *) xrecv_min, (float *) xrecv_max);
+      break;
+    case sizeof(double):
+      intersect = ops_check_box_intersections2(dim, (double *) xmin, (double *) xmax,
+                                              (double *) xrecv_min, (double *) xrecv_max);
+      break;
+    case sizeof(long double):
+      intersect = ops_check_box_intersections2(dim, (long double *) xmin, (long double *) xmax,
+                                              (long double *) xrecv_min, (long double *) xrecv_max);
+      break;
     }
 
-    int intersect = ops_check_box_intersections2(dim, xmin, xmax, xrecv_min, xrecv_max);
 
     if (intersect) {
+      //TODO: Need a function
       for (int is = 0; is < dim; is++) {
         for (int iswap = 0; iswap < 2; iswap++) {
-          for (int j = 0; j < dim; j++) {
-            xsend_min[j] = xmin[j];
-            xsend_max[j] = xmax[j];
-          }
+         void *pointer_box = _declaire_border_sending_box(xrecv_min, xrecv_max, xmin, xmax, halo->dx,
+                                                          dim, is, iswap, halo->particle_to->type_box); //TODO: Shift into sth else
 
-          //Get binhead to receive the proper region
-          double dx[OPS_MAX_DIM];
+         if (pointer_box != nullptr) {
+           proclist[nsend] = mpi_halo->proclist_complete[i];
+           boxes[nsend] = pointer_box;
+           switch (halo->particle_to->type_box  ) {
+           case sizeof(float):
+             _compute_mapping_region(((BoundingBox<float> **) boxes)[nsend], sending_reg + 6 * nsend, dim,
+                                     halo->particle_from, halo->particle_from->map_list[0]);
+           break;
+           case sizeof(double):
+             _compute_mapping_region(((BoundingBox<double> **) boxes)[nsend], sending_reg + 6 * nsend, dim,
+                                      halo->particle_from, halo->particle_from->map_list[0]);
+           break;
+           case sizeof(long double):
+             _compute_mapping_region(((BoundingBox<long double> **)boxes)[nsend], sending_reg + 6 * nsend, dim,
+                                     halo->particle_from, halo->particle_from->map_list[0]);
+           }
+           nsend++;
 
-
-          xsend_min[is] = (iswap == 0) ? xmin[is] - 0.5 * BIG :
-                              xmax[is] - halo->dx[is];
-          xsend_max[is] = (iswap == 0) ? xmin[is] + halo->dx[is] : xmax[is] + 0.5 * BIG;
-
-          int a1 = ops_check_box_intersection2(dim, xsend_min, xsend_max,
-                                              xrecv_min, xrecv_max);
-
-          if (a1 == 1) {
-            for (int j = 0; j < dim; j++) {
-              if (is != j) {
-                xsend_min[j] = (fabs(xsend_min[j] - xrecv_min[j]) < 1.e-9) ?
-                                -BIG : MAX(xsend_min[j], xrecv_min[j]);
-                xsend_max[j] = (fabs(xsend_max[j] - xrecv_max[j]) < 1.e-9) ?
-                                 BIG : MIN(xsend_max[j], xrecv_max[j]);
-              }
-            }
-
-            proclist[nsend] = mpi_halo->proclist_complete[i];
-            boxes[nsend] = new BoundingBox(dim);
-            boxes[nsend]->setBoundingBoxLocalBound(xsend_min, xsend_max);
-
-
-            _compute_mapping_region(boxes[nsend], sending_reg + 6 * nsend, dim,
-                                    halo->particle_to, halo->particle_to->map_list[0]);
-
-
-            if (OPS_instance::getOPSInstance()->OPS_diags > 2) {
-               printf("Halo %d Rank %d sending region [%d %d]x[%d %d]x[%d %d] "
-                      "with box [%f %f]x[%f %f]\n", mpi_halo->index, ops_get_proc(),
-                      sending_reg[6 * nsend], sending_reg[6 * nsend + 1],
-                      sending_reg[6 * nsend + 2], sending_reg[6 * nsend + 3],
-                      sending_reg[6 * nsend + 4], sending_reg[6 * nsend + 5],
-                      xsend_min[0], xsend_max[0], xsend_min[1], xsend_max[1]);
-            }
-            nsend++;
-            goto endline;
-          }
+           goto endline;
+         }
 
         }
       }
@@ -670,15 +918,14 @@ void ops_particle_halo_set_border_send(ops_mpi_particle_halo *mpi_halo,
 
     endline:
     int a1 = 0;
+
   }
-
-
 
   mpi_halo->nproc_to = nsend;
 
   if (mpi_halo->nproc_to > 0) {
     mpi_halo->proclist = (int *) ops_malloc(mpi_halo->nproc_to * sizeof(int));
-    mpi_halo->sendBox = (BoundingBox **) ops_malloc(mpi_halo->nproc_to * sizeof(BoundingBox *));
+    mpi_halo->sendBox = (void **) ops_malloc(mpi_halo->nproc_to * sizeof(void *));
     mpi_halo->send_region = (int *)ops_malloc(mpi_halo->nproc_to * 6 * sizeof(int));
 
     for (int  i = 0; i < mpi_halo->nproc_to; i++) {
@@ -687,14 +934,22 @@ void ops_particle_halo_set_border_send(ops_mpi_particle_halo *mpi_halo,
       for (int j = 0; j < 6; j++)
         mpi_halo->send_region[6 * i + j] = sending_reg[6 * i + j];
     }
+
   }
+
+
+
   ops_free(proclist);
   ops_free(boxes);
   ops_free(sending_reg);
+  ops_free(xmin);
+  ops_free(xmax);
+  ops_free(xrecv_min);
+  ops_free(xrecv_max);
 }
 
 void  ops_particle_halo_set_exchange_recv(ops_mpi_particle_halo *mpi_halo,
-                                          double *send_box_regions, int dim) {
+                                          char *send_box_regions, int dim) {
 
   ops_particle_halo halo
     = OPS_instance::getOPSInstance()->OPS_particle_halo_list[mpi_halo->index];
@@ -704,34 +959,50 @@ void  ops_particle_halo_set_exchange_recv(ops_mpi_particle_halo *mpi_halo,
   int nrecv_max = mpi_halo->nproc_from_max;
   int nrecv = 0;
 
-  BoundingBox *recvBox = halo->particle_to->box_block;
-  if (!recvBox->getOwnership())
-    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Setting interblock particle halos "
-                                          " require the partition of block boxes\n");
+  if (!_ops_box_get_ownership(halo->particle_to->box_block, halo->particle_to->type_box))
+      throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Setting up particle communications "
+                                            " requires the partition of BoundingBoxes");
 
-  double xmin[OPS_MAX_DIM], xmax[OPS_MAX_DIM];
-  recvBox->getLocalMaxMin(xmin, xmax);
-  double xsend_min[OPS_MAX_DIM], xsend_max[OPS_MAX_DIM];
+  if (!_ops_box_get_ownership(halo->particle_to->box_block, halo->particle_to->type_box))
+      throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Setting up particle communications "
+                                            " requires the partition of BoundingBoxes");
 
+  int max_size = MAX(halo->particle_to->type_box, halo->particle_from->type_box);
+  char *xmin = (char *) ops_malloc(dim * max_size);
+  char *xmax = (char *) ops_malloc(dim * max_size);
+  char *xsend_max = (char *) ops_malloc(dim * max_size);
+  char *xsend_min = (char *) ops_malloc(dim * max_size);
   int *proc_recv = (int *)ops_malloc(nrecv_max * sizeof(int));
+
+  _get_local_box(xmin, xmax, halo->particle_to->box_block, dim,
+                 halo->particle_to->type_box);
+
   for (int i = 0; i < nrecv_max; i++) {
-    for (int isou = 0; isou < dim; isou++) {
-      int isend_dir = halo->dir_to[isou];
-      int irecv_dir = halo->dir_from[isou];
-      xsend_min[irecv_dir] = send_box_regions[2 * dim * i + 2 * isend_dir]
-                           + halo->translate[irecv_dir];
-      xsend_max[irecv_dir] = send_box_regions[2 * dim * i + 2 * isend_dir + 1]
-                           + halo->translate[irecv_dir];
+
+    _get_halo_send_region(xsend_min, xsend_max, send_box_regions,
+                          halo->translate, i, halo->dir_from,
+                          halo->dir_to, dim, halo->particle_from->type_box);
+
+    int intersect;
+    switch (halo->particle_to->type_box) {
+    case sizeof(float):
+      intersect = ops_check_box_intersections2(dim, (float *) xmin, (float *) xmax,
+                                               (float *)xsend_min, (float *) xsend_max);
+      break;
+    case sizeof(double):
+      intersect = ops_check_box_intersections2(dim, (double *) xmin, (double *) xmax,
+                                              (double *)xsend_min, (double *) xsend_max);
+      break;
+    case sizeof(long double):
+      intersect = ops_check_box_intersections2(dim, (long double *) xmin, (long double *) xmax,
+                                              (long double *)xsend_min, (long double *) xsend_max);
+      break;
     }
 
-    int intersect = ops_check_box_intersections2(dim, xmin, xmax, xsend_min, xsend_max);
-
-    if (intersect == 1) {
-      proc_recv[nrecv] =   mpi_halo->proclist_complete[i + mpi_halo->nproc_to_max];
+    if (intersect) {
+      proc_recv[nrecv] = mpi_halo->proclist_complete[i + mpi_halo->nproc_to_max];
       nrecv++;
     }
-
-
   }
 
   mpi_halo->nproc_from = nrecv;
@@ -745,6 +1016,10 @@ void  ops_particle_halo_set_exchange_recv(ops_mpi_particle_halo *mpi_halo,
   }
 
   ops_free(proc_recv);
+  ops_free(xsend_min);
+  ops_free(xsend_max);
+  ops_free(xmin);
+  ops_free(xmax);
 }
 
 
@@ -753,11 +1028,12 @@ void  ops_particle_halo_set_exchange_recv(ops_mpi_particle_halo *mpi_halo,
 void _ops_particle_setup_exchange_comm(OPS_instance *instance,
                                        ops_particle_halo_group halo_grp) {
 
-  double *recv_box_regions = nullptr;
-  double *send_box_regions = nullptr;
+  char *recv_box_regions = nullptr;
+  char *send_box_regions = nullptr;
   int size_recv_max = 0;
   int size_send_max = 0;
 
+  //Find processes for data exchange
   for (int ihalo = 0; ihalo < halo_grp->nhalos; ihalo++) {
     ops_particle_halo halo = halo_grp->halo_list[ihalo];
 
@@ -769,28 +1045,28 @@ void _ops_particle_setup_exchange_comm(OPS_instance *instance,
 
     int dim = halo->particle_to->block->dims;
 
-
-    int size_recv = 2 * sizeof(double) * dim * mpi_halo->nproc_to_max;
+    int type_size = MAX(halo->particle_to->type_box, halo->particle_from->type_box);
+    int size_recv = 2 * type_size * dim * mpi_halo->nproc_to_max;
 
     if (size_recv_max == 0 && size_recv > 0) {
-      recv_box_regions = (double *) ops_malloc( size_recv);
+      recv_box_regions = (char *) ops_malloc( size_recv);
       size_recv_max = size_recv;
     }
     else if (size_recv> size_recv_max) {
-      recv_box_regions = (double *)ops_realloc(recv_box_regions, size_recv);
+      recv_box_regions = (char *)ops_realloc(recv_box_regions, size_recv);
       size_recv_max = size_recv;
     }
 
-    int size_send = 2 * sizeof(double) * dim
-                      * mpi_halo->nproc_from_max;
+    int size_send = 2 * type_size * dim
+                  * mpi_halo->nproc_from_max;
 
 
     if (size_send_max == 0 && size_send > 0) {
-      send_box_regions = (double *) ops_malloc( size_send);
+      send_box_regions = (char *) ops_malloc( size_send);
       size_send_max = size_send;
     }
     else if (size_send > size_send_max) {
-      send_box_regions = (double *)ops_realloc(send_box_regions, size_send);
+      send_box_regions = (char *)ops_realloc(send_box_regions, size_send);
       size_send_max = size_send;
     }
 
@@ -938,8 +1214,8 @@ void _ops_particle_setup_exchange_comm(OPS_instance *instance,
 void _ops_particle_setup_border_comm(OPS_instance *instance,
                                      ops_particle_halo_group halo_grp) {
 
-  double *recv_box_regions = NULL;
-  double *send_box_regions = NULL;
+  char *recv_box_regions = NULL;
+  char *send_box_regions = NULL;
   int size_recv_max = 0;
   int size_send_max = 0;
 
@@ -953,28 +1229,25 @@ void _ops_particle_setup_border_comm(OPS_instance *instance,
 
     int dim = halo->particle_to->block->dims;
     ops_mpi_particle_halo  *mpi_halo = &OPS_mpi_particle_halo_list[halo->index];
-
-    int size_recv = 2 * sizeof(double) * dim * mpi_halo->nproc_to_max;
+    int size_block = MAX(halo->particle_to->type_box, halo->particle_from->type_box);
+    int size_recv = 2 * size_block * dim * mpi_halo->nproc_to_max;
 
     if (size_recv_max ==  0 && size_recv > 0) {
-      recv_box_regions = (double *) ops_malloc(size_recv);
+      recv_box_regions = (char *) ops_malloc(size_recv);
       size_recv_max = size_recv;
     }
     else if (size_recv > size_recv_max) {
-      recv_box_regions = (double *) ops_realloc(recv_box_regions, size_recv);
+      recv_box_regions = (char *) ops_realloc(recv_box_regions, size_recv);
       size_recv_max = size_recv;
     }
 
-//    printf("Number of max procs recv %d and send %d\n", mpi_halo->nproc_from_max, mpi_halo->nproc_to_max);
-
-    int size_send = 2 * sizeof(double) * dim * mpi_halo->nproc_from_max;
+    int size_send = 2 * size_block * dim * mpi_halo->nproc_from_max;
     if (size_send_max == 0 && size_send  > 0) {
-//      printf("Should enter here\n");
-      send_box_regions = (double *) ops_malloc(size_send);
+      send_box_regions = (char *) ops_malloc(size_send);
       size_send_max = size_send;
     }
     else if (size_send > size_send_max) {
-      send_box_regions = (double *) ops_realloc(send_box_regions, size_send);
+      send_box_regions = (char *) ops_realloc(send_box_regions, size_send);
       size_send_max = size_send;
     }
 
@@ -1229,8 +1502,10 @@ void ops_particle_setup_intrablock_comms(ops_particle particle) {
 
   if (!sb->owned) return;
 
-  if (!particle->box_block->getOwnership())
+  //TODO:
+  if  (!_ops_box_get_ownership(particle->box_block, particle->type_box))
     throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Box block is not partitioned\n");
+
 
   if (particle->particle_map_index == 0)
     throw OPSException(OPS_RUNTIME_ERROR, "ERROR: At least one ops_particle_mapping structure "
@@ -1241,62 +1516,118 @@ void ops_particle_setup_intrablock_comms(ops_particle particle) {
   int dim = particle->block->dims;
 
   //Get bounding box
-  BoundingBox *box = particle->box_block;
-  double epsilon = 1.e-12;
+  char *box = particle->box_block;
+
+  int block_type = particle->type_box;
 
   for (int idim = 0; idim < particle->block->dims; idim++) {
 
-    sp->particle_halos[idim]->region_exch_neg[0] = -BIG;
-    sp->particle_halos[idim]->region_exch_neg[1] = box->getMinCoordDir(idim);
+    //aLlocate exchange regions
+    sp->particle_halos[idim]->region_exch_neg = (char *) ops_malloc(2 * block_type);
+    sp->particle_halos[idim]->region_exch_pos = (char *) ops_malloc(2 * block_type);
+    sp->particle_halos[idim]->region_bord_pos = (char *) ops_malloc(2 * dim * block_type);
+    sp->particle_halos[idim]->region_bord_neg = (char *) ops_malloc(2 * dim * block_type);
 
-    sp->particle_halos[idim]->region_exch_pos[0] = box->getMaxCoordDir(idim);
+    //Setting up exchange regions
+    switch(particle->type_box) {
+    case sizeof(float):
+      _ops_particle_set_intra_exch_regs((float *) sp->particle_halos[idim]->region_exch_neg,
+                                        (float *) sp->particle_halos[idim]->region_exch_pos,
+                                        (BoundingBox<float> *) box, idim, dim);
+      break;
+    case sizeof(double):
+      _ops_particle_set_intra_exch_regs((double *) sp->particle_halos[idim]->region_exch_neg,
+                                        (double *) sp->particle_halos[idim]->region_exch_pos,
+                                        (BoundingBox<double> *) box, idim, dim);
+      break;
+    case sizeof(long double):
+      _ops_particle_set_intra_exch_regs((long double *) sp->particle_halos[idim]->region_exch_neg,
+                                        (long double *) sp->particle_halos[idim]->region_exch_pos,
+                                        (BoundingBox<long double> *) box, idim, dim);
+      break;
+    }
 
-    sp->particle_halos[idim]->region_exch_pos[1] = BIG;
-
-
-    //TODO: Need to set up comms in x-direction and y-direction for forward
-//    printf("Rank %d: Dir %d: Exchange neg. region [%f %f] and in positive [%f %f]\n", ops_get_proc(), idim, sp->particle_halos[idim]->region_exch_neg[0],
-//           sp->particle_halos[idim]->region_exch_neg[1], sp->particle_halos[idim]->region_exch_pos[0],
-//           sp->particle_halos[idim]->region_exch_pos[1]);
-
-    for (int isou = 0; isou < particle->block->dims; isou++)
-      if (isou != idim)  {
-        sp->particle_halos[idim]->region_bord_neg[2 * isou] = -BIG;
-        sp->particle_halos[idim]->region_bord_neg[2 * isou + 1] = BIG;
-        sp->particle_halos[idim]->region_bord_pos[2 * isou] = -BIG;
-        sp->particle_halos[idim]->region_bord_pos[2 * isou + 1] = BIG;
-      }
-
-    double xmin = particle->box_block->getMinCoordDir(idim);
-    double xmax = particle->box_block->getMaxCoordDir(idim);
-
-    //TODO: Fix the mappings for getting dx
     ops_dat binhead = particle->map_list[0]->binhead;
     int d_m = binhead->d_m[idim] + OPS_sub_dat_list[binhead->index]->d_im[idim];
     int d_p = binhead->d_p[idim] + OPS_sub_dat_list[binhead->index]->d_ip[idim];
 
-    //TODO: Fix the size
-    double dx = (xmax - xmin) / static_cast<double>(binhead->size[idim] - d_p + d_m);
+    switch(particle->type_box) {
+    case sizeof(float):
+      _ops_particle_set_intra_bord_regs((float *) sp->particle_halos[idim]->region_bord_neg,
+                                        (float *) sp->particle_halos[idim]->region_bord_pos,
+                                        (BoundingBox<float> *) box, d_m, d_p, binhead->size,
+                                        sb->id_m[idim], sb->id_p[idim],idim, dim);
+      break;
+    case sizeof(double):
+      _ops_particle_set_intra_bord_regs((double *) sp->particle_halos[idim]->region_bord_neg,
+                                        (double *) sp->particle_halos[idim]->region_bord_pos,
+                                        (BoundingBox<double> *) box, d_m, d_p, binhead->size,
+                                        sb->id_m[idim], sb->id_p[idim], idim, dim);
+      break;
+    case sizeof(long double):
+      _ops_particle_set_intra_bord_regs((long double *) sp->particle_halos[idim]->region_bord_neg,
+                                        (long double *) sp->particle_halos[idim]->region_bord_pos,
+                                        (BoundingBox<long double> *) box, d_m, d_p, binhead->size,
+                                        sb->id_m[idim], sb->id_p[idim], idim, dim);
+      break;
+    }
 
-    //TODO: If not part of a mapping we need to redefine the dx and get it directly
-    sp->particle_halos[idim]->region_bord_neg[2 * idim] = -BIG;
-    sp->particle_halos[idim]->region_bord_neg[2 * idim + 1]
-       = (sb->id_m[idim] != MPI_PROC_NULL) ? xmin - dx * OPS_sub_dat_list[binhead->index]->d_im[idim] + epsilon : -BIG;
-    sp->particle_halos[idim]->region_bord_pos[2 * idim + 1] = BIG;
-    sp->particle_halos[idim]->region_bord_pos[2 * idim] = (sb->id_p[idim] != MPI_PROC_NULL) ?
-        xmax - dx * OPS_sub_dat_list[binhead->index]->d_ip[idim] - epsilon : BIG;
+    if (OPS_instance::getOPSInstance()->OPS_diags > 2) {
+      switch (particle->type_box) {
+      case sizeof(float): {
+        printf("Rank %d Region_pos[%d] =[%f %f]x[%f %f]x[%f %f] "
+               "Region_neg[%d] = [%f %f]x[%f %f] x[%f %f]\n",
+              ops_get_proc(), idim, ((float *) sp->particle_halos[idim]->region_bord_pos)[0],
+              ((float *) sp->particle_halos[idim]->region_bord_pos)[1],
+              ((float *) sp->particle_halos[idim]->region_bord_pos)[2],
+              ((float *) sp->particle_halos[idim]->region_bord_pos)[3],
+              (dim == 3) ?  ((float *) sp->particle_halos[idim]->region_bord_pos)[4] : 0.0,
+              (dim == 3) ?  ((float *) sp->particle_halos[idim]->region_bord_pos)[5] : 0.0,
+              idim,
+              ((float *) sp->particle_halos[idim]->region_bord_neg)[0],
+              ((float *) sp->particle_halos[idim]->region_bord_neg)[1],
+              ((float *) sp->particle_halos[idim]->region_bord_neg)[2],
+              ((float *) sp->particle_halos[idim]->region_bord_neg)[3],
+              (dim == 3) ? ((float *) sp->particle_halos[idim]->region_bord_neg)[4] : 0.0,
+              (dim == 3) ? ((float *) sp->particle_halos[idim]->region_bord_neg)[5] : 0.0);
+      } break;
+      case sizeof(double): {
+        printf("Rank %d Region_pos[%d] =[%f %f]x[%f %f]x[%f %f] "
+               "Region_neg[%d] = [%f %f]x[%f %f] x[%f %f]\n",
+              ops_get_proc(), idim, ((double *) sp->particle_halos[idim]->region_bord_pos)[0],
+              ((double *) sp->particle_halos[idim]->region_bord_pos)[1],
+              ((double *) sp->particle_halos[idim]->region_bord_pos)[2],
+              ((double *) sp->particle_halos[idim]->region_bord_pos)[3],
+              (dim == 3) ?  ((double *) sp->particle_halos[idim]->region_bord_pos)[4] : 0.0,
+              (dim == 3) ?  ((double *) sp->particle_halos[idim]->region_bord_pos)[5] : 0.0,
+               idim,
+              ((double *) sp->particle_halos[idim]->region_bord_neg)[0],
+              ((double *) sp->particle_halos[idim]->region_bord_neg)[1],
+              ((double *) sp->particle_halos[idim]->region_bord_neg)[2],
+              ((double *) sp->particle_halos[idim]->region_bord_neg)[3],
+              (dim == 3) ? ((double *) sp->particle_halos[idim]->region_bord_neg)[4] : 0.0,
+              (dim == 3) ? ((double *) sp->particle_halos[idim]->region_bord_neg)[5] : 0.0);
+      } break;
+      case sizeof(long double): {
+        printf("Rank %d Region_pos[%d] =[%Lf %Lf]x[%Lf %Lf]x[%Lf %Lf] "
+               "Region_neg[%d] = [%Lf %Lf]x[%Lf %Lf] x[%Lf %Lf]\n",
+              ops_get_proc(), idim, ((long double *) sp->particle_halos[idim]->region_bord_pos)[0],
+              ((long double *) sp->particle_halos[idim]->region_bord_pos)[1],
+              ((long double *) sp->particle_halos[idim]->region_bord_pos)[2],
+              ((long double *) sp->particle_halos[idim]->region_bord_pos)[3],
+              (dim == 3) ?  ((long double *) sp->particle_halos[idim]->region_bord_pos)[4] : 0.0,
+              (dim == 3) ?  ((long double *) sp->particle_halos[idim]->region_bord_pos)[5] : 0.0,
+              idim,
+              ((long double *) sp->particle_halos[idim]->region_bord_neg)[0],
+              ((long double *) sp->particle_halos[idim]->region_bord_neg)[1],
+              ((long double *) sp->particle_halos[idim]->region_bord_neg)[2],
+              ((long double *) sp->particle_halos[idim]->region_bord_neg)[3],
+              (dim == 3) ? ((long double *) sp->particle_halos[idim]->region_bord_neg)[4] : 0.0,
+              (dim == 3) ? ((long double *) sp->particle_halos[idim]->region_bord_neg)[5] : 0.0);
+      } break;
+      }
 
-    if (OPS_instance::getOPSInstance()->OPS_diags > 2)
-      printf("Rank %d Region[%d] =[%f %f]x[%f %f] region_neg = [%f %f]x[%f %f]\n",
-             ops_get_proc(), idim, sp->particle_halos[idim]->region_bord_pos[0],
-             sp->particle_halos[idim]->region_bord_pos[1],
-             sp->particle_halos[idim]->region_bord_pos[2],
-             sp->particle_halos[idim]->region_bord_pos[3],
-             sp->particle_halos[idim]->region_bord_neg[0],
-             sp->particle_halos[idim]->region_bord_neg[1],
-             sp->particle_halos[idim]->region_bord_neg[2],
-             sp->particle_halos[idim]->region_bord_neg[3]);
-
+    }
     //Set up region in bin cells
     if (dim < 3) {
       sp->particle_halos[idim]->region_neg[4] = 0;
@@ -1342,7 +1673,7 @@ ops_dat ops_decl_particle_dat_char(ops_particle particle, int dim, int *dataset_
                                    char *data, int type_size, char const *type,
                                    char const *name, bool assign, bool exchanging) {
 
-  if (!ops_partitioned())
+  if (ops_partitioned())
     throw OPSException(OPS_RUNTIME_ERROR, "Error: ops_decl_particle_dat_char "
                                                          "called after ops_partition");
 

@@ -183,7 +183,7 @@ typedef struct {
   int *proclist; /// <List of destination processes
   int *proclist_complete; ///< List of destination processes of all structures
   int *send_region; ///< Sending region in terms of bins
-  BoundingBox **sendBox;
+  void **sendBox;
   int index;
   int *isend;
 } ops_mpi_particle_halo;
@@ -217,7 +217,7 @@ typedef struct {
   int *recv_pos_bites;
   int *shift_recv_pos;
 
-} ops_mpi_particle_halo_group;;
+} ops_mpi_particle_halo_group;
 
 void ops_mpi_exit(OPS_instance *instance);
 

@@ -135,6 +135,7 @@ struct ops_block_descriptor {
   int no_particle_structures {0}; /**< Number of particle structures linked to block */
   int no_history_structures{0}; /**< number of neighbor history structures */
 
+  char *box;                   /**< Pointer to a Bounding box structure */
 };
 
 /** Storage for OPS parallel loop statistics */
@@ -199,8 +200,8 @@ typedef struct {
   int *nforward_pos; ///<# number of particles forward by this process in positive direction
   int *nforward_neg; ///<# number of particles send in the negative direction by this process
 
-  int nalloc_max_pos; //<# number of particles prior allocation in negative direction
-  int nalloc_max_neg; //<# number of particles prior allocation in negative direction
+  size_t nalloc_max_pos; //<# number of particles prior allocation in negative direction
+  size_t nalloc_max_neg; //<# number of particles prior allocation in negative direction
 
 
   int nsend_pos;  ///<number of particles send in the positive direction for each swap
@@ -209,11 +210,11 @@ typedef struct {
   int region_pos[2 * OPS_MAX_DIM]; ///<Grid region for shifting particles in positive direction
   int region_neg[2 * OPS_MAX_DIM]; ///<Grid region for shifting particles in negative direction
 
-  double region_exch_pos[2]; ///<TODO: Need to define those
-  double region_exch_neg[2]; ///<TODO: Need to define those
+  char* region_exch_pos; ///<TODO: Need to define those
+  char* region_exch_neg; ///<TODO: Need to define those
 
-  double region_bord_pos[2 * OPS_MAX_DIM];
-  double region_bord_neg[2 * OPS_MAX_DIM];
+  char* region_bord_pos;
+  char* region_bord_neg;
 
   int *particle_send_neg; ///<Particle list send and receive in this intra-block communication
   int *particle_send_pos; ///<Particle list send in positive direction
@@ -372,13 +373,6 @@ int getDatBaseFromOpsArg2D(ops_arg *arg, int *start, int dim);
 int getDatBaseFromOpsArg3D(ops_arg *arg, int *start, int dim);
 }
 
-/*********************************************************************************
- *    Particle data core functions
- **********************************************************************************/
-
-ops_particle _ops_decl_particle(OPS_instance *instance, ops_block block, BoundingBox *Box,
-                                char const* name);
-
 /*******************************************************************************
 * Random number generations
 *******************************************************************************/
@@ -476,13 +470,6 @@ inline void ops_mpi_reduce(ops_arg *args, double *data) {
 inline void ops_mpi_reduce(ops_arg *args, int *data) {
   ops_mpi_reduce_int(args, data);
 }
-
-
-double ops_floor(double value, double epsilon = 1.e-12);
-float ops_floor(float value, float epsilon = 1.e-12);
-
-double ops_ceil(double value, double epsilon = 1.e-12);
-float ops_ceil(float value, float epsilon = 1.e-12);
 
 class OPS_instance;
 

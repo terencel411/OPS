@@ -52,22 +52,49 @@ void ops_particle_remove(ops_particle particle) {
 
   const int dim = particle->block->dims;
   long int Nlocal = (long int) particle->no_particles;
-  double xmin[dim], xmax[dim];
+  char xmin[OPS_MAX_DIM * 16], xmax[OPS_MAX_DIM * 16];
 
-  BoundingBox *box = particle->box_block;
-  box->getLocalMaxMin(xmin, xmax);
+  char *box = particle->box_block;
 
-  double *xpos = (double *)particle->particle_pos_dat->data;
+  switch(particle->type_box) {
+  case sizeof(float):
+    ((BoundingBox<float> *) box)->getLocalMaxMin((float *) xmin,
+                                                 (float *) xmax);
+  break;
+  case sizeof(double):
+    ((BoundingBox<double> *) box)->getLocalMaxMin((double *) xmin, (double *) xmax);
+  break;
+  case sizeof(long double):
+    ((BoundingBox<long double> *) box)->getLocalMaxMin((long double *) xmin,
+                                                       (long double *) xmax);
+  break;
+  }
+//  box->getLocalMaxMin(xmin, xmax);
 
+  //TODO:Shift into
+
+  char *xpos = particle->particle_pos_dat->data;
   int i = 0;
   while (i < Nlocal) {
-    ops_point xlocal{xpos[dim * i], xpos[dim * i + 1], (dim == 3) ? xpos[dim * i + 2] : 0.0};
 
     int imark = particle->mark_deletion[i];
 
     //TODO: TO-Be removed
+    bool decide;
     if (imark == 0) {
-      bool decide = box->isCoordinateInBoundingBox(xlocal);
+      switch(particle->type_box) {
+      case sizeof(float):
+        decide =
+          ((BoundingBox<float> *) box)->isCoordinateInBoundingBox((float *) xpos + i *dim);
+      break;
+      case sizeof(double):
+              ((BoundingBox<double> *) box)->isCoordinateInBoundingBox((double *) xpos + i *dim);
+
+        break;
+      case sizeof(long double):
+          ((BoundingBox<long double> *) box)->isCoordinateInBoundingBox((long double *) xpos + i *dim);
+        break;
+      }
       if (!decide) imark = 1;
     }
 

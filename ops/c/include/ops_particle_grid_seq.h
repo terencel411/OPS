@@ -81,8 +81,9 @@ inline int get_address2(int loc[], const int mdim, const int dim, const int d_m[
   return address;
 }
 
-inline void get_coord_point2(const double *coords, const int size[],const int d_m[],
-                            const int ilocal[], const int dim, double xlocal[]) {
+template<typename T>
+inline void get_coord_point2(const T *coords, const int size[],const int d_m[],
+                            const int ilocal[], const int dim, T xlocal[]) {
 
 #ifdef OPS_SOA
   if (dim == 2) {
@@ -121,12 +122,13 @@ inline void get_coord_point2(const double *coords, const int size[],const int d_
 #endif
 }
 
-inline size_t get_grid_size2(BoundingBox *intersection, BoundingBox *box,
+template<typename T>
+inline size_t get_grid_size2(BoundingBox<T> *intersection, BoundingBox<T> *box,
                             ops_particle_mapping map, int dim, int  local_grid[]) {
   size_t nelems{1};
 
   //At first assume uniform grid
-  double dx[OPS_MAX_DIM], xfirst[OPS_MAX_DIM], xlast[OPS_MAX_DIM];
+  T dx[OPS_MAX_DIM], xfirst[OPS_MAX_DIM], xlast[OPS_MAX_DIM];
   int iloc[OPS_MAX_DIM], inext[OPS_MAX_DIM];
   for (int i = 0; i < dim; i++) {
     inext[i] = 1;
@@ -146,9 +148,9 @@ inline size_t get_grid_size2(BoundingBox *intersection, BoundingBox *box,
   }
 #endif
 
-  get_coord_point2((double *) map->grid->data, map->grid->size, d_m,
+  get_coord_point2((T *) map->grid->data, map->grid->size, d_m,
                   iloc, dim, xfirst);
-  get_coord_point2((double *) map->grid->data, map->grid->size, d_m,
+  get_coord_point2((T *) map->grid->data, map->grid->size, d_m,
                   inext, dim, xlast);
 
   for (int i = 0; i < dim; i++)
@@ -173,7 +175,8 @@ inline size_t get_grid_size2(BoundingBox *intersection, BoundingBox *box,
   return nelems;
 }
 
-inline long int get_direct_iteration_points2(BoundingBox *intersection,ops_dat crd_parts,
+template<typename T>
+inline long int get_direct_iteration_points2(BoundingBox<T> *intersection,ops_dat crd_parts,
                                             int nParticles, int  dim,
                                             long int  *&looping_particles) {
 
@@ -182,7 +185,7 @@ inline long int get_direct_iteration_points2(BoundingBox *intersection,ops_dat c
 
   looping_particles = (long int *) ops_malloc(sizeof(long int) * nmax);
 
-  double *coords = (double *)crd_parts->data;
+  T *coords = (T *)crd_parts->data;
   for (int i = 0; i < nParticles; i++) {
     bool is_in = intersection->isCoordinateInBoundingBox(coords + dim * i);
     if (is_in) {
@@ -235,12 +238,13 @@ inline long int  get_particles_from_grid2(ops_particle_mapping map, int local_gr
 
 }
 
+template<typename T>
 inline size_t get_particles_in_range(size_t nParticles, ops_particle particle,
-                                    BoundingBox *box, ops_particle_mapping map,
-                                    int dim, double *range, long int *&loop_particles) {
+                                    BoundingBox<T> *box, ops_particle_mapping map,
+                                    int dim, T *range, long int *&loop_particles) {
   int inters = 2;
 
-  BoundingBox *intersection = ops_find_intersection_region(box, range, inters);
+  BoundingBox<T> *intersection = ops_find_intersection_region(box, range, inters);
 
   int nsize = 0;
   if (inters == 2) {delete intersection; return 0;}
@@ -345,24 +349,26 @@ inline void find_old_indices2(const ops_arg &arg, int *old_point, const int dim,
 
 }
 
-inline void compute_finer_grid_size(double *dx_f, const int dim,
-                                    const BoundingBox *box,const int *size_proj) {
+template<typename T>
+inline void compute_finer_grid_size(T *dx_f, const int dim,
+                                    const BoundingBox<T> *box,const int *size_proj) {
 
   dx_f[0] = (box->getLocalMax().x - box->getLocalMin().x)
-          / ( static_cast<double>(size_proj[0]));
+          / ( static_cast<T>(size_proj[0]));
   dx_f[1] = (box->getLocalMax().y - box->getLocalMin().y)
-          / ( static_cast<double>(size_proj[1]));
+          / ( static_cast<T>(size_proj[1]));
 
   dx_f[2] = (dim == 3) ?
-      (box->getLocalMax().z - box->getLocalMin().z) / (static_cast<double>(size_proj[2])) : 0.0;
+      (box->getLocalMax().z - box->getLocalMin().z) / (static_cast<T>(size_proj[2])) : 0.0;
 
 }
 
 
 /* Perform correction due to transition from coarse to fine mesh*/
+template<typename T>
 inline void     correction_due_to_grid(int *grid_point,const ops_stencil stencil,
                                        const double *x_p,const int dim,
-                                       const ops_point xmin, double *dx) {
+                                       const ops_point<T> xmin, T *dx) {
   if (stencil->type == 2) {
     grid_point[0] += (x_p[0] - xmin.x - grid_point[0] * dx[0]) / dx[0];
     grid_point[1] += (x_p[1] - xmin.y - grid_point[1] * dx[1]) / dx[1];
@@ -372,7 +378,8 @@ inline void     correction_due_to_grid(int *grid_point,const ops_stencil stencil
 }
 
 #ifdef OPS_MPI
-inline void   compute_uniform_dx(ops_dat grid, int dim, double *dx) {
+template<typename T>
+inline void   compute_uniform_dx(ops_dat grid, int dim, T *dx) {
   //Let's do it
   OPS_instance *instance = grid->block->instance;
 
@@ -386,7 +393,7 @@ inline void   compute_uniform_dx(ops_dat grid, int dim, double *dx) {
 
  //  printf("imin =  [%d %d]\n", imin[0], imin[1]);
 
-   double *grid_points = (double *)grid->data;
+   T *grid_points = (T *)grid->data;
 
    if (dim == 2) {
      if (instance->OPS_soa) {
@@ -542,8 +549,8 @@ struct part_grid_param_handler {
   static void shift_arg(const ops_arg &arg, char* p_a, int off,
                          int dim, int map_point[], ops_block block, OPS_instance *instance) {
     if (arg.argtype == OPS_ARG_IDX) {
-      sub_block_list sb = OPS_sub_block_list[block->index]; //TODO: Multigrid
 #ifdef OPS_MPI
+      sub_block_list sb = OPS_sub_block_list[block->index]; //TODO: Multigrid
       for (int d = 0; d < dim; d++) instance->arg_idx[d] = map_point[d] + sb->decomp_disp[d];
 #else
       for (int d = 0; d < dim; d++) instance->arg_idx[d] = map_point[d] ;
@@ -681,12 +688,12 @@ struct part_grid_param_handler<ACCP<T>> {
 };
 
 //TODO: Need to check limits for the operation of transition to different grids
-template <typename...ParamType, typename... OPSARG, size_t ...J>
+template <typename T, typename...ParamType, typename... OPSARG, size_t ...J>
 void ops_par_particle_grid_loop_impl(indices<J...>, void (*kernel)(ParamType... ),
                                      char const *name, ops_particle particle,
                                      ops_particle_mapping map, int dim,
                                      ops_particle_iterate_type iter_type,
-                                     double *range, ops_stencil map_stencil,
+                                     T *range, ops_stencil map_stencil,
                                      OPSARG... arguments) {
 
   constexpr int N = sizeof...(OPSARG);
@@ -694,7 +701,11 @@ void ops_par_particle_grid_loop_impl(indices<J...>, void (*kernel)(ParamType... 
   int count[OPS_MAX_DIM] = {0};
   ops_block block = particle->block;
 
-  BoundingBox *box = particle->box_block;
+  if (particle->type_box != sizeof(T))
+    throw OPSException(OPS_RUNTIME_ERROR, "Error: Incompatible types for "
+                                          " position data and iteration region");
+
+  BoundingBox<T> *box = (BoundingBox<T> *) particle->box_block;
 
   int range_base[2 * OPS_MAX_DIM] = {};
 
@@ -710,7 +721,7 @@ void ops_par_particle_grid_loop_impl(indices<J...>, void (*kernel)(ParamType... 
   size_t n_loop_particles{0};
 
 #ifdef OPS_MPI
-  double dx[OPS_MAX_DIM];
+  T dx[OPS_MAX_DIM];
   compute_uniform_dx(map->grid, particle->block->dims, dx);
 #endif
 
@@ -848,7 +859,7 @@ void ops_par_particle_grid_loop_impl(indices<J...>, void (*kernel)(ParamType... 
     int address = part2grid[looping_particles[i]];
     get_local_point(bin_point, address, dim, map->binhead->size, d_mb); //TODO:
 
-    double *xpos = (double *)particle->particle_pos_dat->data;
+    T *xpos = (T *)particle->particle_pos_dat->data;
     int *part2bin = (int *) map->parts_to_grid->data;
 
 //    printf("R %d: x = [%12.9e %12.9e]  in bin %d\n", ops_get_proc(), xpos[2 * i], xpos[2 * i + 1], part2bin[i]);
@@ -867,7 +878,7 @@ void ops_par_particle_grid_loop_impl(indices<J...>, void (*kernel)(ParamType... 
 
     //Part II: Correct due to coarse->fine
     correction_due_to_grid(grid_point, map_stencil,
-                           (double *)(particle->particle_pos_dat->data
+                           (T *)(particle->particle_pos_dat->data
                             + particle->particle_pos_dat->elem_size * looping_particles[i]),
                             dim, box->getLocalMin(), dx_f);
 
@@ -962,11 +973,11 @@ void ops_par_particle_grid_loop_impl(indices<J...>, void (*kernel)(ParamType... 
  *                       used in the simulation.
  *
  */
-template <typename... ParamType, typename... OPSARG>
+template <typename T, typename... ParamType, typename... OPSARG>
 void ops_par_particle_grid_loop(void (*kernel)(ParamType...), char const *name,
                                 ops_particle particle, ops_particle_mapping map,
                                 int dim, ops_particle_iterate_type iterate_type,
-                                double *range, ops_stencil map_stencil,
+                                T *range, ops_stencil map_stencil,
                                 OPSARG... arguments) {
 
   static_assert(sizeof...(ParamType) == sizeof...(OPSARG),

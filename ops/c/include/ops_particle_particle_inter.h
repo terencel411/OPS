@@ -16,7 +16,8 @@
 
 #include "ops_seq_v2.h" //TODO: Check if wew need
 
-inline int get_global_bin(double xmin, double xmax, double dx, double point) {
+template<typename T>
+inline int get_global_bin(T xmin, T xmax, T dx, T point) {
 
   int ix = -1;
   double epsilon = 1.e-12;
@@ -54,6 +55,64 @@ inline int get_map_address(const int point[], int dim, ops_dat dat) {
   return address;
 }
 
+inline void get_local_point(const int address , const ops_dat binhead,
+                            const int dim, int point[]) {
+
+  int linear = address;
+  for (int i = dim - 1; i >= 0; i--) {
+
+    int prod = 1;
+    for (int j = 0; j < i; j++) prod *= binhead->size[j];
+
+    point[i] = linear / prod;
+    linear -= point[i] * prod;
+
+    point[i] += binhead->d_m[i];
+  }
+}
+
+inline void _get_point_to_mapJ(const int address, const ops_dat binheadI,
+                               const ops_dat binheadJ, ops_stencil stencil,
+                               const int dim, int cell_to_j[]) {
+  int point[OPS_MAX_DIM];
+  get_local_point(address, binheadI, dim, point);
+
+
+
+  switch (stencil->type) {
+  case 0:
+    for (int i = 0; i < dim; i++) {
+#ifdef OPS_MPI
+      int d_m = binheadJ->d_m[i] + OPS_sub_dat_list[binheadJ->index]->d_im[i];
+#else
+      int d_m = binheadJ->d_m[i];
+#endif
+      cell_to_j[i] = point[i] -d_m;
+    }
+    break;
+  case 1:
+    for (int i = 0; i < dim; i++) {
+#ifdef OPS_MPI
+      int d_m = binheadJ->d_m[i] + OPS_sub_dat_list[binheadJ->index]->d_im[i];
+#else
+      int d_m = binheadJ->d_m[i];
+#endif
+      cell_to_j[i] = point[i] / stencil->mgrid_stride[i] - d_m;
+    }
+    break;
+  case 2:
+    for (int i = 0; i < dim; i++) {
+#ifdef OPS_MPI
+      int d_m = binheadJ->d_m[i] + OPS_sub_dat_list[binheadJ->index]->d_im[i];
+#else
+      int d_m = binheadJ->d_m[i];
+#endif
+      cell_to_j[i] = point[i] * stencil->mgrid_stride[i] - d_m;
+    }
+    break;
+  }
+}
+
 //TODO: Need check
 inline void shift_point_to_other_grid(int *point2mapJ, int *point2mapI,
                                       int dim, ops_stencil stencil) {
@@ -70,7 +129,19 @@ inline void shift_point_to_other_grid(int *point2mapJ, int *point2mapI,
   }
 }
 
+inline void  get_local_point(int local_point[], const int address, const int size[],
+                             const int d_m[], const int dim) {
 
+
+  int summing = address;
+  for (int i = dim - 1; i >= 0; i--) {
+    int prod = 1;
+    for (int j = 0; j < i; j++) prod *= size[j];
+    local_point[i] = summing / prod;
+    summing -= prod * local_point[i];
+    local_point[i] += d_m[i];
+  }
+}
 
 inline int get_first_point(int range[], int dim, ops_particle_mapping map) {
 
@@ -126,9 +197,9 @@ inline int get_mapping_address(int *point, int *d_m,int  *size, int dim) {
   return address;
 }
 
-
-inline void find_local_intersection(ops_block block, BoundingBox *box, ops_particle_mapping map, int dim,
-                                    double  range[], int range_map[]) {
+template<typename T>
+inline void find_local_intersection(ops_block block, BoundingBox<T> *box, ops_particle_mapping map,
+                                    int dim, T  range[], int range_map[]) {
 
   int range_gl[2 * OPS_MAX_DIM];
 #ifdef OPS_MPI
@@ -138,9 +209,9 @@ inline void find_local_intersection(ops_block block, BoundingBox *box, ops_parti
 
   for (int  i = 0; i < dim; i++) {
     range_gl[2 * i] = get_global_bin(box->getGlobalMin(i), box->getGlobalMax(i),
-                                      map->dx[i], range[2 * i]);
+                                      ((T*) map->dx)[i], range[2 * i]);
     range_gl[2 * i + 1] = get_global_bin(box->getGlobalMin(i), box->getGlobalMax(i),
-                                         map->dx[i], range[2 * i + 1]);
+                                       ((T *)map->dx)[i], range[2 * i + 1]);
 
 //TODO: Need to ensure that we get all
 #ifdef OPS_MPI
@@ -204,7 +275,7 @@ template<typename ParamT> struct part_inter_param_handler {
     }
     else if (arg.argtype == OPS_ARG_IDJ) {
       particleJ->block->instance->arg_idj[0] =
-          (particleJ->ids != nullptr) ?  ((int *)particleI->ids->data)[jfirst] : jfirst;
+          (particleJ->ids != nullptr) ?  ((int *)particleJ->ids->data)[jfirst] : jfirst;
       return (char *) particleJ->block->instance->arg_idj;
     }
 
@@ -274,7 +345,7 @@ template<typename T> struct part_inter_param_handler<ACCP<T>> {
   static ACCP<T>& get(char * data) {return *((ACCP<T> *)data); }
 
   static void free(char * data) {
-    delete (ACCPJ<T> *)data;
+    delete (ACCP<T> *)data;
   }
 };
 
@@ -320,7 +391,6 @@ template<typename T> struct part_inter_param_handler<ACC_HIS<T>> {
   static char *construct(const ops_arg &arg, ops_particle particleI, ops_particle particleJ,
                          int dim, int ifirst, int jfirst) {
     if (arg.argtype == OPS_ARG_DAT_HISTORY) {
-      printf("arg.dat name %s:\n", arg.dat->name);
       ACC_HIS<T> *data = new ACC_HIS<T>(arg.dat->dim, (T *) arg.history->data->data); //TODO Points no where
 
       return (char *)data;
@@ -344,7 +414,6 @@ template<typename T> struct part_inter_param_handler<ACC_HIS<T>> {
       int nmax = history->num_neighsI;
       for (int i = 0; i < ((int *) history->n_partnersI->data)[ip]; i++) {
         if (tagJ == ((int *) history->partnersI->data)[ip * nmax + i]) {
- //         printf("tagJ = %d found in %d\n", tagJ, i);
           offset = ((int *) history->indexI->data)[ip * nmax + i] * arg.dat->dim;
           break;
         }
@@ -363,15 +432,278 @@ template<typename T> struct part_inter_param_handler<ACC_HIS<T>> {
   }
 };
 
-template<typename... ParamType, typename... OPSARG, size_t... J>
+template<typename T, typename... ParamType, typename... OPSARG, size_t... J>
+void ops_part_inter_loop_impl_direct(indices<J...>, void (*kernel)(ParamType...), char const *name,
+                                     ops_particle particleI, ops_particle_mapping mapI,
+                                     ops_particle particleJ, ops_particle_mapping mapJ,
+                                     ops_stencil stencil, ops_particle_iterate_type iter_type,
+                                     int dim, T *range, OPSARG... arguments) {
+
+
+  //Sanity checks
+  if (particleI->block->index != particleJ->block->index)
+    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: ParticleI and particleJ are not assigned "
+                       "to the same block (region");
+
+  if (mapI->particle->index != particleI->index)
+    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Map for particle I not related to particle I");
+
+  if (mapJ->particle->index != particleJ->index)
+    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Map for particle J does not particles J");
+
+  if (stencil->points <= 1)
+    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Stencil for accessing interactions between "
+                                          "I and J is local");
+
+  //TODO: For wall setup up stencil
+
+#ifdef OPS_MPI
+  sub_block *sb = OPS_sub_block_list[particleI->index];
+  if (!sb->owned) return;
+  if (particleI->no_particles + particleI->no_virtual == 0) return;
+  if (particleJ->no_particles + particleJ->no_virtual == 0) return;
+#else
+  if (particleI->no_particles + particleI->no_virtual == 0) return;
+  if (particleJ->no_particles + particleJ->no_virtual == 0) return;
+#endif
+
+  constexpr int N = sizeof...(OPSARG);
+  ops_arg args[N] = {arguments ...};
+  ops_neighbor_history history = nullptr;
+  int nhists = 0;
+  for (int i = 0; i < N; i++) {
+    if (args[i].argtype == OPS_ARG_DAT_HISTORY) {
+      nhists += 1;
+      int hist_index = args[i].hist_index;
+      history =
+          args[i].dat->block->instance->OPS_block_list[particleI->block->index].histories[hist_index];
+    }
+  }
+
+
+  if (nhists > 1)
+    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: The number of assigned histories exceed the "
+                                          "required number for particle/particle loops ");
+
+  if (nhists == 1) {
+
+    if (particleI->index != history->particleI->index)
+    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: ParticleI is not assinged as the first "
+                                          " particle of the neighbor history");
+    if (particleJ->index != history->particleJ->index)
+      throw OPSException(OPS_RUNTIME_ERROR, "ERROR: ParticleJ is not assinged as the second "
+                                            " particle of the neighbor history");
+    if (particleI->ids == nullptr)
+      throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Neighbor history requires particle ids");
+
+    if (particleJ->ids == nullptr)
+      throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Neighbor history requires particle ids");
+  }
+
+  int d_mI[OPS_MAX_DIM] = {};
+  int d_pI[OPS_MAX_DIM] = {};
+  int d_mJ[OPS_MAX_DIM] = {};
+  int d_pJ[OPS_MAX_DIM] = {};
+
+  int sizeI[OPS_MAX_DIM] = {};
+  int sizeJ[OPS_MAX_DIM] = {};
+
+
+#ifdef OPS_MPI
+
+    for (int i = 0; i < dim; i++) {
+    d_mI[i] = mapI->binhead->d_m[i] + OPS_sub_dat_list[mapI->binhead->index]->d_im[i];
+    d_pI[i] = mapI->binhead->d_p[i] + OPS_sub_dat_list[mapI->binhead->index]->d_ip[i];
+    d_mJ[i] = mapJ->binhead->d_m[i] + OPS_sub_dat_list[mapJ->binhead->index]->d_im[i];
+    d_pJ[i] = mapJ->binhead->d_p[i] + OPS_sub_dat_list[mapJ->binhead->index]->d_ip[i];
+
+  }
+#else
+  for (int i = 0; i < dim; i++) {
+    d_mI[i] = mapI->binhead->d_m[i];
+    d_pI[i] = mapI->binhead->d_p[i];
+    d_mJ[i] = mapJ->binhead->d_m[i];
+    d_pJ[i] = mapJ->binhead->d_p[i];
+  }
+#endif
+
+  for (int i = 0; i < dim; i++) {
+    sizeI[i] = mapI->binhead->size[i];
+    sizeJ[i] = mapJ->binhead->size[i];
+  }
+  for (int i = dim; i < OPS_MAX_DIM; i++) {
+    sizeI[i] = mapI->binhead->size[i];
+    sizeJ[i] = mapJ->binhead->size[i];
+  }
+
+
+  //TODO: Set up stencil for the walls
+  int *stencil_act = nullptr;
+  int iprod = stencil->points;
+
+  if (particleI->is_wall == 1) {
+    int address = ((int *)mapI->parts_to_grid->data)[0];
+    int cell_to_j[OPS_MAX_DIM];
+    _get_point_to_mapJ(address, mapI->binhead, mapJ->binhead, stencil,
+                       dim, cell_to_j);
+
+    //Get normal direction
+    int inorm;
+    int idir_norm;
+    for (int i = 0; i < dim; i++) {
+      switch(particleI->type_box) {
+      case sizeof(float):
+        inorm = static_cast<int>(((float *) particleI->normal_vector->data)[i]);
+      break;
+      case sizeof(double):
+        inorm = static_cast<int>(((double *) particleI->normal_vector->data)[i]);
+      break;
+      case sizeof(long double):
+        inorm = static_cast<int>(((long double *) particleI->normal_vector->data)[i]);
+      break;
+      }
+
+      if (inorm == 1 || inorm == -1) {
+        idir_norm = i; break;
+      }
+    }
+
+    //Find points
+    int imin = INT_MAX;
+    int imax = INT_MIN;
+
+    for (int i = 0; i < stencil->points; i++) {
+      imin = MIN(imin, stencil->stencil[dim * i + idir_norm]);
+      imax = MAX(imax, stencil->stencil[dim * i + idir_norm]);
+    }
+
+
+    //Set stencil_points;
+    iprod = 1;
+    int size_dir[OPS_MAX_DIM];
+    for (int i = 0; i < dim; i++) {
+
+      if (i == idir_norm) {
+       imax = (inorm == 1) ? imax : 0;
+       imin = (inorm == 1) ? 0 : imin;
+       size_dir[i] = imax - imin + 1;
+      }
+      else size_dir[i] = mapJ->binhead->size[i];
+      iprod *=  size_dir[i];
+    }
+
+    stencil_act = (int *) ops_malloc(dim * iprod * sizeof(int));
+    int isten = 0;
+
+    for (int i = dim; i < OPS_MAX_DIM; i++) size_dir[i] = 1;
+
+    for (int k = 0; k < size_dir[2]; k++) {
+      for (int j = 0; j < size_dir[1]; j++) {
+        for (int i = 0; i < size_dir[0]; i++) {
+          stencil_act[isten * dim] = (idir_norm == 0) ? imin + i : i - cell_to_j[0];
+          stencil_act[isten * dim + 1] = (idir_norm == 1) ? imin + j : j - cell_to_j[1];
+          if (dim == 3)
+            stencil_act[isten * dim + 2] = (idir_norm == 2) ? imin + k : k- cell_to_j[2];
+
+          isten++;
+        }
+      }
+    }
+  }
+
+
+
+
+  int *stencils = (particleI->is_wall == 1) ? stencil_act : stencil->stencil;
+  int npoints = (particleI->is_wall == 1) ? iprod : stencil->points;
+
+  int ifirst = 0;
+  int jfirst = 0; //TODO:
+
+  int *tagsJ = (int *)particleJ->ids->data;
+
+
+  char *p_a[N] = {part_inter_param_handler<param_remove_cvref_t<ParamType>>::construct(arguments, particleI, particleJ,
+                                                                                       dim, ifirst, jfirst)...};
+  int *binI = (int *) mapI->bin->data;
+  int *binJ = (int *) mapJ->bin->data;
+
+  int no_particles = (iter_type == OPS_PARTICLE_ITERATE_LOCAL) ? particleI->no_particles :
+                      particleI->no_particles + particleI->no_virtual;
+
+  no_particles = (particleI->is_wall == 1) ? particleI->no_particles : no_particles;
+
+  int local_point[OPS_MAX_DIM], point2mapJ[OPS_MAX_DIM], map_pointJ[OPS_MAX_DIM];
+  for (size_t i = 0; i < no_particles; i++) {
+    int address = ((int *) mapI->parts_to_grid->data)[i];
+    //TODO: Point to map
+
+    get_local_point(local_point, address, sizeI, d_mI,dim);
+
+    shift_point_to_other_grid(point2mapJ, local_point, dim, stencil);
+
+
+
+    int ishift = i - ifirst;
+    (void) std::initializer_list<int>{
+      (part_inter_param_handler<param_remove_cvref_t<ParamType>>::shift_point_arg(arguments, particleI, p_a[J],
+                                                                                  ishift, ifirst,
+                                                                                  particleI->block->instance), 0)...};
+
+
+    //Inner loops
+    for (int isten = 0; isten < npoints; isten++) {
+
+      //Get point
+      for (int d = 0; d < dim; d++)
+        map_pointJ[d] = stencils[isten * dim + d] + point2mapJ[d];
+
+      int addressJ = get_mapping_address(map_pointJ, d_mJ, mapJ->binhead->size, dim);
+
+      if (addressJ < 0 ) continue;
+      int jpart = ((int *)mapJ->binhead->data)[addressJ];
+
+      while (jpart != - 1) {
+        int jshift = jpart - jfirst;
+
+        (void) std::initializer_list<int>{
+                         (part_inter_param_handler<param_remove_cvref_t<ParamType>>::shift_history(arguments,
+                                                                                                 p_a[J], i, tagsJ[jpart]),0)...};
+        //Shift j-arguments
+        (void) std::initializer_list<int>{
+                    (part_inter_param_handler<param_remove_cvref_t<ParamType>>::shift_point_j_arg(arguments, particleJ, p_a[J],
+                                                                                jshift, jfirst,
+                                                                                particleJ->block->instance), 0)...};
+
+        kernel((part_inter_param_handler<param_remove_cvref_t<ParamType>>::get(p_a[J]))...);
+
+        jfirst = jpart;
+        jpart = binJ[jpart];
+      }
+    }
+
+    ifirst = i;
+  }
+
+  /* Part V: Clean-up */
+  (void) std::initializer_list<int>{
+    (part_inter_param_handler<param_remove_cvref_t<ParamType>>::free(p_a[J]), 0)...};
+
+  ops_free(stencil_act);
+}
+
+template<typename T, typename... ParamType, typename... OPSARG, size_t... J>
 void ops_part_inter_loop_impl(indices<J...>, void (*kernel)(ParamType...), char const *name,
                               ops_particle particleI, ops_particle_mapping mapI,
                               ops_particle particleJ, ops_particle_mapping mapJ,
                               ops_stencil stencil, ops_particle_iterate_type iter_type,
-                              int dim, double *range, OPSARG... arguments) {
+                              int dim, T *range, OPSARG... arguments) {
 
   /* Part I: Sanity checks */
 
+  if (particleI->is_wall == 1)
+    throw OPSException(OPS_RUNTIME_ERROR, "Wall-particle compatible only with OPS_PARTICLE_ITERATE_LOCAL"
+                                          " or with OPS_ITERATE_ALL");
   //Check I: Particle I and Particle J do not owned by the same block
   if (particleI->block->index != particleJ->block->index)
     throw OPSException(OPS_RUNTIME_ERROR, "ERROR: ParticleI and particleJ are not assigned "
@@ -406,7 +738,6 @@ void ops_part_inter_loop_impl(indices<J...>, void (*kernel)(ParamType...), char 
       int hist_index = args[i].hist_index;
       history =
           args[i].dat->block->instance->OPS_block_list[particleI->block->index].histories[hist_index];
-      printf("history->index = %d\n", history->index);
     }
   }
 
@@ -493,7 +824,7 @@ void ops_part_inter_loop_impl(indices<J...>, void (*kernel)(ParamType...), char 
   }
   else {
     //Get xlo xmax of bounding box
-    find_local_intersection(particleI->block, particleI->box_block, mapI, dim, range, range_map);
+    find_local_intersection(particleI->block, (BoundingBox<T> *)particleI->box_block, mapI, dim, range, range_map);
   }
 
   for (int i = dim; i < OPS_MAX_DIM; i++) {
@@ -566,12 +897,7 @@ void ops_part_inter_loop_impl(indices<J...>, void (*kernel)(ParamType...), char 
 
               while (jpart != - 1) {
 
-  //              printf("Ipart = %d and j = %d\n", ipart, jpart);
-
                 int jshift = jpart - jfirst;
-
-
-                if (ipart == jpart) { jpart = binJ[jpart]; continue;}
 
 
                 //Get tags for particle (I, J) get history
@@ -647,9 +973,14 @@ void ops_particle_inter_loop(void (*kernel)(ParamType...), char const *name,
   static_assert(sizeof...(ParamType) == sizeof...(OPSARG),
                 "Number of kernel parameters do not match the number of ops_arg");
 
-  ops_part_inter_loop_impl(build_indices<sizeof...(ParamType)>{}, kernel, name,
-                           particleI, mapI, particleJ, mapJ, stencil,
-                           iter_type, dim, range, arguments...); //TODO
+  if (iter_type == OPS_PARTICLE_ITERATE_RANDOM)
+    ops_part_inter_loop_impl(build_indices<sizeof...(ParamType)>{}, kernel, name,
+                             particleI, mapI, particleJ, mapJ, stencil,
+                             iter_type, dim, range, arguments...); //TODO
+  else
+    ops_part_inter_loop_impl_direct(build_indices<sizeof...(ParamType)>{}, kernel, name,
+                                    particleI, mapI, particleJ, mapJ, stencil,
+                                    iter_type, dim, range, arguments...);
 }
 #endif
 #endif /* OPS_C_INCLUDE_OPS_PARTICLE_PARTICLE_INTER_H_ */

@@ -53,20 +53,10 @@ void _ops_particle_number_of_particles_in_range(const int *region, const int *bi
                                                 const int *bins, const int *size,
                                                 int *nsend);
 
-void _ops_particle_number_of_particles_in_range(BoundingBox *box,int dim,double  *xcrds,
-                                                int noParticles, int *nsend);
-
-void _ops_particle_number_of_particles_in_range(double *region, int dim,
-                                                double *xcrds,
-                                                int ifirst, int ilast, int *nwithin);
 
 void _ops_particle_mapped_into_region(const int *region, const int *binhead,
                                       const int *bins, const int *size,
                                       int *sendlist);
-
-void _ops_particle_mapped_into_region(BoundingBox *box, int dim, double  *xcrds,
-                                      int noParticles, int *sendlist);
-
 
 void ops_particle_border_build_maps(int idir,ops_particle particle,
                                     ops_int_particle_halos halo,
@@ -81,17 +71,9 @@ void _ops_particle_update_map_int_halos(ops_particle_mapping map,
                                         ops_particle particle,
                                        int ifirst, int ilast);
 
-void _ops_particle_remove_from_region(BoundingBox *box, const double *env,
-                                      const double *xcrds, int *mark_deletion,
-                                      size_t noParticles,
-                                      const int dim, int *sendlist);
-
-void _ops_particle_mark_for_removal(BoundingBox *box, double *xcrds, int *mark_del,
-                                    int dim, int first, int last);
-
 void _ops_particle_dat_copy_from_buff(char *buff, ops_dat dat, ops_part_orient orient,
                                       ops_particle_halo_exchange halo_info,
-                                      int dir_to[], int dir_from[], double translate[],
+                                      int dir_to[], int dir_from[], char *translate,
                                       int *ntot_bites);
 
 

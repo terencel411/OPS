@@ -38,11 +38,36 @@
  *  @author Gihan R. Mudalige, (Started 23-08-2013)
  */
 
+#include <limits>
 void *xmalloc(size_t size);
 
 void *xrealloc(void *ptr, size_t size);
 
 void* xcalloc (size_t number, size_t size);
+
+template<typename T>
+inline int feq(T a, T b) {
+  const T abs_eps = std::numeric_limits<T>::epsilon();;
+  const T rel_eps = std::numeric_limits<T>::epsilon();;
+
+  T diff = fabs(a - b);
+  if (diff <= abs_eps)
+      return 1;
+
+  return diff <= MAX(fabs(a), fabs(b)) * rel_eps;
+}
+
+template<typename T>
+inline int fgt(T a, T b) {
+    // a > b with tolerance
+    const double abs_eps = std::numeric_limits<T>::epsilon();;
+    return (a - b) > abs_eps;
+}
+
+template<typename T>
+inline int fge(T a, T b) {
+    return fgt(a, b) || feq(a, b);
+}
 
 //int min(int array[], int size);
 
@@ -167,5 +192,84 @@ void fetch_loop_slab(char *buf, char *dat, const int *buf_size,
 /// @param local_range
 void determine_local_range(const ops_dat dat, const int *global_range,
                            int *local_range);
+
+template<typename T>
+inline T ops_abs(T a) { return a < 0 ? -a : a;}
+
+template<typename T>
+inline T ops_round_eps(double x, double epsilon) {
+    epsilon = ops_abs(epsilon);
+
+    double n = std::round(x);
+
+    // Snap if very close to integer
+    if (std::fabs(x - n) <= epsilon)
+        return n;
+
+    // Otherwise standard rounding
+    return std::round(x);
+}
+
+
+template<typename T>
+inline T ops_floor(T x, T epsilon = 1.e-12) {
+
+  int epsilon1 = epsilon;
+  if (epsilon < std::numeric_limits<T>::epsilon())
+    epsilon1 = std::numeric_limits<T>::epsilon();
+
+  int64_t i = (int64_t)x;   // truncation toward zero
+  T ipart = (T) i;
+
+  // Correct truncation → floor for negative non-integers
+  if (x < 0.0 && ipart != x)
+    ipart -= 1.0;
+
+  T frac = x - ipart;
+
+  if (ops_abs(frac) <= epsilon1)
+    return ipart;
+
+  if (frac >= 1. - epsilon1)
+    return ipart + 1.0;
+
+  if (frac <= -1 + epsilon1)
+    return ipart - 1.0;
+
+  return std::floor(x);
+}
+
+template<typename T>
+T ops_ceil(T x, T epsilon = std::numeric_limits<T>::epsilon()) {
+
+  int epsilon1 = epsilon;
+  if (epsilon < std::numeric_limits<T>::epsilon())
+   epsilon1 = std::numeric_limits<T>::epsilon();
+
+  int64_t i = (int64_t)x;
+  T ipart = (T) i;
+
+  // Convert truncation → ceil
+  if (x > ipart)
+    ipart += 1.0;
+
+  T frac = x - ipart;
+
+  // Close to integer
+  if (ops_abs(frac) <= epsilon1)
+   return ipart;
+
+  // Close to previous integer
+  if (frac <= -1.0 + epsilon1)
+    return ipart - 1.0;
+
+  // Close to next integer (rare but symmetric case)
+  if (frac >= 1.0 - epsilon1) {
+    return ipart + 1.0;
+  }
+
+  return ipart;
+
+}
 #endif /* DOXYGEN_SHOULD_SKIP_THIS */
 #endif /* __OP_UTIL_H */

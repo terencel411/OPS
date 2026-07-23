@@ -91,8 +91,9 @@ inline void get_local_point(const int point,const int size[],
   }
 }
 
-inline void get_coord_point(const double *coords, const int size[],const int d_m[],
-                            const int ilocal[], const int dim, double xlocal[]) {
+template<typename T>
+inline void get_coord_point(const T *coords, const int size[],const int d_m[],
+                            const int ilocal[], const int dim, T xlocal[]) {
 
 #ifdef OPS_SOA
   if (dim == 2) {
@@ -143,18 +144,20 @@ inline void get_coord_point(const double *coords, const int size[],const int d_m
  *  \param[out] size_loop Number of points to iteration
  *  \param[out] local range in form [imin imax jmin jmax]
  */
-inline int  _get_iteration_range_grid_info(BoundingBox *box, ops_particle_mapping map,
-                                           int dim, double *range,
+
+template<typename T>
+inline int  _get_iteration_range_grid_info(BoundingBox<T> *box, ops_particle_mapping map,
+                                           int dim, T *range,
                                            int &size_loop, int *local_range) {
 
   if (dim == 2) {local_range[4] = 0; local_range[5] = 1;};
 
   //For the moment assume uniform grid
-  double *coords_grid = (double *)map->grid->data;
-  double xlocal_min[OPS_MAX_DIM];
-  double xlocal_max[OPS_MAX_DIM];
+  T *coords_grid = (T *)map->grid->data;
+  T xlocal_min[OPS_MAX_DIM];
+  T xlocal_max[OPS_MAX_DIM];
   int *size_grid = map->grid->size;
-  double dx[OPS_MAX_DIM];
+  T dx[OPS_MAX_DIM];
   int *d_m = map->grid->d_m;
 
   int ilocal[OPS_MAX_DIM];
@@ -188,20 +191,21 @@ inline int  _get_iteration_range_grid_info(BoundingBox *box, ops_particle_mappin
 
 }
 
-inline size_t get_grid_size(BoundingBox *intersection, BoundingBox *box,
+template<typename T>
+inline size_t get_grid_size(BoundingBox<T> *intersection, BoundingBox<T> *box,
                             ops_particle_mapping map, int dim, int  local_grid[]) {
   size_t nelems{1};
 
   //At first assume uniform grid
-  double dx[OPS_MAX_DIM], xfirst[OPS_MAX_DIM], xlast[OPS_MAX_DIM];
+  T dx[OPS_MAX_DIM], xfirst[OPS_MAX_DIM], xlast[OPS_MAX_DIM];
   int iloc[OPS_MAX_DIM], inext[OPS_MAX_DIM];
   for (int i = 0; i < dim; i++) {
     inext[i] = 1;
     iloc[i] = 0;
   }
-  get_coord_point((double *) map->grid->data, map->grid->size, map->grid->d_m,
+  get_coord_point((T *) map->grid->data, map->grid->size, map->grid->d_m,
                   iloc, dim, xfirst);
-  get_coord_point((double *) map->grid->data, map->grid->size, map->grid->d_m,
+  get_coord_point((T *) map->grid->data, map->grid->size, map->grid->d_m,
                   inext, dim, xlast);
 
   for (int i = 0; i < dim; i++)
@@ -226,7 +230,9 @@ inline size_t get_grid_size(BoundingBox *intersection, BoundingBox *box,
   return nelems;
 }
 
-inline long int get_direct_iteration_points(BoundingBox *intersection,ops_dat crd_parts,
+template<typename T>
+inline long int get_direct_iteration_points(BoundingBox<T> *intersection,
+                                            ops_dat crd_parts,
                                             int nParticles, int  dim,
                                             long int  *&looping_particles) {
 
@@ -308,14 +314,16 @@ inline long int  get_particles_from_grid(ops_particle_mapping map, int local_gri
  * \return                        number of particles
  *
  */
-inline size_t _get_iteration_range(size_t nParticles,  BoundingBox *box,
-                                  ops_particle_mapping map, int dim, double *range,
+
+template<typename T>
+inline size_t _get_iteration_range(size_t nParticles,  BoundingBox<T> *box,
+                                  ops_particle_mapping map, int dim, T *range,
                                   long int *&looping_particles) {
 
 
   int inters{0};
 
-  BoundingBox *intersection = ops_find_intersection_region(box, range, inters);
+  BoundingBox<T> *intersection = ops_find_intersection_region(box, range, inters);
 
   long int nloop{0};
 
@@ -399,12 +407,13 @@ inline size_t _get_iteration_range(size_t nParticles,  BoundingBox *box,
  */
 /*------------------------------------------------------------------------------------*/
 
+template<typename T>
 inline size_t _get_iteration_range_direct(size_t nParticles, ops_particle particle,
-                                          BoundingBox *box, int dim, double *range,
+                                          BoundingBox<T> *box, int dim, T *range,
                                         long int *&looping_particles) {
 
   int inters{0};
-  BoundingBox *intersection = ops_find_intersection_region(box, range, inters);
+  BoundingBox<T> *intersection = ops_find_intersection_region(box, range, inters);
 
   size_t nloop{0};
 
@@ -455,15 +464,16 @@ inline size_t _get_iteration_range_direct(size_t nParticles, ops_particle partic
  */
 /*---------------------------------------------------------------------------------------*/
 
+template <typename T>
 inline size_t getting_looping_particles_v2(size_t nParticles, ops_particle particle,
-                                           BoundingBox *box, ops_particle_mapping map,
-                                           int dim, double *range,
+                                           BoundingBox<T> *box, ops_particle_mapping map,
+                                           int dim, T *range,
                                            long int *&looping_particles) {
 
   //Check first if all inside or overlapping
   int inters{2};
 
-  BoundingBox *intersection = ops_find_intersection_region(box, range, inters);
+  BoundingBox<T> *intersection = ops_find_intersection_region(box, range, inters);
   //printf("Inters = %d\n", inters);
   int nsize{0};
   if (inters == 2) {delete intersection; return 0;}
@@ -801,14 +811,19 @@ void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
 }
 */
 
-template <typename... ParamType, typename... OPSARG, size_t... J>
+template <typename T, typename... ParamType, typename... OPSARG, size_t... J>
 void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
                                 char const *name, ops_particle particle,
                                 int dim, ops_particle_iterate_type iterate_type,
-                                double *range_particles, ops_particle_mapping map,
+                                T *range_particles, ops_particle_mapping map,
                                 OPSARG... arguments)
 {
   constexpr int N = sizeof...(OPSARG);
+
+  if (sizeof(T) != particle->particle_pos_dat->type_size)
+    throw OPSException(OPS_RUNTIME_ERROR,"Error: Inconsistent types for"
+                                         " particle positions and simulation"
+                                         " region" );
 
 //  int count[OPS_MAX_DIM] = {0};
 
@@ -823,10 +838,11 @@ void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
 
   size_t no_particles = particle->no_particles + particle->no_virtual;
 
-  //TODO: Get virtual particle from intra-processes
+
+
 
   /* Get range of elements */
-  BoundingBox *box = particle->box_block;
+  BoundingBox<T> *box = (BoundingBox<T> *) particle->box_block;
 
 
   /* First identify intersection region */
@@ -949,11 +965,11 @@ void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
  * TODO: Remove any form of ops_dat structures
  */
 
-template <typename... ParamType, typename... OPSARG>
+template <typename T, typename... ParamType, typename... OPSARG>
 void ops_particle_par_loop(void (*kernel)(ParamType...), char const *name,
                        ops_particle particle, int dim,
                        ops_particle_iterate_type iterate_type,
-                       double *particle_range, ops_particle_mapping map,
+                       T *particle_range, ops_particle_mapping map,
                        OPSARG... arguments) {
   static_assert(sizeof...(ParamType) == sizeof...(OPSARG),
                 "Number of kernel parameters should match the number of ops_arg");

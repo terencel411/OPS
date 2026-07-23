@@ -44,6 +44,8 @@
 #include <ops_mpi_core.h>
 #include <ops_mpi_particle_core.h>
 
+#include "ops_particle_mapping_functions.h"
+
 #include <string>
 #include <assert.h>
 #include <array>
@@ -62,42 +64,6 @@ static inline  uint64_t pack_pair(int tagI, int tagJ) {
   return ((uint64_t)a << 32) | b;
 }
 
-static int virtual_within(int bin[], int bin_limits[], double *xpos,
-                          BoundingBox *box, int dim) {
-
-  int flag = 0;
-
-  for (int i = 0; i < dim; i++)
-    if (bin[i] == bin_limits[2 * i] || bin[i] == bin_limits[2 * i + 1]) {
-      flag = 1; break;
-    }
-
-  if (flag)
-    return (int) box->isCoordinateInBoundingBox(xpos);
-
-  return flag;
-}
-
-static int particle_is_within(const double *xpos, const double *region, const int dim)  {
-  int flag  =  1;
-
-  for (int i = 0; i < dim; i++) {
-    if (xpos[i] < region[2 * i] || xpos[i] >= region[2 * i + 1]) return 0;
-  }
-
-  return flag;
-}
-
-static void  get_coord_point(double *xp, int *ilocal, int *d_m,
-                             ops_point xmin, double *dx,
-                             int dim, double skin, int stag) {
-
-  xp[0] = xmin.x + (ilocal[0] - d_m[0]) * dx[0] + 0.5 * static_cast<double>(stag) * dx[0];
-  xp[1] = xmin.y + (ilocal[1] - d_m[1]) * dx[1] + 0.5 * static_cast<double>(stag) * dx[1];
-  if (dim == 3)
-    xp[2] = xmin.z + (ilocal[2] - d_m[2]) * dx[2] + 0.5 * static_cast<double>(stag) * dx[2];
-}
-
 static void get_local_point(const int point, const int size[],const int d_m[],
                             const int dim,  int grid[]) {
   int address = point;
@@ -111,18 +77,6 @@ static void get_local_point(const int point, const int size[],const int d_m[],
   }
 
 
-}
-
-static int local_decide_rebuild(const double *xPart, const double *xGrid, const double dx,
-                                const int dim) {
-
-  for (int isou = 0; isou < dim; isou++)
-    if (fabs(xPart[isou] - xGrid[isou]) > 0.5 * dx + DBL_EPSILON) {
-      return 1;
-    }
-
-
-  return 0;
 }
 
 static void _remove_particle_from_bins(int address, int i, int *binhead, int *bins) {
@@ -145,91 +99,24 @@ static void _remove_particle_from_bins(int address, int i, int *binhead, int *bi
   bins[i] = -1;
 }
 
-void _ops_construct_local_box_from_dat(ops_dat coords, double *grid_size, int dim,
-                                       double *xmin, double *xmax) {
-
-  int imin[OPS_MAX_DIM], imax[OPS_MAX_DIM];
-  int size[OPS_MAX_DIM];
-
-  sub_block *sb = OPS_sub_block_list[coords->block->index];
-  if (!sb->owned) return;
-
-  for (int i = 0; i < dim; i++) {
-    int d_m = coords->d_m[i] + OPS_sub_dat_list[coords->index]->d_im[i];
-    int d_p = coords->d_p[i] + OPS_sub_dat_list[coords->index]->d_ip[i];
-    imin[i] = -d_m;
-    imax[i] = -d_m + (coords->size[i] - d_p + d_m) - 1;
-    size[i] = coords->size[i];
+static int _particle_is_within(char *xpos, char *region, int ipart,
+                               int dim, int type_size) {
+  switch(type_size) {
+  case sizeof(float):
+    return particle_is_within((float *) xpos + dim * ipart, (float *) region, dim);
+    break;
+  case sizeof(double):
+    return particle_is_within((double *) xpos + dim * ipart, (double *) region, dim);
+    break;
+  case sizeof(long double):
+    return particle_is_within((long double *) xpos + dim * ipart, (long double *) region, dim);
+    break;
   }
 
-  double *data = (double *)coords->data;
-  OPS_instance *instance = coords->block->instance;
-
-  if (dim == 2) {
-    if (instance->OPS_soa) {//TODO: Debug
-      xmin[0] = *(data + imin[0] + imin[1] * size[0]);
-      xmin[1] = *(data + imin[0] + imin[1] * size[0] + size[0] * size[1]);
-
-      xmax[0] = *(data + imax[0] + imax[1] * size[0]);
-      xmax[1] = *(data + imax[0] + imax[1] * size[0] + size[0] * size[1]);
-
- //     printf("xmin = [%f %f] xmax =[%f %f]\n", xmin[0], xmin[1], xmax[0], xmax[1]);
-
-    }
-    else {
-      xmin[0] = *(data + imin[0] * coords->dim + imin[1] * coords->dim * size[0]);
-      xmin[1] = *(data + 1 + imin[0] * coords->dim + imin[1] * coords->dim * size[0]);
-
-      /* xmax */
-      xmax[0] = *(data + imax[0] * coords->dim + imax[1] * coords->dim * size[0]);
-      xmax[1] = *(data + 1 + imax[0] * coords->dim + imax[1] * coords->dim * size[0]);
-    }
-  }
-  else if (dim == 3) {
-    if (instance->OPS_soa) {
-      xmin[0] = * (data + imin[0] + imin[1] * size[0] + imin[2] * size[0] * size[1]);
-      xmin[1] = * (  data + imin[0] + imin[1] * size[0] + imin[2] * size[0] * size[1]
-                   + size[0] * size[1] * size[2]);
-      xmin[2] = *(  data + imin[0] + imin[1] * size[0] + imin[2] * size[0] * size[1]
-                   + 2 * size[0] * size[1] * size[2]);
-
-      //Getting xmax
-      xmax[0] = *(data + imax[0] + imax[1] * size[0] + imax[2] * size[0] * size[1]);
-      xmax[1] = *(  data + imax[0] + imax[1] * size[0] + imax[2] * size[0] * size[1]
-                   + size[0] * size[1] * size[2]);
-      xmax[2] = *(  data + imax[0] + imax[1] * size[0] + imax[2] * size[0] * size[1]
-                  + 2 * size[0] * size[1] * size[2]);
-    }
-    else {
-      xmin[0] = *(  data + imin[0] * coords->dim + imin[1] * coords->dim * size[0]
-                   + imin[2] * coords->dim * size[0] * size[1]);
-      xmin[1] = *(  data + 1 + imin[0] * coords->dim + imin[1] * coords->dim * size[0]
-                   + imin[2] * coords->dim * size[0] * size[1]);
-      xmin[2] = *(  data + 2 + imin[0] * coords->dim + imin[1] * coords->dim * size[0]
-                   + imin[2] * coords->dim * size[0] * size[1]);
-
-      xmax[0] = *( data + imax[0] * coords->dim + imax[1] * coords->dim * size[0]
-                  + imax[2] * coords->dim * size[0] * size[1]);
-      xmax[1] = *(  data + 1 + imax[0] * coords->dim + imax[1] * coords->dim * size[0]
-                  + imax[2] * coords->dim * size[0] * size[1]);
-      xmax[2] = *(  data + 2 + imax[0] * coords->dim + imin[1] * coords->dim * size[0]
-                  + imax[2] * coords->dim * size[0] * size[1]);
-    }
-  }
-  else {
-    throw OPSException(OPS_RUNTIME_ERROR,"ERROR: The size of the physical domain"
-                                         "must be 2 or 3\n");
-  }
-
-  if (OPS_instance::getOPSInstance()->OPS_diags > 2) {
-    printf("Rank %d ix = [%d %d]x[%d %d]\n", ops_get_proc(), imin[0], imax[0],
-                                             imin[1], imax[1]);
-
-    printf("Rank %d x = [%12.9e %12.9e]x[%12.9e %12.9e]\n", ops_get_proc(), xmin[0],
-                                                            xmax[0], xmin[1], xmax[1]);
-  }
+  return 0;
 }
 
+//TODO: DO I need that??
 void _ops_particle_allocate_tmp_array(int size_elem) {
 
   if (size_elem == 0) return;
@@ -244,7 +131,7 @@ void _ops_particle_free_tmp_array() {
   ntmp_size_max = 0;
 }
 
-
+//TODO: DO I need that
 void _ops_particle_setup_tmp_array(OPS_instance *instance) {
 
   int nhalo_groups = instance->OPS_particle_halo_data_index;
@@ -292,33 +179,6 @@ void _ops_particle_number_of_particles_in_range(const int *region, const int *bi
   (*nsend) = nwithin;
 }
 
-void _ops_particle_number_of_particles_in_range(BoundingBox *box,int dim,double  *xcrds,
-                                                int noParticles, int *nsend) {
-  int nwithin = 0;
-  double xpoint[OPS_MAX_DIM];
-
-
-  for (int i = 0; i < noParticles; i++) {
-    for (int isou = 0; isou < dim; isou++)
-      xpoint[isou] = xcrds[dim * i + isou];
-    bool isin = box->isCoordinateInBoundingBox(xpoint);
-    if (isin) nwithin++;
-  }
-
-  (*nsend) = nwithin;
-}
-
-void _ops_particle_number_of_particles_in_range(double *region, int dim, double *xcrds,
-                                                int ifirst, int ilast, int *nwithin) {
-
-  int n_in = 0;
-  for (int i = ifirst; i < ilast; i++)  {
-    if (particle_is_within(xcrds + dim * i, region, dim)) n_in++;
-  }
-
-  *nwithin = n_in;
-}
-
 void _ops_particle_mapped_into_region(const int *region, const int *binhead,
                                       const int *bins, const int *size,
                                       int *sendlist) {
@@ -340,103 +200,6 @@ void _ops_particle_mapped_into_region(const int *region, const int *binhead,
 
 }
 
-void _ops_particle_mapped_into_region(BoundingBox *box, int dim, double  *xcrds,
-                                      int noParticles, int *sendlist) {
-  int nwithin = 0;
-  double xpoint[OPS_MAX_DIM];
-
-  for (int  iPart  = 0; iPart < noParticles; iPart++) {
-    for (int isou = 0; isou < dim; isou++)
-      xpoint[isou] = xcrds[dim * iPart + isou];
-    bool isin = box->isCoordinateInBoundingBox(xpoint);
-    if (isin) {
-      sendlist[nwithin] = iPart;
-      nwithin++;
-    }
-  }
-}
-
-void _ops_particle_remove_from_region(BoundingBox *box, const double *env,
-                                      const double *xcrds, int *mark_deletion,
-                                      size_t noParticles,
-                                      const int dim, int *sendlist) {
-
-  int nwithin = 0;
-
-  for (size_t ipart = 0; ipart < noParticles; ipart++) {
-
-    if (env != nullptr) {
-      if (env[ipart] < 0) continue;
-    }
-
-    if (mark_deletion[ipart] != 1) continue;
-
-    bool decide = box->isCoordinateInBoundingBox(xcrds + dim * ipart);
-    if (decide) {
-      mark_deletion[ipart] = 2;
-      sendlist[nwithin] = ipart;
-      nwithin++;
-    }
-
-  }
-
-
-}
-
-
-//TODO: Do we have similar function for sequential (??)
-void _ops_particle_mark_for_removal(BoundingBox *box, double *xcrds, int *mark_del,
-                                    int dim, int first, int last) {
-
-  for (int ipart = first; ipart < last; ipart++) {
-    mark_del[ipart] = 0;
-    bool iswithin = box->isCoordinateInBoundingBox(xcrds + dim * ipart);
-    if (!iswithin)
-      mark_del[ipart] = 1;
-  }
-}
-
-
-void _ops_build_uniform_dats(const int init, const int dim, const ops_dat grid,
-                             const ops_dat xp, const size_t Np, const double *dx,
-                             const ops_point xmin, const ops_point xmax,
-                             ops_dat binhead, ops_dat bin, ops_dat part_to_bin) {
-
-  int size[dim];
-  size_t no_elems{1};
-  for (int i = 0; i < dim; i++) {
-    size[i] = binhead->size[i];
-    no_elems *= size[i];
-  }
-
-  /* Initialize elements */
-  memset(binhead->data, -1, sizeof(int) * no_elems);
-
-  memset(bin->data, -1, sizeof(int) * Np);
-  memset(part_to_bin->data, -1, sizeof(int) * Np);
-
-  int *bin_data = (int *)bin->data;
-  int *part_2_bin = (int *)part_to_bin->data;
-  int* binhead_data = (int *)binhead->data;
-
-
-  /* Map particles to grid */
-  double *xp_data = (double *)xp->data;
-
-  for (long int i = Np - 1; i >= 0; i--) {
-    int ibin = _ops_coord_to_bin(dim, xmin, xmax, dx, size, xp_data + xp->dim * i);
-    //TODO: Add separation between local and not local elements
-    if (ibin < 0) {
-      ops_printf("WARNING: Non-positive value Rank %d: Particle %d (%f %f)\n", ops_get_proc(), i,
-                 xp_data[dim * i], xp_data[dim * i + 1]);
-      continue;
-    }
-    bin_data[i] = binhead_data[ibin];
-    binhead_data[ibin] = i;
-    part_2_bin[i] = ibin;
-  }
-}
-
 int _ops_particle_mapping_decide(ops_particle_mapping map, ops_particle particle,
                                  bool enforce) {
 
@@ -455,26 +218,29 @@ int _ops_particle_mapping_decide(ops_particle_mapping map, ops_particle particle
   if (!OPS_sub_block_list[particle->block->index]->owned) return 0;
 
   int flag = 0;
-  double *x = (double *)particle->particle_pos_dat->data;
-  double *x_old = (double *)map->pos_old->data;\
-
-  double dx = map->skin;
+  ops_dat xps = particle->particle_pos_dat;
+  ops_dat xps_old = map->pos_old;
 
   int dim = particle->block->dims;
   int nParticles = (int) particle->no_particles;
 
   for (int i = 0; i < nParticles; i++) {
-    int a1 = 0;
-    for (int idir = 0; idir < dim; idir++) {
-      if (fabs(x[i * dim + idir] - x_old[i * dim + idir]) > 0.5 * dx + DBL_EPSILON) {
-        a1 = 1;
-        break;
-      }
-    }
-    if (a1 == 1) {
-      flag = 1;
-      break;
-    }
+    int a1;
+    if (xps->type_size == sizeof(float))
+      flag = _ops_check_particle_movement((float *)xps->data + dim *i,
+                                         (float *) xps_old->data + dim * i,
+                                         (float *) map->dx, dim);
+    else if (xps->type_size == sizeof(double))
+      flag = _ops_check_particle_movement((double *)xps->data + dim *i,
+                                         (double *) xps_old->data + dim * i,
+                                         (double *) map->dx, dim);
+    else if (xps->type_size == sizeof(long double))
+      flag = _ops_check_particle_movement((long double *)xps->data + dim *i,
+                                         (long double *) xps_old->data + dim * i,
+                                         (long double *) map->dx, dim);
+
+    if (flag == 1) break;
+
   }
 
   int global_flag = 0;
@@ -484,6 +250,7 @@ int _ops_particle_mapping_decide(ops_particle_mapping map, ops_particle particle
   if (global_flag) { map->decide = true;
     for (int i = 0; i < nhistories; i++) particle->histories[i]->flag_update = true;
   }
+  else map->decide = false;
   return global_flag;
 }
 
@@ -492,54 +259,76 @@ void _ops_particle_update_map_int_halos(ops_particle_mapping map, ops_particle p
                                        int ifirst, int ilast) {
   map->nParticles = particle->no_particles + particle->no_virtual;
 
-  ops_point xmin = particle->box_block->getLocalMin();
-  ops_point xmax = particle->box_block->getLocalMax();
+  char xmin[320], xmax[320];
 
-  double dx[OPS_MAX_DIM];
-
-  for (int i = 0; i < particle->block->dims; i++) dx[i] = map->dx[i];
-
-
+  //Compute d_m
   int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
-
   for (int i = 0; i < particle->block->dims; i++) {
     d_m[i] = map->binhead->d_m[i] + OPS_sub_dat_list[map->binhead->index]->d_im[i];
     d_p[i] = map->binhead->d_p[i] + OPS_sub_dat_list[map->binhead->index]->d_ip[i];
   }
-  xmin.x = xmin.x + static_cast<double>(d_m[0]) * dx[0];
-  xmin.y = xmin.y + static_cast<double>(d_m[1]) * dx[0];
 
-  xmax.x = xmax.x + static_cast<double>(d_p[0]) * dx[0];
-  xmax.y = xmax.y + static_cast<double>(d_p[1]) * dx[1];
+  char *dx = map->dx;
 
-  if (particle->block->dims == 3) {
-    xmin.z = xmin.z + static_cast<double>(d_m[2]) * dx[2];
-    xmax.z = xmax.z + static_cast<double>(d_p[2]) * dx[2];
+  if (particle->particle_pos_dat->type_size == sizeof(float)) {
+    _ops_points_map_min_max((float *) xmin, (float *) xmax,
+                            (BoundingBox<float> *) particle->box_block, (float *)dx,
+                            d_m, d_p, particle->block->dims);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+    _ops_points_map_min_max((double *) xmin, (double *) xmax,
+                            (BoundingBox<double> *) particle->box_block, (double *)dx,
+                            d_m, d_p, particle->block->dims);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+    _ops_points_map_min_max((long double *) xmin, (long double *) xmax,
+                            (BoundingBox<long double> *) particle->box_block,
+                            (long double *)dx,
+                            d_m, d_p, particle->block->dims);
   }
 
-
-
   //TODO: Check if we reset the maps at the beginning
-  double *xp = (double *)particle->particle_pos_dat->data;
-  double *xp_old = (double *)map->pos_old->data;
-  int *binhead_data = (int *)map->binhead->data;
-  int *bin_data = (int *) map->bin->data;
-  int *part2bin = (int *) map->parts_to_grid;
-
   int dim = particle->particle_pos_dat->dim;
   int *size = map->binhead->size;
+  char* xps = particle->particle_pos_dat->data;
+  char *xps_old = map->pos_old->data;
   for (int i = ifirst; i < ilast; i++) {
-    int ibin = _ops_coord_to_bin(dim, xmin, xmax, dx, size, xp + dim * i);
+    int ibin;
+    if (particle->particle_pos_dat->type_size == sizeof(float)) {
+      ibin = _ops_coord_to_bin(dim, (float *)xmin, (float *)xmax,
+                               (float *) dx, size, (float *)xps + dim * i);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+      ibin = _ops_coord_to_bin(dim, (double *)xmin, (double *)xmax,
+                               (double *) dx, size, (double *)xps + dim * i);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+      ibin = _ops_coord_to_bin(dim, (long double *)xmin, (long double *)xmax,
+                               (long double *) dx, size, (long double *)xps + dim * i);
+    }
+
     if (ibin < 0) continue;
 
-    bin_data[i] = binhead_data[ibin];
-    binhead_data[ibin] = i;
-    part2bin[i] = ibin;
+    ((int *)map->bin->data)[i] = ((int *) map->binhead->data)[ibin];
+    ((int *)map->binhead->data)[ibin] = i;
+    ((int *)map->parts_to_grid->data)[i] = ibin;
 
     //Set particle to map old //
     int ilocal[OPS_MAX_DIM];
-    get_local_point(part2bin[i], map->binhead->size, d_m, dim, ilocal);
-    get_coord_point(xp_old + i * dim, ilocal, d_m, xmin, dx, dim, map->skin, 1);
+    get_local_point(((int *)map->parts_to_grid->data)[i], map->binhead->size, d_m, dim, ilocal);
+
+    if (particle->particle_pos_dat->type_size == sizeof(float)) {
+      get_coord_point((float *) xps_old + i * dim, ilocal, d_m, (float *) xmin,
+                      (float *) dx, dim, 1);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+      get_coord_point((double *) xps_old + i * dim, ilocal, d_m, (double *) xmin,
+                      (double *) dx, dim, 1);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+      get_coord_point((long double *) xps_old + i * dim, ilocal, d_m, (long double *) xmin,
+                      (long double *) dx, dim, 1);
+    }
   }
 
 }
@@ -558,65 +347,94 @@ void _ops_particle_map_from_exchange(ops_particle_mapping map, ops_particle
   sub_block *sb = OPS_sub_block_list[particle->block->index];
   if (!sb->owned) return;
 
-  //TODO: Check for re-allocations
-
-  int *binhead = (int *)map->binhead->data;
-  int *bins = (int *)map->bin->data;
-  int *bin2grid = (int *)map->parts_to_grid->data;
-
-  int *mark_deletion = (int *)particle->mark_deletion;
-
-  //Get grid structure
-  ops_point xmin = particle->box_block->getLocalMin();
-  ops_point xmax = particle->box_block->getLocalMax();
-
-  double dx[OPS_MAX_DIM];
-
-  for (int i = 0; i < particle->block->dims; i++) dx[i] = map->dx[i];
-
-  /* Upgrade due to virtual bins */
   int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
   for (int i = 0; i < particle->block->dims; i++) {
     d_m[i] = map->binhead->d_m[i] + OPS_sub_dat_list[map->binhead->index]->d_im[i];
     d_p[i] = map->binhead->d_p[i] + OPS_sub_dat_list[map->binhead->index]->d_ip[i];
   }
-  xmin.x += static_cast<double>(d_m[0]) * dx[0];
-  xmax.x += static_cast<double>(d_p[0]) * dx[0];
 
-  xmin.y += static_cast<double>(d_m[1]) * dx[1];
-  xmax.y += static_cast<double>(d_p[1]) * dx[1];
+  char xmin[320], xmax[320];
+  char *dx = map->dx;
 
-  if (particle->block->dims == 3) {
-   xmin.z += static_cast<double>(d_m[2]) * dx[2];
-   xmax.z += static_cast<double>(d_p[2]) * dx[2];
+  if (particle->particle_pos_dat->type_size == sizeof(float)) {
+    _ops_points_map_min_max((float *) xmin, (float *) xmax,
+                            (BoundingBox<float> *) particle->box_block, (float *)dx,
+                            d_m, d_p, particle->block->dims);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+    _ops_points_map_min_max((double *) xmin, (double *) xmax,
+                            (BoundingBox<double> *) particle->box_block, (double *)dx,
+                            d_m, d_p, particle->block->dims);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+    _ops_points_map_min_max((long double *) xmin, (long double *) xmax,
+                            (BoundingBox<long double> *) particle->box_block,
+                            (long double *)dx,
+                            d_m, d_p, particle->block->dims);
   }
 
   int dim = particle->block->dims;
-  double *xpos = (double *)particle->particle_pos_dat->data;
-  double *xold = (double *)map->pos_old->data;
+  char *xpos = particle->particle_pos_dat->data;
+  char *xold = map->pos_old->data;
 
   for (int i = ifirst; i < ilast; i++) {
-    int address = _ops_coord_to_bin(dim, xmin, xmax, dx, map->binhead->size,
-                                    xpos + dim * i);
+    int address;
 
+    particle->mark_deletion[i] = 0;
+    if (particle->particle_pos_dat->type_size == sizeof(float)) {
+      address = _ops_coord_to_bin(dim, (float *)xmin, (float *)xmax,
+                                 (float *) dx, map->binhead->size,
+                                 (float *)xpos + dim * i);
 
-    if (!particle->box_block->isCoordinateInBoundingBox(xpos + i * dim)) {
-      bin2grid[i] = -1;
-      bins[i] = -1;
-      mark_deletion[i] = 1;
-      continue;
+      if (!((BoundingBox<float> *) particle->box_block)->isCoordinateInBoundingBox((float *) xpos + i * dim)) {
+        ((int *)map->parts_to_grid->data)[i] = -1;
+        ((int *)map->bin->data)[i] = -1;
+        particle->mark_deletion[i] = 1;
+        continue;
+      }
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+      address = _ops_coord_to_bin(dim, (double *)xmin, (double *)xmax,
+                                 (double *) dx, map->binhead->size,
+                                 (double *)xpos + dim * i);
+
+      if (!((BoundingBox<double> *)particle->box_block)->isCoordinateInBoundingBox((double *) xpos + i * dim)) {
+        ((int *)map->parts_to_grid->data)[i] = -1;
+        ((int *)map->bin->data)[i] = -1;
+        particle->mark_deletion[i] = 1;
+        continue;
+      }
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+      address = _ops_coord_to_bin(dim, (long double *)xmin, (long double *)xmax,
+                                 (long double *) dx, map->binhead->size,
+                                 (long double *)xpos + dim * i);
+
+      if (!((BoundingBox<long double> *)particle->box_block)->isCoordinateInBoundingBox((long double *) xpos + i * dim)) {
+        ((int *)map->bin->data)[i] = -1;
+        ((int *)map->parts_to_grid->data)[i] = -1;
+        particle->mark_deletion[i] = 1;
+        continue;
+      }
     }
 
-    bins[i] = binhead[address];
-    binhead[address] = i;
-    bin2grid[i] = address;
+
+
+    ((int *) map->bin->data)[i] = ((int *)map->binhead->data)[address];
+    ((int *) map->binhead->data)[address] = i;
+    ((int *) map->parts_to_grid->data)[i] = address;
 
     int ilocal[OPS_MAX_DIM];
     get_local_point(address, map->binhead->size, d_m, dim, ilocal);
-
-
-    get_coord_point(xold + dim * i, ilocal, d_m, xmin, dx, dim, map->skin, 1);
-
+    if (particle->particle_pos_dat->type_size == sizeof(float)) {
+      get_coord_point((float *) xold + i * dim, ilocal, d_m, (float *)xmin, (float *) dx, dim, 1);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+      get_coord_point((double *) xold + i * dim, ilocal, d_m, (double *)xmin, (double *) dx, dim, 1);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(long double))
+      get_coord_point((long double *) xold + i * dim, ilocal, d_m, (long double *)xmin,
+                      (long double *) dx, dim, 1);
 
   }
 
@@ -632,54 +450,43 @@ int _ops_particle_decide_build_local_uniform(ops_particle_mapping map,
 
   map->decide = false;
 
-  int stag = 1;
-  int changed{0};
-
-  int dim = particle->block->dims;
-  int *binhead = (int *)map->binhead->data;
-  int *bins = (int *)map->bin->data;
-  int *part_to_grid = (int *)map->parts_to_grid->data;
-  int *mark_del = particle->mark_deletion;
-
   int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
   int *size = map->binhead->size;
 
-  for (int i = 0; i < dim; i++) {
+  for (int i = 0; i < particle->block->dims; i++) {
     d_m[i] = map->binhead->d_m[i] + OPS_sub_dat_list[map->binhead->index]->d_im[i];
     d_p[i] = map->binhead->d_p[i] + OPS_sub_dat_list[map->binhead->index]->d_ip[i];
   }
 
   int local_flag = 0;
-  size_t nnodes = 1;
   int ilocal[OPS_MAX_DIM], ilocal_new[OPS_MAX_DIM];
-  int grid_nodes[OPS_MAX_DIM];
-  int zeros[OPS_MAX_DIM];
-
-  double dx[particle->block->dims];
-
-  for (int i = 0; i < particle->block->dims; i++) dx[i] = map->dx[i];
-
   int nmapping =
       (map->mapping_type != OPS_WITH_VIRTUAL) ? particle->no_particles :
                              particle->no_particles + particle->no_virtual;
 
-  ops_point xmin = particle->box_block->getLocalMin();
-  ops_point xmax = particle->box_block->getLocalMax();
-
-  xmin.x -= dx[0];
-  xmin.y -= dx[1];
-
-  xmax.x += dx[0];
-  xmax.y += dx[1];
-
-  if (dim == 3) {
-    xmin.z += dx[2];
-    xmax.z += dx[2];
+  //TODO: Shift to other structures
+  char *dx = map->dx;
+  char xmin[320], xmax[320];
+  if (particle->particle_pos_dat->type_size == sizeof(float)) {
+    _ops_points_map_min_max((float *) xmin, (float *) xmax,
+                            (BoundingBox<float> *) particle->box_block, (float *)dx,
+                            d_m, d_p, particle->block->dims);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+    _ops_points_map_min_max((double *) xmin, (double *) xmax,
+                            (BoundingBox<double> *) particle->box_block, (double *)dx,
+                            d_m, d_p, particle->block->dims);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+    _ops_points_map_min_max((long double *) xmin, (long double *) xmax,
+                            (BoundingBox<long double> *) particle->box_block,
+                            (long double *)dx,
+                            d_m, d_p, particle->block->dims);
   }
 
-  double *xpos = (double *)particle->particle_pos_dat->data;
-  double *xold = (double *)map->pos_old->data;
 
+
+  int dim = particle->block->dims;
   int rmv_limits[2 * OPS_MAX_DIM];
   int exch_limits[2 * OPS_MAX_DIM];
   for (int i = 0; i < dim; i++) {
@@ -689,47 +496,89 @@ int _ops_particle_decide_build_local_uniform(ops_particle_mapping map,
     rmv_limits[2 * i + 1] = size[i] + d_m[i] - d_p[i] - 1;
   }
 
-  int nactual = particle->no_particles;
+  size_t nactual = particle->no_particles;
+  char *xpos = particle->particle_pos_dat->data;
+  char *xold = map->pos_old->data;
 
   for (size_t i = 0; i < particle->no_particles; i++) {
-    int flag = local_decide_rebuild(xpos + i * dim, xold  + i * dim, map->skin,
-                                    dim); //TODO:
+    int flag{0};
+    if (particle->particle_pos_dat->type_size == sizeof(float)) {
+      flag = local_decide_rebuild((float *)xpos + i * dim, (float *)xold + i * dim,
+                                  ((float *)dx)[0], dim);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+      flag = local_decide_rebuild((double *)xpos + i * dim, (double *)xold + i * dim,
+                                  ((double *)dx)[0], dim);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+      flag = local_decide_rebuild((long double *)xpos + i * dim, (long double *)xold + i * dim,
+                                  ((long double *)dx)[0], dim);
+    }
 
     if (flag) {
-      int address = part_to_grid[i];
-      int iPart = binhead[address];
+      int address = ((int *)map->parts_to_grid->data)[i];
 
       get_local_point(address, map->binhead->size, d_m, dim, ilocal);
 
-      _remove_particle_from_bins(address, i, binhead, bins); //TODO:
 
-      int del_flag =  _ops_particle_check_for_deletion(i, ilocal, dim, rmv_limits,
-                                                       xpos + i * dim, particle->box_block);
+      _remove_particle_from_bins(address, i, (int *)map->binhead->data, (int *)map->bin->data);
+
+
+      int del_flag;
+      if (particle->particle_pos_dat->type_size == sizeof(float))
+         del_flag=  _ops_particle_check_for_deletion(i, ilocal, dim, rmv_limits,
+                                                     (float *)xpos + i * dim,
+                                                     (BoundingBox<float> *) particle->box_block);
+      else if (particle->particle_pos_dat->type_size == sizeof(double))
+        del_flag=  _ops_particle_check_for_deletion(i, ilocal, dim, rmv_limits,
+                                                    (double *)xpos + i * dim,
+                                                    (BoundingBox<double> *)particle->box_block);
+      else if (particle->particle_pos_dat->type_size == sizeof(long double))
+        del_flag=  _ops_particle_check_for_deletion(i, ilocal, dim, rmv_limits,
+                                                    (long double *)xpos + i * dim,
+                                                    (BoundingBox<long double> *)particle->box_block);
 
       if (del_flag) {
-        part_to_grid[i] = -1;
+        ((int *)map->parts_to_grid->data)[i] = -1;
         local_flag = 1;
         nactual--;
         particle->mark_deletion[i] = 1;
         continue;
       }
 
-      address = _ops_coord_to_bin(dim, xmin, xmax, dx, map->binhead->size, xpos + dim * i);
-      for (int ih = 0; ih < particle->nhistories; ih++)
-        particle->histories[ih]->flag_update
-         = (particle->histories[ih]->flag_update) ? true : false;
+      if (particle->particle_pos_dat->type_size == sizeof(float)) {
+        address = _ops_coord_to_bin(dim, (float *) xmin, (float *)xmax, (float *) dx,
+                                    map->binhead->size, (float *) xpos + dim * i);
+      }
+      else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+        address = _ops_coord_to_bin(dim, (double *) xmin, (double *)xmax, (double *) dx,
+                                    map->binhead->size, (double *) xpos + dim * i);
+      }
+      else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+        address = _ops_coord_to_bin(dim, (long double *) xmin, (long double *)xmax,
+                                    (long double *) dx, map->binhead->size,
+                                    (long double *) xpos + dim * i);
+      }
 
       if (address < 0) local_flag = 1;
 
-      bins[i] = binhead[address];
-      binhead[address] = i;
-
-      part_to_grid[i] = address;
-
+      ((int *)map->bin->data)[i] = ((int *) map->binhead->data)[address];
+      ((int *)map->binhead->data)[address] = i;
+      ((int *)map->parts_to_grid->data)[i] = address;
       int ilocal[OPS_MAX_DIM];
-      get_local_point(address, map->binhead->size, d_m, dim, ilocal);
 
-      get_coord_point(xold + dim * i, ilocal, d_m, xmin, dx, dim, map->skin, 1);
+      get_local_point(address, map->binhead->size, d_m, dim, ilocal);
+      if (particle->particle_pos_dat->type_size == sizeof(float)) {
+        get_coord_point((float *) xold + i * dim, ilocal, d_m, (float *) xmin, (float *) dx,
+                        dim, 1);
+      }
+      else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+        get_coord_point((double *) xold + i * dim, ilocal, d_m, (double *) xmin, (double *) dx,
+                        dim, 1);
+      }
+      else if (particle->particle_pos_dat->type_size == sizeof(long double))
+        get_coord_point((long double *) xold + i * dim, ilocal, d_m, (long double *) xmin, (long double *) dx,
+                        dim, 1);
 
       bool flag_build = _ops_particle_moved_to_exchange_zone(ilocal, ilocal_new,exch_limits, dim);
       if (!local_flag) local_flag = (int )flag_build;
@@ -737,19 +586,44 @@ int _ops_particle_decide_build_local_uniform(ops_particle_mapping map,
     }
   }
 
+
   int ifirst = particle->no_particles;
   int nvirtual_act = particle->no_virtual;
 
   for (int i = ifirst; i < nmapping; i++) {
-    int flag = local_decide_rebuild(xpos + i * dim, xold + i * dim, map->skin, dim);
+    int flag;
+    if (particle->particle_pos_dat->type_size == sizeof(float)) {
+      flag = local_decide_rebuild((float *) xpos + i * dim, (float *) xold + i * dim,
+                                  ((float *)dx)[0], dim);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+      flag = local_decide_rebuild((double *) xpos + i * dim, (double *) xold + i * dim,
+                                  ((double *)dx)[0],dim);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+      flag = local_decide_rebuild((long double *) xpos + i * dim, (long double *) xold + i * dim,
+                                  ((long double *)dx)[0], dim);
+    }
 
     if (flag) {
-      int address = part_to_grid[i];
-      _remove_particle_from_bins(address, i, binhead, bins);
-      part_to_grid[i] = -1;
+      int address = ((int *)map->parts_to_grid->data)[i];
+      _remove_particle_from_bins(address, i, (int *) map->binhead->data,
+                                 (int *) map->bin->data);
+      ((int *)map->parts_to_grid->data)[i] = -1;
 
-      address = _ops_coord_to_bin(dim, xmin, xmax, dx, map->binhead->size,
-                                 xpos + dim * i);
+      if (particle->particle_pos_dat->type_size == sizeof(float)) {
+        address = _ops_coord_to_bin(dim, (float *) xmin, (float *)xmax, (float *) dx,
+                                    map->binhead->size, (float *) xpos + dim * i);
+      }
+      else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+        address = _ops_coord_to_bin(dim, (double *) xmin, (double *)xmax, (double *) dx,
+                                    map->binhead->size, (double *) xpos + dim * i);
+      }
+      else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+        address = _ops_coord_to_bin(dim, (long double *) xmin, (long double *)xmax,
+                                    (long double *) dx, map->binhead->size,
+                                    (long double *) xpos + dim * i);
+      }
 
       if (address < 0) {
         local_flag = 1;
@@ -759,16 +633,29 @@ int _ops_particle_decide_build_local_uniform(ops_particle_mapping map,
       get_local_point(address, map->binhead->size, d_m,
                       dim, ilocal);
 
-      int flag_in = virtual_within(ilocal, rmv_limits, xpos + dim * i,
-                                   particle->box_block, dim);
+      int flag_in;
+
+      if (particle->particle_pos_dat->type_size == sizeof(float)) {
+        flag_in= virtual_within(ilocal, rmv_limits, (float *)xpos + dim * i,
+                                (BoundingBox<float> *)particle->box_block, dim);
+      }
+      else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+        flag_in= virtual_within(ilocal, rmv_limits, (double *)xpos + dim * i,
+                                (BoundingBox<double> *)particle->box_block, dim);
+      }
+      else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+        flag_in= virtual_within(ilocal, rmv_limits, (long double *)xpos + dim * i,
+                                (BoundingBox<long double> *)particle->box_block, dim);
+      }
+
 
       if (flag_in) { //Virtual become actual
         nactual++;
         nvirtual_act--;
 
-        part_to_grid[i] = address;
-        bins[i] = binhead[address];
-        binhead[address] = i;
+        ((int *)map->parts_to_grid->data)[i] = address;
+        ((int *)map->bin->data)[i] = ((int *)map->binhead->data)[address];
+        ((int *)map->binhead->data)[address] = i;
 
         _ops_particle_swap_data(particle->particle_pos_dat->data, i,
                                 nactual - 1, particle->particle_pos_dat->elem_size);
@@ -799,12 +686,19 @@ int _ops_particle_decide_build_local_uniform(ops_particle_mapping map,
       }
 
       if (!local_flag) {
-        part_to_grid[i] = address;
-        bins[i] = binhead[address];
-        binhead[address] = i;
+        ((int *)map->parts_to_grid->data)[i] = address;
+        ((int *)map->bin->data)[i] = ((int *) map->binhead->data)[address];
+        ((int *)map->binhead->data)[address] = i;
 
-        get_coord_point(xold + dim * i, ilocal, d_m, xmin, dx, dim, map->skin, 1);
-
+        if (particle->particle_pos_dat->type_size == sizeof(float))
+          get_coord_point((float *) xold + i * dim, ilocal, d_m, (float *)xmin, (float *) dx,
+                                  dim, 1);
+        else if (particle->particle_pos_dat->type_size == sizeof(double))
+          get_coord_point((double *) xold + i * dim, ilocal, d_m, (double *) xmin, (double *) dx,
+                                  dim, 1);
+        else if (particle->particle_pos_dat->type_size == sizeof(long double))
+          get_coord_point((long double *) xold + i * dim, ilocal, d_m, (long double *) xmin, (long double *) dx,
+                           dim, 1);
       }
     }
   }
@@ -826,57 +720,46 @@ int _ops_particle_decide_build_only_local_uniform(ops_particle_mapping map,
                                                   ops_particle         particle) {
 
   map->decide = false;
+  map->flag_history = 0;
   sub_block *sb = OPS_sub_block_list[particle->block->index];
   if (!sb->owned) return 0;
 
-//  printf("Building zones\n");
-
-  int *binhead = (int *)map->binhead->data;
-  int *bins = (int *)map->bin->data;
-  int *part2grid = (int *)map->parts_to_grid->data;
-  int *mark_del = particle->mark_deletion;
-
-  int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
   int *size = map->binhead->size;
+
+  int nmapping = particle->no_particles;
+  int local_flag = 0;
+  int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
   for (int i = 0; i < particle->block->dims; i++) {
     d_m[i] = map->binhead->d_m[i] + OPS_sub_dat_list[map->binhead->index]->d_im[i];
     d_p[i] = map->binhead->d_p[i] + OPS_sub_dat_list[map->binhead->index]->d_ip[i];
   }
 
-  size_t nnodes = 1;
-  int ilocal[OPS_MAX_DIM], ilocal_new[OPS_MAX_DIM];
-  int grid_nodes[OPS_MAX_DIM];
-  int zeros[OPS_MAX_DIM];
-
-  int nmapping = particle->no_particles;
-  int local_flag = 0;
-
-  /* Compute bounding points for mapping structures */
-  ops_point xmin = particle->box_block->getLocalMin();
-  ops_point xmax = particle->box_block->getLocalMax();
-  double dx[particle->block->dims];
-
-  for (int i = 0; i < particle->block->dims; i++) dx[i] = map->dx[i];
-
-  xmin.x += static_cast<double>(d_m[0]) * dx[0];
-  xmax.x += static_cast<double>(d_p[0]) * dx[0];
-
-  xmin.y += static_cast<double>(d_m[1]) * dx[1];
-  xmax.y += static_cast<double>(d_p[1]) * dx[1];
-
-  if (particle->block->dims == 3) {
-   xmin.z += static_cast<double>(d_m[2]) * dx[2];
-   xmax.z += static_cast<double>(d_p[2]) * dx[2];
+  char *xmin[320], *xmax[320];
+  char *dx = map->dx;
+  if (particle->particle_pos_dat->type_size == sizeof(float)) {
+    _ops_points_map_min_max((float *) xmin, (float *) xmax,
+                            (BoundingBox<float> *) particle->box_block, (float *)dx,
+                            d_m, d_p, particle->block->dims);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+    _ops_points_map_min_max((double *) xmin, (double *) xmax,
+                            (BoundingBox<double> *) particle->box_block, (double *)dx,
+                            d_m, d_p, particle->block->dims);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+    _ops_points_map_min_max((long double *) xmin, (long double *) xmax,
+                            (BoundingBox<long double> *) particle->box_block,
+                            (long double *)dx,
+                            d_m, d_p, particle->block->dims);
   }
 
-  double *xpos = (double *)particle->particle_pos_dat->data;
-  double *xold = (double *)map->pos_old->data;
+  char *xpos = particle->particle_pos_dat->data;
+  char *xold = map->pos_old->data;
 
   int dim = particle->block->dims;
-  int nlimits = 2 * dim;
   int border_limits[2 * OPS_MAX_DIM];
   int rmv_limits[2 * OPS_MAX_DIM];
-
+  int ilocal[OPS_MAX_DIM];
   //TODO: Need adaptation
   for (int i =  0; i < particle->block->dims; i++) {
     border_limits[2 *i] = (d_m[i]< 0) ? 0 : -size[i]; //Constant for the model
@@ -886,23 +769,47 @@ int _ops_particle_decide_build_only_local_uniform(ops_particle_mapping map,
   }
 
   for (int i = 0; i < nmapping; i++) {
-    int flag = local_decide_rebuild(xpos + i * dim, xold + i * dim, dx[0],
-                                    dim);
+
+
+    int flag;
+    if (particle->particle_pos_dat->type_size == sizeof(float)) {
+      flag = local_decide_rebuild((float *) xpos + i * dim, (float *) xold + i * dim,
+                                ((float *)dx)[0], dim);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+      flag = local_decide_rebuild((double *) xpos + i * dim, (double *) xold + i * dim,
+                                ((double *)dx)[0], dim);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+      flag = local_decide_rebuild((long double *) xpos + i * dim, (long double *) xold + i * dim,
+                                  ((long double *)dx)[0], dim);
+    }
 
     if (flag) {
-      int address = part2grid[i];
-      int iPart = binhead[address];
+      int address = ((int *) map->parts_to_grid->data)[i];
+      _remove_particle_from_bins(address, i, (int *)map->binhead->data,
+                                 (int *) map->bin->data);
 
-      _remove_particle_from_bins(address, i, binhead, bins);
 
-
+      map->flag_history= 1;
 
       //Add new address prior deletion
       get_local_point(address, map->binhead->size, d_m, dim, ilocal);
 
 
-      int del_flag = _ops_particle_check_for_deletion(i, ilocal, dim, rmv_limits,
-                                                      xpos + i * dim, particle->box_block);
+      int del_flag;
+      if (particle->particle_pos_dat->type_size == sizeof(float))
+       del_flag = _ops_particle_check_for_deletion(i, ilocal, dim, rmv_limits,
+                                         (float *) xpos + i * dim,
+                                         (BoundingBox<float> *)particle->box_block);
+      else if (particle->particle_pos_dat->type_size == sizeof(double))
+        del_flag = _ops_particle_check_for_deletion(i, ilocal, dim, rmv_limits,
+                                                   (double *) xpos + i * dim,
+                                                   (BoundingBox<double> *)particle->box_block);
+      else if (particle->particle_pos_dat->type_size == sizeof(long double))
+        del_flag= _ops_particle_check_for_deletion(i, ilocal, dim, rmv_limits,
+                                                   (long double *) xpos + i * dim,
+                                                   (BoundingBox<long double> *)particle->box_block);
 
 /*
       printf("Proc %d: Build list decided for %d [%f %f] xold =[%f %f] and del_flag  = %d\n", ops_get_proc(),
@@ -913,25 +820,45 @@ int _ops_particle_decide_build_only_local_uniform(ops_particle_mapping map,
 */
 
       if (del_flag) {
-        part2grid[i] = -1;
+        ((int *)map->parts_to_grid->data)[i] = -1;
         local_flag = 1;
 
         particle->mark_deletion[i] = 1;
         continue;
       }
 
-      address = _ops_coord_to_bin(dim, xmin, xmax, dx, map->binhead->size,
-                                  xpos + dim * i);
+      switch (particle->type_box) {
+      case sizeof(float):
+         address = _ops_coord_to_bin(dim, (float *) xmin, (float *)xmax, (float *) dx,
+                                     map->binhead->size, (float *) xpos + dim * i);
+        break;
+      case sizeof(double):
+        address = _ops_coord_to_bin(dim, (double *) xmin, (double *)xmax, (double *) dx,
+                                    map->binhead->size, (double *) xpos + dim * i);
+        break;
+      case sizeof(long double):
+        address = _ops_coord_to_bin(dim, (long double *) xmin, (long double *)xmax, (long double *) dx,
+                                    map->binhead->size, (long double *) xpos + dim * i);
+        break;
+      }
 
-      bins[i] = binhead[address];
-      binhead[address] = i;
-      part2grid[i] = address;
+      ((int *) map->bin->data)[i] = ((int *) map->binhead->data)[address];
+      ((int *) map->binhead->data)[address] = i;
+      ((int *) map->parts_to_grid->data)[i] = address;
 
       //Check for particle moving in or out of exchange zone
+      int ilocal_new[OPS_MAX_DIM];
       get_local_point(address, map->binhead->size, d_m,
                        dim, ilocal_new);
-
-      get_coord_point(xold + dim * i, ilocal_new, d_m, xmin, dx, dim, map->skin, 1); //TODO: Check both
+      if (particle->particle_pos_dat->type_size == sizeof(float))
+        get_coord_point((float *) xold + i * dim, ilocal_new, d_m, (float *)xmin,
+                        (float *) dx, dim, 1);
+      else if (particle->particle_pos_dat->type_size == sizeof(double))
+        get_coord_point((double *) xold + i * dim, ilocal_new, d_m, (double *)xmin,
+                        (double *) dx, dim, 1);
+      else if (particle->particle_pos_dat->type_size == sizeof(long double))
+        get_coord_point((long double *) xold + i * dim, ilocal_new, d_m, (long double *) xmin,
+                        (long double *) dx,  dim, 1);
 
       bool flag_build = _ops_particle_moved_to_exchange_zone(ilocal, ilocal_new,
                                                              border_limits, dim);
@@ -946,20 +873,24 @@ int _ops_particle_decide_build_only_local_uniform(ops_particle_mapping map,
   MPI_Allreduce(&local_flag, &global_flag, 1, MPI_INT, MPI_MAX, sb->comm);
 
   map->decide = (bool) global_flag;
-  for (int i = 0; i < particle->nhistories; i++)
-    particle->histories[i]->flag_update = true;
+
+  if (map->flag_history)
+   for (int i = 0; i < particle->nhistories; i++)
+     if (!particle->histories[i]->flag_update)
+     particle->histories[i]->flag_update = true;
 
   return global_flag;
 }
 
+//TODO:
 void _ops_particle_remap_virtual(ops_particle_mapping map, ops_particle particle,
                                  int istart, int ilast) {
   //Sanity checks
-  if (istart < particle->no_particles)
+  if ((size_t) istart < particle->no_particles)
     throw OPSException(OPS_INVALID_ARGUMENT, "Error: Function for mapping virtual "
                                              "called for actual particles");
 
-  if (ilast > particle->no_particles + particle->no_virtual)
+  if ((size_t) ilast > particle->no_particles + particle->no_virtual)
     throw OPSException(OPS_INVALID_ARGUMENT, "Error: Function called for non-existing "
                                              " particle");
 
@@ -969,70 +900,87 @@ void _ops_particle_remap_virtual(ops_particle_mapping map, ops_particle particle
 
   if (!sb->owned) return;
 
-  int stag = 1;
-
   int dim = particle->block->dims;
-  int *binhead = (int *)map->binhead->data;
-  int *bins = (int *)map->bin->data;
-  int *part2grid = (int *)map->parts_to_grid->data;
   int *size = map->binhead->size;
 
   int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
-
   for (int i = 0; i < dim; i++) {
     d_p[i] = map->binhead->d_p[i] + OPS_sub_dat_list[map->binhead->index]->d_ip[i];
     d_m[i] = map->binhead->d_m[i] + OPS_sub_dat_list[map->binhead->index]->d_im[i];
   }
 
-  size_t nnodes = 1;
-  int ilocal[OPS_MAX_DIM], ilocal_new[OPS_MAX_DIM];
-  int grid_nodes[OPS_MAX_DIM];
-  int zeros[OPS_MAX_DIM];
-
-  ops_point xmin = particle->box_block->getLocalMin();
-  ops_point xmax = particle->box_block->getLocalMax();
-
-  double dx[particle->block->dims];
-
-  /* Get grid size the structure */
-  for (int i = 0; i < particle->block->dims; i++) dx[i] = map->dx[i];
-
-  xmin.x += static_cast<double>(map->binhead->d_m[0]) * dx[0];
-  xmax.x += static_cast<double>(map->binhead->d_p[0]) * dx[0];
-
-  xmin.y += static_cast<double>(map->binhead->d_m[1]) * dx[1];
-  xmax.y += static_cast<double>(map->binhead->d_p[1]) * dx[1];
-
-  if (particle->block->dims == 3) {
-   xmin.z += static_cast<double>(map->binhead->d_m[2]) * dx[2];
-   xmax.z += static_cast<double>(map->binhead->d_p[2]) * dx[2];
+  char *dx = map->dx;
+  char xmin[320], xmax[320];
+  if (particle->particle_pos_dat->type_size == sizeof(float)) {
+    _ops_points_map_min_max((float *) xmin, (float *) xmax,
+                            (BoundingBox<float> *) particle->box_block, (float *)dx,
+                            d_m, d_p, particle->block->dims);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+    _ops_points_map_min_max((double *) xmin, (double *) xmax,
+                            (BoundingBox<double> *) particle->box_block, (double *)dx,
+                            d_m, d_p, particle->block->dims);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+    _ops_points_map_min_max((long double *) xmin, (long double *) xmax,
+                            (BoundingBox<long double> *) particle->box_block,
+                            (long double *)dx,
+                            d_m, d_p, particle->block->dims);
   }
 
-  double *xpos = (double *)particle->particle_pos_dat->data;
-  double *xold = (double *)map->pos_old->data;
+  int ilocal[OPS_MAX_DIM], ilocal_new[OPS_MAX_DIM];
+  char *xpos = particle->particle_pos_dat->data;
+  char *xold = map->pos_old->data;
 
   for (int i = istart; i < ilast; i++) {
-    int flag = local_decide_rebuild(xpos + i * dim, xold + i * dim, map->skin,
-                                        dim);
+
+    //Part I: Decide if rebuild for particle
+    int flag;
+    if (particle->particle_pos_dat->type_size == sizeof(float)) {
+      flag = local_decide_rebuild((float *) xpos + i * dim, (float *) xold + i * dim,
+                                  ((float *)dx)[0], dim);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+      flag = local_decide_rebuild((double *) xpos + i * dim, (double *) xold + i * dim,
+                                  ((double *)dx)[0], dim);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+      flag = local_decide_rebuild((long double *) xpos + i * dim, (long double *) xold + i * dim,
+                                  ((long double *)dx)[0], dim);
+    }
 
     if (flag) {
-      int address = part2grid[i];
-      int iPart = binhead[address];
-
+      int address = ((int *) map->parts_to_grid->data)[i];
       get_local_point(address, map->binhead->size, d_m, dim, ilocal);
 
-      _remove_particle_from_bins(address, i, binhead, bins);
+      _remove_particle_from_bins(address, i, (int *) map->binhead->data,
+                                 (int *) map->bin->data);
 
-      address = _ops_coord_to_bin(dim, xmin, xmax, dx, map->binhead->size,
-                                  xpos+ dim * i);
+      if (particle->particle_pos_dat->type_size == sizeof(float))
+        address = _ops_coord_to_bin(dim, (float *) xmin, (float *)xmax, (float *) dx,
+                                    size, (float *) xpos + i * dim);
+      else if (particle->particle_pos_dat->type_size == sizeof(double))
+        address = _ops_coord_to_bin(dim, (double *) xmin, (double *)xmax, (double *)dx,
+                                    size, (double *) xpos + i * dim);
+      else if (particle->particle_pos_dat->type_size == sizeof(long double))
+        address = _ops_coord_to_bin(dim, (long double *) xmin, (long double *)xmax, (long double *)dx,
+                                    size, (long double *) xpos + i * dim);
 
 
-      bins[i] = binhead[address];
-      binhead[address] = i;
-      part2grid[i] = address;
+      ((int *)map->bin->data)[i] = ((int *)map->binhead->data)[address];
+      ((int *)map->binhead->data)[address] = i;
+      ((int *)map->parts_to_grid->data)[i] = address;
 
-      get_coord_point(xold + dim * i, ilocal, d_m, xmin, dx, dim, map->skin, 1);
 
+      if (particle->particle_pos_dat->type_size == sizeof(float))
+        get_coord_point((float *) xold + i * dim, ilocal_new, d_m, (float *)xmin,
+                        (float *) dx, dim, 1);
+      else if (particle->particle_pos_dat->type_size == sizeof(double))
+        get_coord_point((double *) xold + i * dim, ilocal_new, d_m, (double *) xmin,
+                        (double *) dx, dim, 1);
+      else if (particle->particle_pos_dat->type_size == sizeof(long double))
+        get_coord_point((long double *) xold + i * dim, ilocal_new, d_m,
+                        (long double *)xmin, (long double *) dx, dim, 1);
     }
   }
 }
@@ -1051,7 +999,7 @@ void  _ops_particle_build_map_to_dir(int idir,ops_particle particle,
   }
   else {
 
-    int nforward = 0;
+    size_t nforward = 0;
     for (int k = halo->region_neg[4]; k < halo->region_neg[5]; k++) {
       for (int j = halo->region_neg[3]; j < halo->region_neg[2]; j++) {
         for (int i = halo->region_neg[0]; i < halo->region_neg[1]; i++) {
@@ -1081,7 +1029,7 @@ void  _ops_particle_build_map_to_dir(int idir,ops_particle particle,
     halo->nforward_pos[0] = 0;
   }
   else {
-    int nforward = 0;
+    size_t nforward = 0;
     for (int k = halo->region_pos[4]; k < halo->region_pos[5]; k++) {
       for (int j = halo->region_pos[2]; halo->region_pos[3]; j++) {
         for (int i = halo->region_pos[0]; halo->region_pos[1]; i++) {
@@ -1158,51 +1106,99 @@ void _ops_particle_build_local_uniform(ops_particle_mapping map, ops_particle pa
   for (int i = 0; i < prod;i++)
     ((int *)map->binhead->data)[i] = -1;
 
-  for (int i = 0; i < Np; i++) {
+  for (size_t i = 0; i < Np; i++) {
     ((int *)map->bin->data)[i] = -1;
     ((int *)map->parts_to_grid->data)[i] = -1;
   }
 
-  ops_point xmin = particle->box_block->getLocalMin();
-  ops_point xmax = particle->box_block->getLocalMax();
-
   int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
-
   for (int i = 0; i < particle->block->dims; i++) {
     d_m[i] = map->binhead->d_m[i] + OPS_sub_dat_list[map->binhead->index]->d_im[i];
     d_p[i] = map->binhead->d_p[i] + OPS_sub_dat_list[map->binhead->index]->d_ip[i];
   }
 
-  double dx[particle->block->dims];
+  char *dx = map->dx;
+  char xmin[320], xmax[320];
+  int dim = particle->block->dims;
+  if (particle->particle_pos_dat->type_size == sizeof(float)) {
+    _ops_points_map_min_max((float *) xmin, (float *) xmax,
+                            (BoundingBox<float> *) particle->box_block, (float *)dx,
+                            d_m, d_p, dim);
+    ops_point<float> x_min;
+    ops_point<float> x_max;
+    x_min.x = ((float *)xmin)[0]; x_max.x = ((float *)xmax)[0];
+    x_min.y = ((float *)xmin)[1]; x_max.y = ((float *)xmax)[1];
+    x_min.z = (dim == 3) ? ((float *)xmin)[2] : 0.0;
+    x_max.z = (dim == 3) ? ((float *)xmax)[2] : 0.0;
+    _ops_build_uniform_dats(1, dim, map->grid, particle->particle_pos_dat,
+                            Np, (float *)dx, x_min, x_max, map->binhead, map->bin,
+                            map->parts_to_grid);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+    _ops_points_map_min_max((double *) xmin, (double *) xmax,
+                            (BoundingBox<double> *) particle->box_block, (double *)dx,
+                            d_m, d_p, particle->block->dims);
 
-  for (int i = 0; i < particle->block->dims; i++) dx[i] = map->dx[i];
-
-  xmin.x = xmin.x + static_cast<double>(d_m[0]) * dx[0];
-  xmin.y = xmin.y + static_cast<double>(d_m[1]) * dx[1];
-
-  xmax.x = xmax.x + static_cast<double>(d_p[0]) * dx[0];
-  xmax.y = xmax.y + static_cast<double>(d_p[1]) * dx[1];
-
-  if (particle->block->dims == 3) {
-    xmax.z = xmax.z + static_cast<double>(d_p[2]) * dx[2];
-    xmin.z = xmin.z + static_cast<double>(d_m[2]) * dx[2];
+    ops_point<double> x_min;
+    ops_point<double> x_max;
+    x_min.x = ((double *)xmin)[0]; x_max.x = ((double *)xmax)[0];
+    x_min.y = ((double *)xmin)[1]; x_max.y = ((double *)xmax)[1];
+    x_min.z = (dim == 3) ? ((double *)xmin)[2] : 0.0;
+    x_max.z = (dim == 3) ? ((double *) xmax)[2] : 0.0;
+    _ops_build_uniform_dats(1, dim, map->grid, particle->particle_pos_dat,
+                            Np, (double *)dx, x_min, x_max, map->binhead, map->bin,
+                            map->parts_to_grid);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+    _ops_points_map_min_max((long double *) xmin, (long double *) xmax,
+                            (BoundingBox<long double> *) particle->box_block,
+                            (long double *)dx,
+                            d_m, d_p, particle->block->dims);
+    ops_point<long double> x_min;
+    ops_point<long double> x_max;
+    x_min.x = ((long double *) xmin)[0]; x_max.x = ((long double *) xmax)[0];
+    x_min.y = ((long double *) xmin)[1]; x_max.y = ((long double *) xmax)[1];
+    x_min.z = (dim == 3) ? ((long double *) xmin)[2] : 0.0;
+    x_max.z = (dim == 3) ? ((long double *) xmax)[2] : 0.0;
+    _ops_build_uniform_dats(1, dim, map->grid, particle->particle_pos_dat,
+                            Np, (long double *)dx, x_min, x_max, map->binhead, map->bin,
+                            map->parts_to_grid);
   }
 
-  _ops_build_uniform_dats(1, particle->block->dims, map->grid, particle->particle_pos_dat,
-                          Np, dx, xmin, xmax, map->binhead, map->bin, map->parts_to_grid);
 
   int *part_to_bin = (int *)map->parts_to_grid->data;
 
-  double *xold = (double *)map->pos_old->data;
-  int dim = particle->block->dims;
+  char *xold = map->pos_old->data;
   int ilocal[OPS_MAX_DIM];
-  for (int i = 0; i < Np; i++) {
+  for (size_t i = 0; i < Np; i++) {
     int address = part_to_bin[i];
     get_local_point(address, map->binhead->size, d_m, particle->block->dims, ilocal);
-    get_coord_point(xold + dim * i, ilocal, d_m, xmin, dx, dim, map->skin, 1);
 
+    if (particle->particle_pos_dat->type_size == sizeof(float)) {
+      ops_point<float> x_min;
+      x_min.x = ((float *)xmin)[0];
+      x_min.y = ((float *)xmin)[1];
+      x_min.z = (dim == 3) ? ((float *)xmin)[2] : 0.0;
+      get_coord_point((float *) xold + i * dim, ilocal, d_m, x_min, (float *) dx,
+                              dim, 1);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+      ops_point<double> x_min;
+      x_min.x = ((double *)xmin)[0];
+      x_min.y = ((double *)xmin)[1];
+      x_min.z = (dim == 3) ? ((double *)xmin)[2] : 0.0;
+      get_coord_point((double *) xold + i * dim, ilocal, d_m, x_min, (double *) dx,
+                              dim, 1);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+      ops_point<long double> x_min;
+      x_min.x = ((long double *)xmin)[0];
+      x_min.y = ((long double *)xmin)[1];
+      x_min.z = (dim == 3) ? ((long double *)xmin)[2] : 0.0;
+      get_coord_point((long double *) xold + i * dim, ilocal, d_m, x_min,
+                      (long double *) dx, dim, 1);
+    }
   }
-
 
 }
 
@@ -1236,14 +1232,126 @@ void _ops_particle_map_validation(ops_particle_mapping map) {
         throw OPSException(OPS_RUNTIME_ERROR,"Error: A non-uniform map grid is generated (Due to non-matching projections)");
     }
 
-    map->dx[i] = (map->particle->box_block->getMaxCoordDir(i) - map->particle->box_block->getMinCoordDir(i))
-            / static_cast<double>(size_loc);
 
+    switch (map->particle->particle_pos_dat->type_size) {
+    case sizeof(float):
+      _ops_compute_map_grid_size_dir<float>(i, map->dx, map->particle->box_block,
+                                              size_loc);
+      break;
+    case sizeof(double):
+       _ops_compute_map_grid_size_dir<double>(i, map->dx, map->particle->box_block,
+                                              size_loc);
+      break;
+    case sizeof(long double):
+       _ops_compute_map_grid_size_dir<long double>(i, map->dx, map->particle->box_block,
+                                                   size_loc);
+      break;
+    }
   }
-
 
 }
 
+void _ops_partition_flat_wall(ops_particle particle) {
+
+  if (particle->particle_pos_dat == nullptr || particle->normal_vector == nullptr)
+     throw OPSException(OPS_RUNTIME_ERROR, "Error: ops_dat is defined for one of the following: "
+                                           "wall position or normal vector\n");
+
+  int dim = particle->block->dims;
+
+  if (!ops_partitioned()) //TODO: Find the right function
+    throw OPSException(OPS_RUNTIME_ERROR,"Error: Domain is not partitioned");
+
+  sub_block *sb = OPS_sub_block_list[particle->block->index];
+  if (!sb->owned) return;
+
+  //identify(range not within)
+  switch(particle->type_box) {
+  case sizeof(float): {
+    float vector_point[OPS_MAX_DIM];
+    int idir_nz;
+    for (int i = 0; i < dim; i++) {
+      if (ops_abs(((float *) particle->normal_vector->data)[i]) ==1) {
+        idir_nz = i; break;
+      }
+    }
+
+    for (int i = 0; i <dim; i++)
+      vector_point[i] = 0.5 * (((BoundingBox<float> *) particle->box_block)->getMinCoordDir(i)
+                               + ((BoundingBox<float> *) particle->box_block)->getMaxCoordDir(i));
+
+    vector_point[idir_nz] = ((float *) particle->xcm)[idir_nz];
+
+    bool isin
+        = ((BoundingBox<float> *) particle->box_block)->isCoordinateInBoundingBox(vector_point);
+
+    particle->no_particles = 0;
+    if (isin) {
+      particle->no_particles = 1;
+      for (int i = 0; i < dim; i++) {
+        ((float *) particle->particle_pos_dat->data)[i] = vector_point[i];
+        ((float *) particle->normal_vector->data)[i] = ((float *) particle->nx)[i]; //TODO:
+      }
+    }
+
+    } break;
+  case sizeof(double): {
+    double vector_point[OPS_MAX_DIM];
+    int idir_nz;
+    for (int i = 0; i < dim; i++) {
+      if (ops_abs(((double *) particle->normal_vector->data)[i]) ==1) {
+        idir_nz = i; break;
+      }
+    }
+
+    for (int i = 0; i <dim; i++)
+      vector_point[i] = 0.5 * (((BoundingBox<double> *) particle->box_block)->getMinCoordDir(i)
+                               + ((BoundingBox<double> *) particle->box_block)->getMaxCoordDir(i));
+
+    vector_point[idir_nz] = ((double *) particle->xcm)[idir_nz];
+
+    bool isin
+        = ((BoundingBox<double> *) particle->box_block)->isCoordinateInBoundingBox(vector_point);
+
+    particle->no_particles = 0;
+    if (isin) {
+      particle->no_particles = 1;
+      for (int i = 0; i < dim; i++) {
+        ((double *) particle->particle_pos_dat->data)[i] = vector_point[i];
+        ((double *) particle->normal_vector->data)[i] = ((float *) particle->nx)[i]; //TODO:
+      }
+    }
+
+    } break;
+  case sizeof(long double): {
+    long double vector_point[OPS_MAX_DIM];
+    int idir_nz;
+    for (int i = 0; i < dim; i++) {
+      if (ops_abs(((long double *) particle->normal_vector->data)[i]) ==1) {
+        idir_nz = i; break;
+      }
+    }
+
+    for (int i = 0; i <dim; i++)
+      vector_point[i] = 0.5 * (((BoundingBox<long double> *) particle->box_block)->getMinCoordDir(i)
+                               + ((BoundingBox<long double> *) particle->box_block)->getMaxCoordDir(i));
+
+    vector_point[idir_nz] = ((long double *) particle->xcm)[idir_nz];
+
+    bool isin
+        = ((BoundingBox<long double> *) particle->box_block)->isCoordinateInBoundingBox(vector_point);
+
+    particle->no_particles = 0;
+    if (isin) {
+      particle->no_particles = 1;
+      for (int i = 0; i < dim; i++) {
+        ((long double *) particle->particle_pos_dat->data)[i] = vector_point[i];
+        ((long double *) particle->normal_vector->data)[i] = ((float *) particle->nx)[i]; //TODO:
+      }
+    }
+    } break;
+  }
+}
 
 void  _ops_particle_init_map(ops_particle_mapping map) {
 
@@ -1257,18 +1365,8 @@ void  _ops_particle_init_map(ops_particle_mapping map) {
     binhead[i] = -1;
 }
 
-bool  ops_get_bounding_box_local_to_global(ops_block block,double* xmin,double *xmax,double* xglb_min, double* xglb_max)
-{
-  sub_block *sb = OPS_sub_block_list[block->index];
-  if (!sb->owned)
-    return false;
 
-  MPI_Allreduce(xmin, xglb_min, 3, MPI_DOUBLE, MPI_MIN, sb->comm);
-  MPI_Allreduce(xmax, xglb_max, 3, MPI_DOUBLE, MPI_MAX, sb->comm);
-
-  return true;
-}
-
+//TODO:
 void _ops_particle_setup_map(ops_particle particle, ops_particle_mapping map) {
 
 
@@ -1298,33 +1396,48 @@ void _ops_particle_setup_map(ops_particle particle, ops_particle_mapping map) {
     d_m[i] = map->binhead->d_m[i] + OPS_sub_dat_list[map->binhead->index]->d_im[i];
     d_p[i] = map->binhead->d_p[i] + OPS_sub_dat_list[map->binhead->index]->d_ip[i];
   }
-  //Get mapping
-  ops_point xmin = particle->box_block->getLocalMin();
-  ops_point xmax = particle->box_block->getLocalMax();
-
-  double dx[particle->block->dims];
-  /* Get grid size the structure */
-  for (int i = 0; i < particle->block->dims; i++) dx[i] = map->dx[i];
 
 
-  //Upate xmin and xmax due to special conditions
-  xmin.x += static_cast<double>(d_m[0]) * dx[0];
-  xmax.x += static_cast<double>(d_p[0]) * dx[0];
-
-  xmin.y += static_cast<double>(d_m[1]) * dx[1];
-  xmax.y += static_cast<double>(d_p[1]) * dx[1];
-
-  if (particle->block->dims == 3) {
-   xmin.z += static_cast<double>(d_m[2]) * dx[2];
-   xmax.z += static_cast<double>(d_p[2]) * dx[2];
+  char *dx = map->dx;
+  char xmin[320], xmax[320];
+  int dim = particle->block->dims;
+  switch (particle->particle_pos_dat->type_size) {
+  case sizeof(float):
+    _ops_points_map_min_max((float *) xmin, (float *) xmax,
+                            (BoundingBox<float> *) particle->box_block, (float *)dx,
+                             d_m, d_p, dim);
+    break;
+  case sizeof(double):
+    _ops_points_map_min_max((double *) xmin, (double *) xmax,
+                             (BoundingBox<double> *) particle->box_block, (double *)dx,
+                              d_m, d_p, dim);
+    break;
+  case sizeof(long double):
+    _ops_points_map_min_max((long double *) xmin, (long double *) xmax,
+                            (BoundingBox<long double> *) particle->box_block, (long double *)dx,
+                             d_m, d_p, dim);
+    break;
   }
 
-  int dim = particle->block->dims;
-  double *xpos = (double *)particle->particle_pos_dat->data;
-  double *xold = (double *)map->pos_old->data;
+  char *xpos = particle->particle_pos_dat->data;
+  char *xold = map->pos_old->data;
+  for (size_t i = 0; i < particle->no_particles; i++) {
 
-  for (int i = 0; i < particle->no_particles; i++) {
-    int address = _ops_coord_to_bin(dim, xmin, xmax, dx, map->binhead->size,xpos + dim * i);
+    int address;
+    switch(particle->particle_pos_dat->type_size) {
+    case sizeof(float):
+       address = _ops_coord_to_bin(dim, (float *) xmin, (float *) xmax, (float *)dx, map->binhead->size,
+                                   (float *) xpos + dim * i);
+       break;
+    case sizeof(double):
+       address = _ops_coord_to_bin(dim, (double *) xmin, (double *) xmax, (double *)dx, map->binhead->size,
+                                   (double *) xpos + dim * i);
+       break;
+    case sizeof(long double):
+       address = _ops_coord_to_bin(dim, (long double *) xmin, (long double *) xmax, (long double *)dx,
+                                   map->binhead->size, (long double *) xpos + dim * i);
+       break;
+    }
 
     bin2grid[i] = address;
     bins[i] = binhead[address];
@@ -1334,7 +1447,20 @@ void _ops_particle_setup_map(ops_particle particle, ops_particle_mapping map) {
     int ilocal[OPS_MAX_DIM];
     get_local_point(address, map->binhead->size, d_m,
                      dim, ilocal);
-    get_coord_point(xold + dim * i, ilocal, d_m, xmin, dx, dim, map->skin, 1);
+    switch (particle->particle_pos_dat->type_size) {
+    case sizeof(float):
+      get_coord_point((float *) xold + dim * i, ilocal, d_m, (float *) xmin,
+                      (float *)dx, dim, 1);
+      break;
+    case sizeof(double):
+        get_coord_point((double *) xold + dim * i, ilocal, d_m, (double *) xmin,
+                        (double *)dx, dim, 1);
+        break;
+    case sizeof(long double):
+        get_coord_point((long double *) xold + dim * i, ilocal, d_m, (long double *) xmin,
+                       (long double *)dx, dim, 1);
+        break;
+    }
 
   }
 
@@ -1360,37 +1486,51 @@ void _ops_particle_setup_map_virtual(ops_particle particle, ops_particle_mapping
     d_p[i] = map->binhead->d_p[i] + OPS_sub_dat_list[map->binhead->index]->d_ip[i];
   }
 
-
-  //Get mapping
-  ops_point xmin = particle->box_block->getLocalMin();
-  ops_point xmax = particle->box_block->getLocalMax();
-
-  double dx[particle->block->dims];
-  /* Get grid size the structure */
-  for (int i = 0; i < particle->block->dims; i++) dx[i] = map->dx[i];
-
-  //Upate xmin and xmax due to special conditions
-  xmin.x += static_cast<double>(map->binhead->d_m[0]) * dx[0];
-  xmax.x += static_cast<double>(map->binhead->d_p[0]) * dx[0];
-
-  xmin.y += static_cast<double>(map->binhead->d_m[1]) * dx[1];
-  xmax.y += static_cast<double>(map->binhead->d_p[1]) * dx[1];
-
-  if (particle->block->dims == 3) {
-   xmin.z += static_cast<double>(map->binhead->d_m[2]) * dx[2];
-   xmax.z += static_cast<double>(map->binhead->d_p[2]) * dx[2];
+  char *dx = map->dx;
+  char xmin[320], xmax[320];
+  int dim = particle->block->dims;
+  switch (particle->particle_pos_dat->type_size) {
+  case sizeof(float):
+    _ops_points_map_min_max((float *) xmin, (float *) xmax,
+                            (BoundingBox<float> *) particle->box_block, (float *)dx,
+                             d_m, d_p, dim);
+    break;
+  case sizeof(double):
+    _ops_points_map_min_max((double *) xmin, (double *) xmax,
+                             (BoundingBox<double> *) particle->box_block, (double *)dx,
+                              d_m, d_p, dim);
+    break;
+  case sizeof(long double):
+    _ops_points_map_min_max((long double *) xmin, (long double *) xmax,
+                            (BoundingBox<long double> *) particle->box_block, (long double *)dx,
+                             d_m, d_p, dim);
+    break;
   }
 
-  int dim = particle->block->dims;
-  double *xpos = (double *)particle->particle_pos_dat->data;
-  double *xold = (double *)map->pos_old->data;
 
-  for (int i = particle->no_particles;
-           i < particle->no_particles + particle->no_virtual; i++) {
+  char *xpos = particle->particle_pos_dat->data;
+  char *xold = map->pos_old->data;
+
+  for (size_t i = particle->no_particles;
+              i < particle->no_particles + particle->no_virtual; i++) {
     bins[i] = -1;
     bin2grid[i] = -1;
 
-    int address = _ops_coord_to_bin(dim, xmin, xmax, dx, map->binhead->size,xpos + dim * i);
+    int address;
+    switch(particle->particle_pos_dat->type_size) {
+    case sizeof(float):
+       address = _ops_coord_to_bin(dim, (float *) xmin, (float *) xmax, (float *)dx, map->binhead->size,
+                                   (float *) xpos + dim * i);
+       break;
+    case sizeof(double):
+       address = _ops_coord_to_bin(dim, (double *) xmin, (double *) xmax, (double *)dx, map->binhead->size,
+                                   (double *) xpos + dim * i);
+       break;
+    case sizeof(long double):
+       address = _ops_coord_to_bin(dim, (long double *) xmin, (long double *) xmax, (long double *)dx,
+                                   map->binhead->size, (long double *) xpos + dim * i);
+       break;
+    }
 
     if (address < 0) continue;
     bins[i] = binhead[address];
@@ -1402,57 +1542,83 @@ void _ops_particle_setup_map_virtual(ops_particle particle, ops_particle_mapping
     get_local_point(address, map->binhead->size, d_m,
                      dim, ilocal);
 
-    get_coord_point(xold + dim * i, ilocal, d_m, xmin, dx, dim, map->skin, 1);
+    switch (particle->particle_pos_dat->type_size) {
+    case sizeof(float):
+      get_coord_point((float *) xold + dim * i, ilocal, d_m, (float *) xmin,
+                      (float *)dx, dim, 1);
+      break;
+    case sizeof(double):
+        get_coord_point((double *) xold + dim * i, ilocal, d_m, (double *) xmin,
+                        (double *)dx, dim, 1);
+        break;
+    case sizeof(long double):
+        get_coord_point((long double *) xold + dim * i, ilocal, d_m, (long double *) xmin,
+                       (long double *)dx, dim, 1);
+        break;
+    }
 
   }
 
 }
 
+//TODO:
 void _ops_particle_mapping_virtual_from_halo(ops_particle_mapping map,ops_particle particle,
                                              int ifirst, int n_to_map) {
 
- // printf("Rank %d: nfirst =%d and to_map = %d\n",ops_get_proc(), ifirst, n_to_map);
   map->nParticles = ifirst + n_to_map;
 
   int *binhead = (int *)map->binhead->data;
   int *bins = (int *)map->bin->data;
   int *bin2grid = (int *)map->parts_to_grid->data;
 
-  ops_point xmin = particle->box_block->getLocalMin();
-  ops_point xmax = particle->box_block->getLocalMax();
-
-  double dx[particle->block->dims];
-  /* Get grid size the structure */
-  for (int i = 0; i < particle->block->dims; i++) dx[i] = map->dx[i];
-
-  //Upate xmin and xmax due to special conditions
-
   int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
-  for (int i = 0; i < map->binhead->block->dims; i++) {
+  for (int i = 0; i < particle->block->dims; i++) {
     d_m[i] = map->binhead->d_m[i] + OPS_sub_dat_list[map->binhead->index]->d_im[i];
     d_p[i] = map->binhead->d_p[i] + OPS_sub_dat_list[map->binhead->index]->d_ip[i];
   }
 
-  xmin.x += static_cast<double>(d_m[0]) * dx[0];
-  xmax.x += static_cast<double>(d_p[0]) * dx[0];
 
-  xmin.y += static_cast<double>(d_m[1]) * dx[1];
-  xmax.y += static_cast<double>(d_p[1]) * dx[1];
-
-  if (particle->block->dims == 3) {
-   xmin.z += static_cast<double>(d_m[2]) * dx[2];
-   xmax.z += static_cast<double>(d_p[2]) * dx[2];
+  char *dx = map->dx;
+  char xmin[320], xmax[320];
+  int dim = particle->block->dims;
+  switch (particle->particle_pos_dat->type_size) {
+  case sizeof(float):
+    _ops_points_map_min_max((float *) xmin, (float *) xmax,
+                            (BoundingBox<float> *) particle->box_block, (float *)dx,
+                             d_m, d_p, dim);
+    break;
+  case sizeof(double):
+    _ops_points_map_min_max((double *) xmin, (double *) xmax,
+                             (BoundingBox<double> *) particle->box_block, (double *)dx,
+                              d_m, d_p, dim);
+    break;
+  case sizeof(long double):
+    _ops_points_map_min_max((long double *) xmin, (long double *) xmax,
+                            (BoundingBox<long double> *) particle->box_block, (long double *)dx,
+                             d_m, d_p, dim);
+    break;
   }
 
-  int dim = particle->block->dims;
-  double *xpos = (double *) particle->particle_pos_dat->data;
-  double *xold = (double *) map->pos_old->data;
 
+  char *xpos =  particle->particle_pos_dat->data;
+  char *xold =  map->pos_old->data;
   for (int i = ifirst; i < ifirst + n_to_map; i++) {
 
-    int address = _ops_coord_to_bin(dim, xmin, xmax, dx, map->binhead->size, xpos + dim * i);
-    if (address < 0) printf("Particle %d address = %d xpos =[%f %f] dx =%12.9e dy = %12.9e\n",i, address, xpos[i* dim],
-                            xpos[i * dim + 1], (xpos[i * dim] - xmin.x)/dx[0], (xpos[i * dim + 1] - xmin.y)/dx[1]);
+    int address;
+    switch(particle->particle_pos_dat->type_size) {
+    case sizeof(float):
+       address = _ops_coord_to_bin(dim, (float *) xmin, (float *) xmax, (float *)dx, map->binhead->size,
+                                   (float *) xpos + dim * i);
+       break;
+    case sizeof(double):
+       address = _ops_coord_to_bin(dim, (double *) xmin, (double *) xmax, (double *)dx, map->binhead->size,
+                                   (double *) xpos + dim * i);
+       break;
+    case sizeof(long double):
+       address = _ops_coord_to_bin(dim, (long double *) xmin, (long double *) xmax, (long double *)dx,
+                                   map->binhead->size, (long double *) xpos + dim * i);
+       break;
+    }
 
     if (address < 0) continue;
     bin2grid[i] = address;
@@ -1463,10 +1629,20 @@ void _ops_particle_mapping_virtual_from_halo(ops_particle_mapping map,ops_partic
     int ilocal[OPS_MAX_DIM];
     get_local_point(address, map->binhead->size, d_m,
                      dim, ilocal);
-
-
-    //TODO:
-    get_coord_point(xold + dim * i, ilocal, d_m, xmin, dx, dim, map->skin, 1);
+    switch (particle->particle_pos_dat->type_size) {
+    case sizeof(float):
+      get_coord_point((float *) xold + dim * i, ilocal, d_m, (float *) xmin,
+                      (float *)dx, dim, 1);
+      break;
+    case sizeof(double):
+        get_coord_point((double *) xold + dim * i, ilocal, d_m, (double *) xmin,
+                        (double *)dx, dim, 1);
+        break;
+    case sizeof(long double):
+        get_coord_point((long double *) xold + dim * i, ilocal, d_m, (long double *) xmin,
+                       (long double *)dx, dim, 1);
+        break;
+    }
 
   }
 
@@ -1496,9 +1672,6 @@ void _ops_particle_halo_copy_tobuf(char *buff, ops_particle_halo_data *halo_data
     }
     else if (halo_data[ihalo]->halo_type == OPS_EXCHANGE_HISTORY && flag) {
       ops_neighbor_history history = halo_data[ihalo]->history_from;
-      ops_dat data = history->data;
-      ops_dat npartners = history->n_partnersI;
-      ops_dat partnersI = history->partnersI;
 
       //Part I: Shift npartners
       for (int i = 0; i < nsend; i++) {
@@ -1637,7 +1810,7 @@ void _ops_particle_halo_reverse_copy_tobuf(char *buff, ops_particle_halo_data *h
 
 void _ops_particle_halo_copy_from_buff(char *buff, ops_particle_halo_data *halo_data,
                                        int nhalos, ops_particle_halo_exchange halo_info,
-                                       int dir_to[], int dir_from[], double translate[],
+                                       int dir_to[], int dir_from[], char* translate,
                                        int *ntot_bites, int flag) {
 
   int nfirst = halo_info->firstrecv;
@@ -1674,21 +1847,37 @@ void _ops_particle_halo_copy_from_buff(char *buff, ops_particle_halo_data *halo_
         int dim = dat->dim;
         int dims = dat->block->dims;
 
-        if (dim != dims || dat->type_size != sizeof(double))
+        if (dim != dims || !(dat->type_size != sizeof(double) ||
+            dat->type_size != sizeof(float) ||
+            dat->type_size != sizeof(long double)))
           throw OPSException(OPS_RUNTIME_CONFIGURATION_ERROR,"ops_dat with orient"
                                                            " must be a vector (of size dim per particle point) and of "
                                                            "type double");
 
         memcpy(temp, buff + nrecv_bites, nsize);
 
-        double *tmp = (double *)temp;
-        double *data = (double *)dat->data;
+        char *data = dat->data;
 
         for (int i = 0; i < nrecv; i++) {
           int ipart = nfirst + i;
           for (int isou = 0; isou < dim; isou++)
-            data[ipart * dim + dir_to[isou]] =
-                tmp[i * dim + dir_from[isou]] + translate[dir_from[isou]];
+            switch(dat->type_size) {
+            case sizeof(float):
+              ((float *) data)[ipart * dim + dir_to[isou]] =
+                ((float *) temp)[i * dim + dir_from[isou]]
+                + ((float  *) translate)[dir_from[isou]];
+            break;
+            case sizeof(double):
+              ((double *) data)[ipart * dim + dir_to[isou]] =
+              ((double *) temp)[i * dim + dir_from[isou]]
+              + ((double  *) translate)[dir_from[isou]];
+            break;
+            case sizeof(long double):
+              ((long double *) data)[ipart * dim + dir_to[isou]] =
+              ((long double *) temp)[i * dim + dir_from[isou]]
+              + ((long double  *) translate)[dir_from[isou]];
+            break;
+            }
         }
       }
       nrecv_bites +=nsize;
@@ -1697,13 +1886,10 @@ void _ops_particle_halo_copy_from_buff(char *buff, ops_particle_halo_data *halo_
       ops_neighbor_history history = halo_data[ihalo]->history_to;
       ops_dat npartnersI = history->n_partnersI;
       ops_dat partnersI = history->partnersI;
-      ops_dat indexing = history->indexing;
       ops_dat indexI = history->indexI;
 
-      ops_dat data = history->data;
       ops_particle particle = history->particleI;
       int *tags = (int *)particle->ids->data;
-      int nlocal_elems;
 
       int nshift = nfirst * npartnersI->elem_size;
       int nbites = nrecv * npartnersI->elem_size;
@@ -1776,14 +1962,12 @@ void _ops_particle_halo_copy_from_buff(char *buff, ops_particle_halo_data *halo_
 
 void _ops_particle_dat_copy_from_buff(char *buff, ops_dat dat, ops_part_orient orient,
                                       ops_particle_halo_exchange halo_info,
-                                      int dir_to[], int dir_from[], double translate[],
+                                      int dir_to[], int dir_from[], char *translate,
                                       int *ntot_bites) {
 
   int nfirst = halo_info->firstrecv;
   int nrecv = halo_info->nrecv;
-  int max_size = 0;
 
-  int a1 = 0;
   int nrecv_bites = 0;
   int nsize = dat->elem_size;
 
@@ -1794,14 +1978,40 @@ void _ops_particle_dat_copy_from_buff(char *buff, ops_dat dat, ops_part_orient o
       ntmp_size_max = nsize * (nrecv + OPS_MAX_PART);
     }
 
-    memcpy(temp, buff + nrecv_bites, nsize);
-    double *tmp = (double *)temp;
-    double *data = (double *)dat->data;
 
-    for (int i = 0; i < nrecv; i++) {
-      for (int isou = 0; isou < dat->dim; isou++)
-      data[nfirst * dat->dim + dir_to[isou]] = tmp[dir_from[isou]] + translate[dir_from[isou]];
+
+    memcpy(temp, buff + nrecv_bites, nsize);
+
+    switch(dat->type_size) {
+    case sizeof(float): {
+      float *tmp = (float *)temp;
+      float *data = (float *) dat->data;
+
+      for (int i = 0; i < nrecv; i++) {
+        for (int isou = 0; isou < dat->dim; isou++)
+        data[nfirst * dat->dim + dir_to[isou]] = tmp[dir_from[isou]] + translate[dir_from[isou]];
+      }
+
+      } break;
+    case sizeof(double): {
+      double *tmp = (double *) temp;
+      double *data = (double *) dat->data;
+      for (int i = 0; i < nrecv; i++) {
+        for (int isou = 0; isou < dat->dim; isou++)
+        data[nfirst * dat->dim + dir_to[isou]] = tmp[dir_from[isou]] + translate[dir_from[isou]];
+      }
+      } break;
+    case sizeof(long double): {
+      long double *tmp = (long double *)temp;
+      long double *data = (long double *) dat->data;
+
+      for (int i = 0; i < nrecv; i++) {
+        for (int isou = 0; isou < dat->dim; isou++)
+        data[nfirst * dat->dim + dir_to[isou]] = tmp[dir_from[isou]] + translate[dir_from[isou]];
+      }
+      } break;
     }
+
   }
   else {
     int nbite_first = nfirst * dat->elem_size;
@@ -1832,7 +2042,7 @@ int _ops_particle_intra_buff_to_hist(char *buff, ops_neighbor_history history,
   int nfirst = nexist * nsize;
 
   int nbytes = nrecv * history->n_partnersI->elem_size;
-  memcpy(history->n_partnersI + nfirst, buff + nrecv_bites, nbytes);
+  memcpy(history->n_partnersI->data + nfirst, buff + nrecv_bites, nbytes);
   nrecv_bites += nbytes;
 
   //Part II: Push back partnersI of particle to the list
@@ -1842,7 +2052,7 @@ int _ops_particle_intra_buff_to_hist(char *buff, ops_neighbor_history history,
     int nshift = ipart * history->partnersI->elem_size;
     int nbites = ((int *)history->n_partnersI->data)[ipart]
                * history->partnersI->type_size;
-    memcpy(history->partnersI + nshift, buff + nrecv_bites, nbytes);
+    memcpy(history->partnersI->data + nshift, buff + nrecv_bites, nbytes);
     nrecv_bites += nbites;
 
     //Set the index for fast finding
@@ -1948,8 +2158,6 @@ void _ops_particle_halo_reverse_copy_from_buff(char *buff, ops_particle_halo_dat
   int *sendlist = info->sendlist;
   int nsend = info->nsend;
 
-  int recv_bites = 0;
-
   int nmax = 0;
   for (int ihalo = 0; ihalo < nhalos; ihalo++)
     nmax = MAX(halo_data[ihalo]->to->elem_size, nmax);
@@ -2012,7 +2220,6 @@ void _ops_particle_remove_flag_reset_map(ops_particle particle, int flag) {
   if (particle->no_particles == 0)
     return;
 
-  int dim = particle->block->dims;
   int Nlocal = particle->no_particles;
 
   for (int i = 0; i < Nlocal; i++) {
@@ -2058,19 +2265,21 @@ void _ops_particle_remove_flag_reset_map(ops_particle particle, int flag) {
 void _ops_particle_find_intra_box(ops_particle particle, ops_int_particle_halos halo,
                                   int iswap, int ifirst, int ilast) {
 
-  double *xpos = (double *)particle->particle_pos_dat->data;
+  char *xpos = particle->particle_pos_dat->data;
   int dim = particle->block->dims;
 
   int nsend_neg = 0;
   int nsend_pos = 0;
 
   for (int ipart = ifirst; ipart < ilast; ipart++) {
-    if (iswap < halo->nswap_neg && particle_is_within(xpos + dim * ipart, halo->region_bord_neg, dim)) {
+    if (iswap < halo->nswap_neg && _particle_is_within(xpos, halo->region_bord_neg, ipart, dim ,
+                                                       particle->particle_pos_dat->type_size)) {
       nsend_neg++;
       continue;
     }
 
-    if (iswap < halo->nswap_pos && particle_is_within(xpos + dim * ipart, halo->region_bord_pos, dim)) {
+    if (iswap < halo->nswap_pos && _particle_is_within(xpos, halo->region_bord_pos, ipart, dim,
+                                                       particle->particle_pos_dat->type_size)) {
       nsend_pos++;
       continue;
     }
@@ -2160,7 +2369,6 @@ void _ops_particle_set_intra_map(ops_particle particle, ops_int_particle_halos h
 }
 
 
-
 void _ops_particle_set_intra_border_box(ops_particle particle, ops_int_particle_halos halo,
                                         int iswap, int ifirst, int ilast) {
 
@@ -2175,16 +2383,19 @@ void _ops_particle_set_intra_border_box(ops_particle particle, ops_int_particle_
   int nsend_neg = 0;
   int nsend_pos = 0;
 
-  double *xpos = (double *)particle->particle_pos_dat->data;
+  char *xpos = particle->particle_pos_dat->data;
 
   for (int ipart = ifirst; ipart < ilast; ipart++) {
-    if (iswap < halo->nswap_neg && particle_is_within(xpos + dim * ipart, halo->region_bord_neg, dim)) {
+    if (iswap < halo->nswap_neg && _particle_is_within(xpos, halo->region_bord_neg, ipart,
+                                                       dim, particle->type_box)) {
+
       halo->particle_send_neg[nsend_neg] = ipart;
       nsend_neg++;
 
     }
 
-    if (iswap < halo->nswap_pos && particle_is_within(xpos + dim * ipart, halo->region_bord_pos, dim)) {
+    if (iswap < halo->nswap_pos && _particle_is_within(xpos, halo->region_bord_pos, ipart,
+                                                       dim, particle->type_box)) {
       halo->particle_send_pos[nsend_pos] = ipart;
       nsend_pos++;
     }
@@ -2192,6 +2403,8 @@ void _ops_particle_set_intra_border_box(ops_particle particle, ops_int_particle_
   }
 }
 
+
+//TODO:
 void ops_mpi_particle_host_write_to_file(ops_particle particle, const char *file_name,
                                          char *buff, size_t len) {
 
@@ -2202,7 +2415,7 @@ void ops_mpi_particle_host_write_to_file(ops_particle particle, const char *file
 
   if (!sb->owned) return;
 
-  int num_ranks, my_rank;
+  int my_rank;
   MPI_Comm_rank(sb->comm, &my_rank);
   if (my_rank == 0)
     MPI_File_delete(file_name, MPI_INFO_NULL);
@@ -2248,17 +2461,47 @@ void ops_particle_print_mpi_dats_to_txt_file_core(ops_particle particle, ops_dat
              MPI_SUM, 0, sb->comm);
 
   if (local_rank == 0) {
-    _ops_append_char(buff, len, size, "Block %s: [%f %f] x [%f %f] ", particle->block->name,
-                     particle->box_block->getGlobalMin().x,
-                     particle->box_block->getGlobalMax().x,
-                     particle->box_block->getGlobalMin().y,
-                     particle->box_block->getGlobalMax().y);
 
-    if (particle->block->dims == 3)
-      _ops_append_char(buff, len, size, "[%f %f] ", particle->box_block->getGlobalMin().z,
-                       particle->box_block->getGlobalMax().z);
+    switch (particle->type_box) {
+    case sizeof(float): {
+      _ops_append_char(buff, len, size, "Block %s: [%f %f] x [%f %f] ", particle->block->name,
+                       ((BoundingBox<float> *)particle->box_block)->getGlobalMin().x,
+                       ((BoundingBox<float> *)particle->box_block)->getGlobalMax().x,
+                       ((BoundingBox<float> *)particle->box_block)->getGlobalMin().y,
+                       ((BoundingBox<float> *)particle->box_block)->getGlobalMax().y);
 
-    _ops_append_char(buff, len, size, "\nParticle: %s Number of particles: %d\n", particle->name, ntotal);
+      if (particle->block->dims == 3)
+        _ops_append_char(buff, len, size, "[%f %f] ",
+                         ((BoundingBox<float> *)particle->box_block)->getGlobalMin().z,
+                         ((BoundingBox<float> *) particle->box_block)->getGlobalMax().z);
+    } break;
+    case sizeof(double): {
+      _ops_append_char(buff, len, size, "Block %s: [%f %f] x [%f %f] ", particle->block->name,
+                             ((BoundingBox<double> *)particle->box_block)->getGlobalMin().x,
+                             ((BoundingBox<double> *)particle->box_block)->getGlobalMax().x,
+                             ((BoundingBox<double> *)particle->box_block)->getGlobalMin().y,
+                             ((BoundingBox<double> *)particle->box_block)->getGlobalMax().y);
+
+      if (particle->block->dims == 3)
+        _ops_append_char(buff, len, size, "[%f %f] ",
+                        ((BoundingBox<double> *)particle->box_block)->getGlobalMin().z,
+                        ((BoundingBox<double> *) particle->box_block)->getGlobalMax().z);
+    } break;
+    case sizeof(long double): {
+      _ops_append_char(buff, len, size, "Block %s: [%f %f] x [%f %f] ", particle->block->name,
+                             ((BoundingBox<long double> *)particle->box_block)->getGlobalMin().x,
+                             ((BoundingBox<long double> *)particle->box_block)->getGlobalMax().x,
+                             ((BoundingBox<long double> *)particle->box_block)->getGlobalMin().y,
+                             ((BoundingBox<long double> *)particle->box_block)->getGlobalMax().y);
+
+            if (particle->block->dims == 3)
+              _ops_append_char(buff, len, size, "[%f %f] ",
+                               ((BoundingBox<long double> *)particle->box_block)->getGlobalMin().z,
+                               ((BoundingBox<long double> *) particle->box_block)->getGlobalMax().z);
+    } break;
+    }
+
+    _ops_append_char(buff, len, size, "\nParticle: %s \nNumber of particles: %d\n", particle->name, ntotal);
 
     //Create title
     for (int idat = 0; idat < ndats; idat++) {
@@ -2302,19 +2545,48 @@ void ops_particle_print_mpi_data_to_txt_file_core(ops_particle particle,
 
 
   if (local_rank == 0) {
-    _ops_append_char(buff, len, size, "Block %s: [%f %f] x [%f %f] ",
-                     particle->block->name, particle->box_block->getGlobalMin().x,
-                     particle->box_block->getGlobalMax().x,
-                     particle->box_block->getGlobalMin().y,
-                     particle->box_block->getGlobalMax().y);
+    if (particle->particle_pos_dat->type_size == sizeof(float)) {
+      BoundingBox<float>* box = (BoundingBox<float> *)particle->box_block;
+      _ops_append_char(buff, len, size, "Block %s: [%f %f] x [%f %f] ",
+                       particle->block->name, box->getGlobalMin().x,
+                       box->getGlobalMax().x,
+                       box->getGlobalMin().y,
+                       box->getGlobalMax().y);
+      if (particle->block->dims == 3)
+        _ops_append_char(buff, len, size, "[%f %f]\n",  box->getGlobalMin().z,
+                         box->getGlobalMax().z);
+      else
+        _ops_append_char(buff, len, size, "\n");
 
-    if (particle->block->dims == 3)
-      _ops_append_char(buff, len, size, "[%f %f]\n",  particle->box_block->getGlobalMin().z,
-                       particle->box_block->getGlobalMax().z);
-    else
-      _ops_append_char(buff, len, size, "\n");
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+      BoundingBox<double>* box = (BoundingBox<double> *)particle->box_block;
+      _ops_append_char(buff, len, size, "Block %s: [%f %f] x [%f %f] ",
+                       particle->block->name, box->getGlobalMin().x,
+                       box->getGlobalMax().x,
+                       box->getGlobalMin().y,
+                       box->getGlobalMax().y);
+      if (particle->block->dims == 3)
+        _ops_append_char(buff, len, size, "[%f %f]\n",  box->getGlobalMin().z,
+                         box->getGlobalMax().z);
+      else
+        _ops_append_char(buff, len, size, "\n");
 
-    _ops_append_char(buff, len, size, "\nParticle: %s Number of particles: %d\n", particle->name, ntotal);
+    }
+    else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+      BoundingBox<long double>* box = (BoundingBox<long double> *)particle->box_block;
+      _ops_append_char(buff, len, size, "Block %s: [%f %f] x [%f %f] ",
+                       particle->block->name, box->getGlobalMin().x,
+                       box->getGlobalMax().x,
+                       box->getGlobalMin().y,
+                       box->getGlobalMax().y);
+      if (particle->block->dims == 3)
+        _ops_append_char(buff, len, size, "[%f %f]\n",  box->getGlobalMin().z,
+                         box->getGlobalMax().z);
+      else
+        _ops_append_char(buff, len, size, "\n");
+
+    }
 
     //Write titles
 
@@ -2365,10 +2637,4 @@ void ops_particle_print_mpi_data_to_txt_file_core(ops_particle particle,
   ops_free(buff);
 
 }
-
-void ops_particle_map_get_dx(ops_particle_mapping map, double dx[]) {
-
-  for (int i = 0; i < map->particle->block->dims; i++) dx[i] = map->dx[i];
-}
-
 
