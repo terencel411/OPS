@@ -11,7 +11,7 @@ include $(OPS_INSTALL_PATH)/../makefiles/Makefile.cuda
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hip
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
-HEADERS=
+HEADERS=user_types.h
 
 OPS_FILES=testing_update_parts.cpp
 
