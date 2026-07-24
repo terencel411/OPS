@@ -17,10 +17,7 @@ from scheme import Scheme
 from store import Application, ParseError
 from target import Target
 from util import getVersion, safeFind
-<<<<<<< HEAD
 from util import create_cpp_main, replace_fortran_program_with_subroutine
-=======
->>>>>>> mpi_zone
 
 def main(argv=None) -> None:
 

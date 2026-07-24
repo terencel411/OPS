@@ -38,7 +38,7 @@
 #define __OPS_BOUNDING_BOX_DEFS_H_
 
 
-#include "limits.h"
+#include <limits.h>
 #include "ops_util.h"
 //Structure that defines
 template<typename T>

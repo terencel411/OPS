@@ -53,10 +53,14 @@ class Cpp(Lang):
         args = [f"-I{dir}" for dir in include_dirs]
         args = args + [f"-D{define}" for define in defines]
         args = args +['-std=c++11']
-        source = path.read_text()
 
+        source = path.read_text()
         if preprocess:
-            preprocessor = Preprocessor() 
+            import re
+            source = re.sub(r'__has_include\s*\([^)]*\)', '0', source)
+            import re
+            source = re.sub(r'__has_include\s*\([^)]*\)', '0', source)
+            preprocessor = Preprocessor()
 
             for dir in include_dirs:
                 preprocessor.add_path(str(dir.resolve()))
