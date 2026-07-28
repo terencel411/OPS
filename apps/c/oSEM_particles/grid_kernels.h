@@ -226,4 +226,17 @@ void KerCompareFluct(const ACC<double> &u,  const ACC<double> &v,  const ACC<dou
   d = std::abs(w(0, 0)); if (d > *maxpart) *maxpart = d;
 }
 
+/* Whole-field checksum, as OPS reductions so it works unchanged under MPI.
+ * Each owned node is counted exactly once across all ranks, so the result is a
+ * property of the FIELD, not of the decomposition -- which makes it a valid
+ * comparison between different rank counts. */
+void KerFluctChecksum(const ACC<double> &u, const ACC<double> &v,
+                      const ACC<double> &w, double *sum2, double *amax) {
+  const double q = u(0, 0) * u(0, 0) + v(0, 0) * v(0, 0) + w(0, 0) * w(0, 0);
+  *sum2 += q;
+  if (std::abs(u(0, 0)) > *amax) *amax = std::abs(u(0, 0));
+  if (std::abs(v(0, 0)) > *amax) *amax = std::abs(v(0, 0));
+  if (std::abs(w(0, 0)) > *amax) *amax = std::abs(w(0, 0));
+}
+
 #endif /* _GRID_KERNELS_H_ */

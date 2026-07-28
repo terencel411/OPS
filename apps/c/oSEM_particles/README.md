@@ -25,14 +25,27 @@ grid-outer scatter loop and its constraints).
 |---|---|---|---|---|---|
 | A | eddies seeded as particles | PASS | PASS | PASS | — |
 | B | convection + recycling | PASS | PASS | PASS | — |
-| C | `compute_fluct` as a scatter loop | **PASS** | not yet validated | not yet validated | — |
+| C | `compute_fluct` as a scatter loop | **PASS** | **PASS** | **PASS** | — |
 
 **Stage C in serial matches the reference to 3.9e-16 relative** over 50 steps,
 with `particle hits == reference hits` exactly (73766 = 73766) — the search
 finds every true eddy-node pair, and the only difference is summation order.
 
-Not yet done: Stage C validated under MPI (the `-validate` reference is
-serial-only, see below), np = 8, and host-side respawn.
+**Stage C under MPI** is checked with `-nojump`, which disables the respawn so
+nothing migrates and the field is fully deterministic; seeding is keyed on the
+global eddy index, so the field is identical at any rank count and the whole-
+field checksum is a valid cross-rank comparison:
+
+| ranks | `sum|q|^2` | max |
+|---|---|---|
+| 1 | 2.171922495776301e+07 | 1.450290277361987e+02 |
+| 2 | 2.171922495776301e+07 | 1.450290277361987e+02 |
+| 4 | 2.171922495776296e+07 | 1.450290277361987e+02 |
+
+np=1 and np=2 are bit-identical; np=4 differs in the 15th digit (2.3e-15
+relative), which is reduction ordering. The max is bit-identical throughout.
+
+Not yet done: np = 8, and host-side respawn.
 
 ## Build and run
 

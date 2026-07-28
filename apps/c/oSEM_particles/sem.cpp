@@ -703,6 +703,27 @@ int main(int argc, char **argv) {
    * genuinely exercises recycling: eddies must respawn, be re-binned after
    * teleporting, and migrate between ranks -- all without losing any. */
 
+  /* Field checksum -- the MPI check for Stage C.
+   * With -nojump the eddies never change (y,z), so nothing migrates and the
+   * field is fully deterministic; seeding is keyed on the global eddy index, so
+   * it is identical at any rank count. Any difference between rank counts is
+   * therefore a real defect in the scatter loop or its halo. */
+  {
+    double h_sum2 = 0.0, h_amax = 0.0;
+    ops_reduction r_s = ops_decl_reduction_handle(sizeof(double), "double", "sum2");
+    ops_reduction r_m = ops_decl_reduction_handle(sizeof(double), "double", "amax");
+    ops_par_loop(KerFluctChecksum, "KerFluctChecksum", block, 2, inlet_range,
+                 ops_arg_dat(d_uprime, 1, S2D_00, "double", OPS_READ),
+                 ops_arg_dat(d_vprime, 1, S2D_00, "double", OPS_READ),
+                 ops_arg_dat(d_wprime, 1, S2D_00, "double", OPS_READ),
+                 ops_arg_reduce(r_s, 1, "double", OPS_INC),
+                 ops_arg_reduce(r_m, 1, "double", OPS_MAX));
+    ops_reduction_result(r_s, &h_sum2);
+    ops_reduction_result(r_m, &h_amax);
+    ops_printf("FIELD CHECKSUM         : sum|q|^2 = %.15e   max = %.15e\n",
+               h_sum2, h_amax);
+  }
+
   int ok_b = report_eddy_field(eddy_parts, p_pos, p_x, p_eps);
   const int nfinal = total_particles(eddy_parts);
 
