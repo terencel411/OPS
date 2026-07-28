@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <cstring>
 #include <cmath>
 #include <random>
 #include <map>
@@ -20,6 +21,7 @@ std::map<int, int> eps_map;
 #include "OPS_oSEM_eddy_functions.h"
 #include "OPS_oSEM_kernels.h"
 #include "OPS_oSEM_io.h"
+#include "OPS_oSEM_eddy_gather.h"
 
 int main(int argc, char** argv){
     ops_init(argc, argv, 1);
@@ -47,8 +49,22 @@ int main(int argc, char** argv){
     eddy_z_min = z_min - r_max;
     eddy_z_max = z_max + r_max;
     vol = std::abs((x_max - x_min) * (y_max - y_min + 2 * r_max) * (z_max - z_min + 2 * r_max));
-    rep_radius = 0.2 * delta; 
+    rep_radius = 0.2 * delta;
     calc_eddies(eddies, vol, rep_radius);
+
+    /* Optional overrides, so short verification runs do not need a recompile:
+     *   -niter N       number of time steps
+     *   -writeevery N  HDF5 output interval
+     *   -checkeddy     verify every rank holds the same complete eddy array */
+    int check_eddies = 0;
+    for (int iarg = 1; iarg < argc; iarg++) {
+        if (strcmp(argv[iarg], "-niter") == 0 && iarg + 1 < argc)
+            niter = atoi(argv[++iarg]);
+        else if (strcmp(argv[iarg], "-writeevery") == 0 && iarg + 1 < argc)
+            write_output_file = atoi(argv[++iarg]);
+        else if (strcmp(argv[iarg], "-checkeddy") == 0)
+            check_eddies = 1;
+    }
 
     printf("eddies: %i", eddies);
 
@@ -318,13 +334,36 @@ int main(int argc, char** argv){
         ops_arg_dat(d_eps_y_rng, 1, S2D_00, "int", OPS_READ),
         ops_arg_dat(d_eps_z_rng, 1, S2D_00, "int", OPS_READ));
 
-        ops_dat_fetch_data(d_x_gbl, 0, (char*)x_gbl);
-        ops_dat_fetch_data(d_y_gbl, 0, (char*)y_gbl);
-        ops_dat_fetch_data(d_z_gbl, 0, (char*)z_gbl);
-        ops_dat_fetch_data(d_r_gbl, 0, (char*)r_gbl);
-        ops_dat_fetch_data(d_eps_x_gbl, 0, (char*)eps_x_gbl);
-        ops_dat_fetch_data(d_eps_y_gbl, 0, (char*)eps_y_gbl);
-        ops_dat_fetch_data(d_eps_z_gbl, 0, (char*)eps_z_gbl);
+        /* Every rank needs the COMPLETE eddy list, because compute_fluct loops
+         * over all `eddies` entries.  A bare ops_dat_fetch_data() only delivers
+         * this rank's slice of the decomposed eddy_block -- see the header for
+         * the measured failure mode. */
+        fetch_eddy_dat(d_x_gbl,     x_gbl,     sizeof(double));
+        fetch_eddy_dat(d_y_gbl,     y_gbl,     sizeof(double));
+        fetch_eddy_dat(d_z_gbl,     z_gbl,     sizeof(double));
+        fetch_eddy_dat(d_r_gbl,     r_gbl,     sizeof(double));
+        fetch_eddy_dat(d_eps_x_gbl, eps_x_gbl, sizeof(int));
+        fetch_eddy_dat(d_eps_y_gbl, eps_y_gbl, sizeof(int));
+        fetch_eddy_dat(d_eps_z_gbl, eps_z_gbl, sizeof(int));
+
+        if (check_eddies && i == 0) {
+            int bad = 0;
+            bad += check_eddy_replication(x_gbl,     eddies * sizeof(double), "x_gbl");
+            bad += check_eddy_replication(y_gbl,     eddies * sizeof(double), "y_gbl");
+            bad += check_eddy_replication(z_gbl,     eddies * sizeof(double), "z_gbl");
+            bad += check_eddy_replication(r_gbl,     eddies * sizeof(double), "r_gbl");
+            bad += check_eddy_replication(eps_x_gbl, eddies * sizeof(int),    "eps_x_gbl");
+            bad += check_eddy_replication(eps_y_gbl, eddies * sizeof(int),    "eps_y_gbl");
+            bad += check_eddy_replication(eps_z_gbl, eddies * sizeof(int),    "eps_z_gbl");
+            ops_printf("EDDY REPLICATION CHECK: %s\n", bad ? "FAILED" : "ALL PASS");
+            ops_printf("EDDY FIELD STATISTICS (%d eddies):\n", eddies);
+            report_eddy_range(x_gbl, eddies, "x", x_min, x_max);
+            report_eddy_range(y_gbl, eddies, "y", eddy_y_min, eddy_y_max);
+            report_eddy_range(z_gbl, eddies, "z", eddy_z_min, eddy_z_max);
+            report_eps_balance(eps_x_gbl, eddies, "eps_x");
+            report_eps_balance(eps_y_gbl, eddies, "eps_y");
+            report_eps_balance(eps_z_gbl, eddies, "eps_z");
+        }
 
         //ops_update_const("x_gbl", eddies, "double", x_gbl);
         //ops_update_const("y_gbl", eddies, "double", y_gbl);
