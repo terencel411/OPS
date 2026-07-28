@@ -96,6 +96,15 @@ const Real WEIGHT = 1.0;    /* what each particle deposits in "all" mode */
    it and it must be known before the particles are written. */
 int identity_mode = 0;
 
+/* -stride N makes each BIN N grid cells across instead of one.
+ *
+ * This is not (only) a performance knob. The particle ghost band is correct
+ * only to a depth of ONE bin under MPI (see README section 3a), so an
+ * interaction radius spanning many CELLS cannot be served by a bin-per-cell
+ * mapping. Coarsening the bins to about one radius lets a +/-1 stencil cover
+ * the radius while keeping the ghost band at the depth that works. */
+int STRIDE = 1;
+
 /* Interaction radius, in cells. HALO cells either side gives a
    (2*HALO+1)^2 search stencil. Overridable with -halo to probe how the
    stencil width interacts with the MPI halo depth.                     */
@@ -203,6 +212,8 @@ int main(int argc, char **argv) {
         identity_mode = (strcmp(m, "identity") == 0); }
     else if (strcmp(argv[i], "-halo") == 0 && i + 1 < argc)
       HALO = atoi(argv[++i]);
+    else if (strcmp(argv[i], "-stride") == 0 && i + 1 < argc)
+      STRIDE = atoi(argv[++i]);
     else if (strcmp(argv[i], "-nsteps") == 0 && i + 1 < argc)
       nsteps = atoi(argv[++i]);
     else if (strcmp(argv[i], "-npart") == 0 && i + 1 < argc)
@@ -238,7 +249,15 @@ int main(int argc, char **argv) {
      Both need the same reach, so one object serves both.               */
   int nsten = 0;
   int *s2d_box = build_box_stencil(HALO, nsten);
-  ops_stencil S2D_BOX = ops_decl_stencil(2, nsten, s2d_box, "search_box");
+
+  /* Two stencils, because with a coarse mapping the loop indexes the FINE grid
+     but addresses COARSE bins. A prolong stencil carries the ratio, and
+     get_point_in_map() case 1 divides the grid index by mgrid_stride
+     (ops_grid_part_seq_v2.h:82). With STRIDE == 1 the two coincide. */
+  int map_stride[] = {STRIDE, STRIDE};
+  ops_stencil S2D_BOX = (STRIDE > 1)
+      ? ops_decl_prolong_stencil(2, nsten, s2d_box, map_stride, "search_box_prolong")
+      : ops_decl_stencil(2, nsten, s2d_box, "search_box");
 
   /* ---- 3. Bounding box -------------------------------------------- */
 
@@ -258,9 +277,11 @@ int main(int argc, char **argv) {
 
   /* ---- 5. Mapping -------------------------------------------------- */
 
-  ops_particle_mapping map = ops_decl_mapping(particle, x_grid, S2D_BOX,
-                                              OPS_WITH_VIRTUAL,
-                                              OPS_UNIFORM_STAG, 1);
+  ops_particle_mapping map = (STRIDE > 1)
+      ? ops_decl_mapping(particle, x_grid, S2D_BOX, map_stride,
+                         OPS_WITH_VIRTUAL, OPS_UNIFORM_STAG, 1)
+      : ops_decl_mapping(particle, x_grid, S2D_BOX,
+                         OPS_WITH_VIRTUAL, OPS_UNIFORM_STAG, 1);
 
   /* p_wgt is in the border list because its value must survive a change of
      owning rank -- it is what gets deposited. */
@@ -292,10 +313,11 @@ int main(int argc, char **argv) {
   Real radius = HALO * dx;
 
   ops_printf("OPS Particles tutorial 3: scatter onto the grid\n");
-  ops_printf("grid %dx%d, %d particles, mode=%s, halo=%d, stencil=%dx%d=%d\n",
+  ops_printf("grid %dx%d, %d particles, mode=%s, halo=%d, stride=%d, "
+             "stencil=%dx%d=%d, reach=%d cells\n",
              NX, NY, npart,
              identity_mode ? "identity" : (radius_mode ? "radius" : "all"),
-             HALO, 2 * HALO + 1, 2 * HALO + 1, nsten);
+             HALO, STRIDE, 2 * HALO + 1, 2 * HALO + 1, nsten, HALO * STRIDE);
 
   /* ---- 7. Time loop ------------------------------------------------ */
 
@@ -360,10 +382,14 @@ int main(int argc, char **argv) {
        stencil_points * sum(1..N) = nsten * N*(N+1)/2. Getting this right
        requires each visit to read the RIGHT particle's weight, not merely to
        visit the right NUMBER of particles. */
+    /* A particle in coarse bin B is visited, for each stencil offset s, by
+       every FINE node n with n/STRIDE == B - s. In 2-D that is STRIDE^2 nodes
+       per offset, so the visit count per particle is nsten * STRIDE^2. */
     const Real N = (Real)(NPX * NPY);
+    const Real per_particle = (Real)nsten * (Real)(STRIDE * STRIDE);
     const Real expect = identity_mode
-                      ? (Real)nsten * N * (N + 1.0) / 2.0
-                      : N * (Real)nsten * WEIGHT;
+                      ? per_particle * N * (N + 1.0) / 2.0
+                      : per_particle * N * WEIGHT;
     const Real err = fabs(h_sum - expect);
     ops_printf("sum(rho) expected  : %.10g   (%s)\n", expect,
                identity_mode ? "stencil * sum(1..N)" : "N * stencil");

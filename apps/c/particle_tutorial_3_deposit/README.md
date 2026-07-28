@@ -201,6 +201,38 @@ for MPI.
 patched. Reproducer:
 `mpirun -np 4 ./tutorial3_dev_mpi -mode identity -halo 2 -nsteps 20`.
 
+### 3b. The coarse mapping fixes it
+
+`-stride N` makes each bin N cells across, via the strided
+`ops_decl_mapping` overload (`ops_particles_lib_core.h:1282`) plus an
+`ops_decl_prolong_stencil` carrying the same ratio. Reach is then
+`halo * stride` cells while the ghost band stays one *bin* deep.
+
+Identity mode, `-halo 1` throughout:
+
+| stride | reach | np=1 | np=2 | np=4 |
+|---|---|---|---|---|
+| 1 | 1 cell | 0 | 0 | 0 |
+| 2 | 2 cells | 0 | **0** | **0** |
+| 4 | 4 cells | 0 | **0** | **0** |
+
+Reaches of 2 and 4 cells are *wrong* under MPI with a bin-per-cell mapping
+(§3a) and **exact** with a coarse one. This is the recommended configuration for
+any multi-cell interaction radius.
+
+**One sizing constraint.** Too few coarse bins and the run deadlocks:
+
+| stride | coarse bins (41 nodes) | np=2 | np=4 |
+|---|---|---|---|
+| 4 | 10 | exact | exact |
+| 6 | 6 | **hang** | **hang** |
+| 8 | 5 | **hang** | **hang** |
+
+The failure tracks the total number of coarse bins, not the reach. Keep the bin
+count comfortably above the rank count in each dimension — a handful of bins per
+rank, not one or two. Pick the stride from the interaction radius first, then
+check the resulting bin count against the intended rank count.
+
 ---
 
 ## 4. Making the translator accept it
