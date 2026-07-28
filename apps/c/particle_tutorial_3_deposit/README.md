@@ -80,6 +80,19 @@ otherwise some source nodes `b - s` fall outside the iteration range. That is
 why `SEED_BOX` is a tight central box: it keeps the identity valid even at
 half-width 12.
 
+`-mode identity` is the same unconditional deposit, but each particle carries a
+**distinct** weight (its global lattice index + 1) instead of 1.0. The expected
+total becomes
+
+```
+sum(rho) == stencil_points * sum(1..N) == stencil_points * N*(N+1)/2
+```
+
+This is the important one. With every particle carrying the same weight, a loop
+that visits the right *number* of particles but reads the *wrong* particle's
+data still passes — `-mode all` is blind to it. Distinct weights close that gap:
+the total can only come out right if every visit reads the correct particle.
+
 `-mode radius` deposits only within `HALO*dx`. No closed form, so it is checked
 by requiring the total to match between serial and MPI (it does: 1240 at
 np = 1, 3 and 4).
@@ -122,6 +135,71 @@ suspicious:
 - **Stencil half-widths up to 12**, i.e. a 25×25 = 625-point search. Fine
   everywhere except the 2×1 case above, despite MPI halo buffers being sized for
   depth 5 by default (`ops_mpi_partition.cpp:1454`).
+
+### 3a. Ghost particles carry the wrong payload under MPI
+
+Run `-mode identity -halo 2 -nsteps 20`:
+
+| ranks | sum(rho) | expected | |
+|---|---|---|---|
+| 1 | 126250 | 126250 | **exact** |
+| 2 | 124475 | 126250 | short 1.4% |
+| 4 | 124688 | 126250 | short 1.2% |
+| 8 | 124688 | 126250 | short 1.2% |
+
+**Serial is exact.** That is a strong positive result: the grid-outer loop's
+per-particle addressing — `construct()` basing the `ACCP<T>` at
+`data + first_point*dim` and `shift_point_arg` advancing by
+`(point - ifirst) * dim` (`ops_grid_part_seq_v2.h:433, :331`) — delivers the
+correct particle's data. Any application seeing wrong values in serial should
+look at its own mapping and stencil setup, not here.
+
+**MPI is not.** The same run is short by ~1.2% from 2 ranks upward. The
+identical run under `-mode all` gives error exactly 0 at every rank count, and
+the *only* difference is that particles now carry distinct weights. So the right
+number of particles is visited, but some of them supply the wrong payload —
+i.e. ghost particles, even though `p_wgt` is listed in **both** `dat_border` and
+`dat_forward`.
+
+Isolating it against the mapping halo depth gives a sharp answer:
+
+| halo | np=1 | np=2 | np=4 |
+|---|---|---|---|
+| 1 | 0 | **0** | **0** |
+| 2 | 0 | 1.78e3 | 1.56e3 |
+| 3 | 0 | 4.27e3 | 2.03e3 |
+| 4 | 0 | 1.71e3 | 1.82e3 |
+
+**The particle ghost band is only correct to a depth of one cell.** Serial is
+exact at every depth. MPI is exact at depth 1 and wrong at every depth beyond
+it, at every rank count. The error is not monotone and changes sign — halo 4 at
+np=4 *over*counts — so the ghost set is variously incomplete and duplicated
+rather than simply truncated.
+
+**This supersedes the "only 2×1 fails" reading of the table in §3.** That
+conclusion came from `-mode all`, whose uniform weights could only expose
+miscounts, never wrong payloads. With distinct weights every rank count fails
+beyond depth 1. The §3 table is still correct about *counts*; it was just
+measuring the less important thing.
+
+### Consequence for real applications
+
+A coupling kernel whose interaction radius spans more than one cell cannot use a
+fine mapping under MPI. For the 2-D SEM app that is `r/dy ≈ 12` and `r/dz ≈ 4`,
+so a bin-per-cell mapping needs a halo of 12 — well into the broken regime, and
+silently so.
+
+The fix is to make the **bins** about one interaction radius across instead of
+one cell, via the coarse mapping (`ops_decl_mapping` with a `stride[]`,
+`ops_particles_lib_core.h:1282`, plus a prolong stencil — `get_point_in_map`
+case 1 divides the grid index by `mgrid_stride`). Then a ±1 stencil covers the
+radius and the ghost band stays at the one depth that works. That was previously
+noted as a performance optimisation; it is really a **correctness requirement**
+for MPI.
+
+`OPS/ops/` is treated as read-only here, so this is reported rather than
+patched. Reproducer:
+`mpirun -np 4 ./tutorial3_dev_mpi -mode identity -halo 2 -nsteps 20`.
 
 ---
 

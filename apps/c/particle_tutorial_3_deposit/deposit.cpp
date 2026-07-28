@@ -90,7 +90,11 @@ const Real VEL[2] = {0.5, 0.25};
 const Real DT     = 0.001;
 const int  NSTEPS = 200;
 
-const Real WEIGHT = 1.0;    /* what each particle deposits */
+const Real WEIGHT = 1.0;    /* what each particle deposits in "all" mode */
+
+/* Set by -mode identity. Declared at file scope because seed_particles() needs
+   it and it must be known before the particles are written. */
+int identity_mode = 0;
 
 /* Interaction radius, in cells. HALO cells either side gives a
    (2*HALO+1)^2 search stencil. Overridable with -halo to probe how the
@@ -131,7 +135,11 @@ void seed_particles(ops_particle particle, ops_dat pos, ops_dat vel,
       xp[2 * n + 1] = y;
       up[2 * n]     = VEL[0];
       up[2 * n + 1] = VEL[1];
-      wp[n]         = WEIGHT;
+      /* IDENTITY MODE: a DISTINCT weight per particle -- the global lattice
+         index plus one. With every particle carrying 1.0 (the original
+         WEIGHT), reading the wrong particle's data is invisible, which is
+         exactly the blind spot this mode exists to close. */
+      wp[n]         = identity_mode ? (Real)(i * NPY + j + 1) : WEIGHT;
       n++;
     }
   }
@@ -190,7 +198,9 @@ int main(int argc, char **argv) {
   int nsteps = NSTEPS;
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-mode") == 0 && i + 1 < argc)
-      radius_mode = (strcmp(argv[++i], "radius") == 0);
+      { const char *m = argv[++i];
+        radius_mode   = (strcmp(m, "radius") == 0);
+        identity_mode = (strcmp(m, "identity") == 0); }
     else if (strcmp(argv[i], "-halo") == 0 && i + 1 < argc)
       HALO = atoi(argv[++i]);
     else if (strcmp(argv[i], "-nsteps") == 0 && i + 1 < argc)
@@ -283,7 +293,8 @@ int main(int argc, char **argv) {
 
   ops_printf("OPS Particles tutorial 3: scatter onto the grid\n");
   ops_printf("grid %dx%d, %d particles, mode=%s, halo=%d, stencil=%dx%d=%d\n",
-             NX, NY, npart, radius_mode ? "radius" : "all",
+             NX, NY, npart,
+             identity_mode ? "identity" : (radius_mode ? "radius" : "all"),
              HALO, 2 * HALO + 1, 2 * HALO + 1, nsten);
 
   /* ---- 7. Time loop ------------------------------------------------ */
@@ -344,11 +355,18 @@ int main(int argc, char **argv) {
   ops_printf("sum(rho)           : %.10g\n", h_sum);
 
   if (!radius_mode) {
-    /* Exact integer identity -- see the header comment. */
-    const Real expect = (Real)(NPX * NPY) * (Real)nsten * WEIGHT;
+    /* Exact integer identity -- see the header comment.
+       In identity mode the weights are 1..N, so the expected total is
+       stencil_points * sum(1..N) = nsten * N*(N+1)/2. Getting this right
+       requires each visit to read the RIGHT particle's weight, not merely to
+       visit the right NUMBER of particles. */
+    const Real N = (Real)(NPX * NPY);
+    const Real expect = identity_mode
+                      ? (Real)nsten * N * (N + 1.0) / 2.0
+                      : N * (Real)nsten * WEIGHT;
     const Real err = fabs(h_sum - expect);
-    ops_printf("sum(rho) expected  : %.10g   (N=%d * stencil=%d)\n",
-               expect, NPX * NPY, nsten);
+    ops_printf("sum(rho) expected  : %.10g   (%s)\n", expect,
+               identity_mode ? "stencil * sum(1..N)" : "N * stencil");
     ops_printf("error              : %.3e\n", err);
     ok = ok && (err < 1e-9);
   } else {
