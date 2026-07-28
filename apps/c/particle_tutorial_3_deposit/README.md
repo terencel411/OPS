@@ -220,18 +220,32 @@ Reaches of 2 and 4 cells are *wrong* under MPI with a bin-per-cell mapping
 (§3a) and **exact** with a coarse one. This is the recommended configuration for
 any multi-cell interaction radius.
 
-**One sizing constraint.** Too few coarse bins and the run deadlocks:
+**The stride is not free — it must divide the grid.** `ops_decl_mapping` checks
+`size % stride == 0` and throws *"Introduce map do not project properly to block
+grid"* otherwise (`ops_particle_lib_core.cpp:1844`). The `size` it tests is
+`NX - 1`, i.e. the number of cells, not nodes.
 
-| stride | coarse bins (41 nodes) | np=2 | np=4 |
+On this 41-node grid (40 cells):
+
+| stride | 40 % stride | bins | result |
 |---|---|---|---|
-| 4 | 10 | exact | exact |
-| 6 | 6 | **hang** | **hang** |
-| 8 | 5 | **hang** | **hang** |
+| 2 | 0 | 20 | pass |
+| 3 | 1 | — | **rejected: divisibility** |
+| 4 | 0 | 10 | pass |
+| 5 | 0 | 8 | pass |
+| 6 | 4 | — | **rejected: divisibility** |
+| 8 | 0 | 5 | **aborts — cause not established** |
+| 10 | 0 | 4 | pass |
 
-The failure tracks the total number of coarse bins, not the reach. Keep the bin
-count comfortably above the rank count in each dimension — a handful of bins per
-rank, not one or two. Pick the stride from the interaction radius first, then
-check the resulting bin count against the intended rank count.
+So when choosing a stride, pick from the divisors of the cell count, at or above
+`ceil(radius / spacing)`. If the grid size has no convenient divisor — 100 and
+150 cells give 12 and 4 no trouble, but a prime does — size the mapping's
+coordinate dat separately, rounding its node count up to a multiple of the
+stride. The dat used for the mapping need not be the dat the loop iterates.
+
+Stride 8 passes the divisibility check and still aborts, while stride 10 with
+*fewer* bins passes — so this is not simply "too few bins", and the cause is not
+yet known. Prefer a stride that has been verified end to end.
 
 ---
 
