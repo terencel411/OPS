@@ -31,3 +31,4 @@ ops/fortran/mod
 tea*.in
 .clang-format
 *.txt
+*.h5
