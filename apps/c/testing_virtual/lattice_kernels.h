@@ -8,7 +8,7 @@
 #ifndef _LATTICE_KERNELS_H_
 #define _LATTICE_KERNELS_H_
 
-#include "user_types.h"
+#include "kernel_functions.h"
 /*-----------------------------------------------------------------------------*
  * Part I: Initialization kernels
  *-----------------------------------------------------------------------------*/
