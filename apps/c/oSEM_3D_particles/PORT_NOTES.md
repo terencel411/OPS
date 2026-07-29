@@ -1,9 +1,33 @@
 # oSEM_3D → OPS Particles: port design notes
 
-**Status: scaffolding only.** This directory currently holds unmodified copies of
-`../oSEM_3D` (the base version) plus `scatter_loop.h`. No particle code has been
-written yet. These notes record what the port requires, established by reading
-the app and by the 2-D port in `../oSEM_particles`.
+**Status: Stage A wired, not yet working.**
+
+Done so far:
+- development grid 150 x 100 x 60 (`-np0/-np1/-np2` to override; production is
+  750 x 250 x 150 and needs ~18 GB)
+- `sem_particles.h` — geometry derivation, seeding, migration cycle, 3-D box
+  stencil. All plain OPS API, generator-emittable.
+- particle declarations, coarse mapping and seeding wired into `opensbli.cpp`
+- **builds clean** as `make opensbli_dev_mpi`
+- eddy centres **clamped** to the grid range, per the decision in the section
+  below
+
+**Current blocker.** `ops_particle_setup_partition()` throws *"Defined bounding
+box of non-positive volume"*. Diagnosis so far: `partitionBoundingBox` never
+reaches its `xmin/xmax` printf, which means it took the `coords == nullptr`
+branch and used unset global bounds — even though `sem_coords` is passed to
+`ops_create_bounding_box`. So the box is not picking up the coordinate dat.
+Next step is to find where that pointer is dropped (there may be an MPI-specific
+`partitionBoundingBox` distinct from the one in
+`ops_particle_box_host_funcs.h:118`).
+
+Also unverified: the coordinate dat (257 x 193 x 65) is larger than the flow
+dats (150 x 100 x 60) in every direction. The 2-D app does the same thing
+successfully, but here the loop range that fills it exceeds the other dats'
+extents by more, which is worth ruling out.
+
+These notes record what the port requires, established by reading the app and by
+the 2-D port in `../oSEM_particles`.
 
 Read `../oSEM_particles/README.md` first — the three mapping constraints
 documented there apply here unchanged.
