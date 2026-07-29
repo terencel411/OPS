@@ -21,6 +21,7 @@
 
 #include "lattice_kernels.h"
 #include "particle_kernels.h"
+#include "LBM_particle_io.h"
 typedef double Real;
 //typedef float Real;
 
@@ -441,6 +442,12 @@ int main(int argc, char **argv) {
   int Nsteps = 400000;
   int nprint = 20000;
 
+  LBM_io_params io_params = {NX, NY, Nsteps, nprint, dx, dt, tau, OMEGA, rho0, cs};
+
+  //Initial state as HDF5
+  HDF5_IO_Write_lb_block_dynamic(lb_block, -1, rho, u_x, u_y, x_grid,
+                                 particle, parts_dat_outputs, 3, io_params);
+
   for (int i = 0; i < Nsteps; i++) {
 
     //Perform collisions
@@ -506,6 +513,10 @@ int main(int argc, char **argv) {
     if ((i + 1) % nprint == 0) {
       output_grid_dat(group_out, 4, i + 1);
       output_particle_dat(particle, parts_dat_outputs, 3, i + 1);
+
+      // Write to HDF5 file periodically
+      HDF5_IO_Write_lb_block_dynamic(lb_block, i, rho, u_x, u_y, x_grid,
+                                     particle, parts_dat_outputs, 3, io_params);
     }
 
   }
@@ -513,5 +524,9 @@ int main(int argc, char **argv) {
   output_grid_dat(group_out, 4, Nsteps);
   output_particle_dat(particle, parts_dat_outputs, 3, Nsteps);
 
+  // Write final output to HDF5 file
+  HDF5_IO_Write_lb_block(lb_block, Nsteps - 1, rho, u_x, u_y, x_grid,
+                         particle, parts_dat_outputs, 3, io_params);
 
+  ops_exit();
 }

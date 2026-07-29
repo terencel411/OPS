@@ -5,13 +5,14 @@
 # OPS_COMPILER (gnu,intel,etc)
 #
 
+USE_HDF5=1
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.common
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.mpi
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.cuda
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hip
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
-HEADERS=
+HEADERS=LBM_particle_io.h
 
 OPS_FILES=testing_update_parts.cpp
 
