@@ -65,12 +65,16 @@ const int  NPX     = 10;        /* particles seeded in x                  */
 const int  NPY     = 10;        /* particles seeded in y                  */
 
 /* Region the particles are seeded into (a sub-box of the domain).
-   Kept away from the edges so nothing drifts out and gets deleted.     */
+   Particles no longer have to stay inside it: anything that reaches the
+   right-hand edge is re-injected on the left (see KerApplyBoundaries).  */
 const Real SEED_BOX[4] = {0.20, 0.60, 0.20, 0.60}; /* xlo xhi ylo yhi    */
 
-const Real VEL[2]  = {0.5, 0.25};   /* the constant drift velocity        */
+/* Drift is along x only. The top and bottom walls are still enforced, so
+   giving VEL[1] a non-zero value makes the particles bounce between them
+   instead of streaming out of the domain.                              */
+const Real VEL[2]  = {0.5, 0.0};    /* the constant drift velocity        */
 const Real DT      = 0.001;
-const int  NSTEPS  = 400;           /* total displacement = (0.2, 0.1)    */
+const int  NSTEPS  = 1000;          /* 0.5 domain widths per 1000 steps   */
 const int  NPRINT  = 100;
 
 /* ================================================================== *
@@ -192,12 +196,29 @@ void update_maps(ops_particle particle,
 
   int decide = ops_particle_update_map_lists_actual_hybrid(particle);
 
+#ifdef OPS_MPI
+  /* Carry particles across the periodic seam BEFORE the deletion pass below,
+     or the ones that just left through the right-hand edge get removed as
+     out-of-domain instead of re-appearing on the left.                    */
+  ops_particle_halo_transfer_group_map(OPS_HALO_GRP_EXCHANGE, decide);
+#endif
+
   ops_particle_remove_delete_maps(particle, decide);
 
-  if (decide)
+  /* Each branch of the migration cycle has a matching halo transfer: the
+     ghost band across the seam is maintained on exactly the same schedule as
+     the ghost band between ranks.                                          */
+  if (decide) {
     ops_particle_intrablock_border_map_update(particle, dat_border, nborder);
-  else
+#ifdef OPS_MPI
+    ops_particle_halo_transfer_group_map(OPS_HALO_GRP_BORDER, decide);
+#endif
+  } else {
     ops_particle_intrablock_forward_map_update(particle, dat_forward, nforward);
+#ifdef OPS_MPI
+    ops_particle_halo_transfer_group_map(OPS_HALO_GRP_FORWARD, decide);
+#endif
+  }
 
   ops_particle_reset_flags(particle, decide);
 }
@@ -206,20 +227,46 @@ void update_maps(ops_particle particle,
  *  Verification
  * ================================================================== *
  *
- * Constant velocity and forward Euler means the exact answer is known:
- *     x(t) = x0 + v*t
+ * Constant velocity and forward Euler still means the exact answer is known,
+ * the boundary conditions just fold it back into the domain:
+ *
+ *   x : re-injection makes the motion periodic, so the exact position is
+ *       x0 + v*t reduced modulo the domain width.
+ *   y : reflecting walls turn the motion into a triangle wave of period 2*Ly.
+ *       With VEL[1] = 0 this collapses to y == y0.
+ *
  * Any deviation beyond round-off is a real bug, not discretisation error.
  */
-int check_result(ops_particle particle, ops_dat pos, ops_dat x0, Real t) {
+int check_result(ops_particle particle, ops_dat pos, ops_dat x0, Real t,
+                 const Real *lo, const Real *hi) {
 
   Real *xp  = (Real *)pos->data;
   Real *xp0 = (Real *)x0->data;
 
+  const Real Lx = hi[0] - lo[0];
+  const Real Ly = hi[1] - lo[1];
+
   Real worst = 0.0;
   for (size_t p = 0; p < particle->no_particles; p++) {
-    Real ex = xp0[2 * p]     + VEL[0] * t;
-    Real ey = xp0[2 * p + 1] + VEL[1] * t;
-    worst = fmax(worst, fabs(xp[2 * p]     - ex));
+
+    /* Periodic in x. fmod can return a negative remainder, hence the fixup. */
+    Real sx = fmod(xp0[2 * p] - lo[0] + VEL[0] * t, Lx);
+    if (sx < 0.0) sx += Lx;
+    Real ex = lo[0] + sx;
+
+    /* Measure the x error the short way round the loop. A particle sitting
+       within round-off of the seam is at hi in the simulation and at lo in
+       the formula (or the reverse); those are the same physical point, and
+       only the modular distance says so.                                   */
+    Real dx = fabs(xp[2 * p] - ex);
+    dx = fmin(dx, Lx - dx);
+
+    /* Reflected in y: fold [0,2Ly) back onto [0,Ly] to get the triangle. */
+    Real sy = fmod(xp0[2 * p + 1] - lo[1] + VEL[1] * t, 2.0 * Ly);
+    if (sy < 0.0) sy += 2.0 * Ly;
+    Real ey = lo[1] + (sy <= Ly ? sy : 2.0 * Ly - sy);
+
+    worst = fmax(worst, dx);
     worst = fmax(worst, fabs(xp[2 * p + 1] - ey));
   }
 
@@ -349,6 +396,77 @@ int main(int argc, char **argv) {
   const int noutput  = sizeof(dat_output)  / sizeof(dat_output[0]);
 
   /* ---------------------------------------------------------------- *
+   * 6b. Periodic halo in x  -- how particles get re-injected
+   * ---------------------------------------------------------------- *
+   * Particles that reach the right-hand edge must re-appear on the left.
+   *
+   * The obvious implementation -- a kernel that does `if (x >= x_max) x -=
+   * LENGTH` -- works in serial and fails under MPI. That assignment teleports
+   * a particle the full width of the domain, and the migration cycle only
+   * moves particles to a NEIGHBOURING rank. Whenever the decomposition puts
+   * more than one rank between the two edges the particle is silently lost
+   * (np = 8) or the run segfaults inside the map rebuild (np = 3). Measured:
+   * a manual wrap passes at np = 1,2,4 and fails at np = 3,5,6,8.
+   *
+   * The supported mechanism is a particle halo carrying a translation, the
+   * same construction apps/c/testing_virtual uses. Two halos are needed, one
+   * per direction: +LENGTH sends a particle off the right edge back to the
+   * left, -LENGTH does the reverse.
+   *
+   * MPI BUILDS ONLY. The single-node library rejects this setup outright
+   * ("Particle Halo exchange must be set after block boxes are set",
+   * ops/c/src/sequential/ops_particle_host_single_node.cpp:1908), so the
+   * serial builds keep the direct wrap in KerWrapX -- which is safe there
+   * precisely because there are no ranks to migrate between.
+   *
+   * OPS_PART_ORIENT_ON marks the dat that must be SHIFTED by `translate` as
+   * it crosses -- that is the position, and only the position. Everything
+   * else (velocity, id, seed position) rides across unchanged, so it is
+   * declared ORIENT_OFF. Leaving p_x0 out of this list entirely would break
+   * the final check the same way leaving it out of dat_border would.        */
+
+#ifdef OPS_MPI
+  ops_particle_halo_data h_pos = ops_particle_decl_data_halo(p_pos, p_pos,
+                                                             OPS_PART_ORIENT_ON);
+  ops_particle_halo_data h_vel = ops_particle_decl_data_halo(p_vel, p_vel,
+                                                             OPS_PART_ORIENT_OFF);
+  ops_particle_halo_data h_ids = ops_particle_decl_data_halo(p_ids, p_ids,
+                                                             OPS_PART_ORIENT_OFF);
+  ops_particle_halo_data h_x0  = ops_particle_decl_data_halo(p_x0, p_x0,
+                                                             OPS_PART_ORIENT_OFF);
+
+  ops_particle_halo_data halo_dats[] = {h_pos, h_vel, h_ids, h_x0};
+  const int nhalo_dats = sizeof(halo_dats) / sizeof(halo_dats[0]);
+
+  /* The band either side of the seam that participates in the exchange. One
+     cell is enough: a particle cannot cross more than a cell in a step.     */
+  Real dx_halo[]      = {LENGTH / static_cast<Real>(NX - 1), 0.0};
+  Real translate_p[]  = { LENGTH, 0.0};   /* right edge -> left edge         */
+  Real translate_m[]  = {-LENGTH, 0.0};   /* left edge  -> right edge        */
+  int  halo_dir[]     = {0, 1};
+
+  ops_particle_halo exch_x1 = ops_particle_decl_halo(particle, particle,
+      halo_dats, nhalo_dats, dx_halo, halo_dir, halo_dir, translate_p);
+  ops_particle_halo exch_x2 = ops_particle_decl_halo(particle, particle,
+      halo_dats, nhalo_dats, dx_halo, halo_dir, halo_dir, translate_m);
+  ops_particle_halo bord_x1 = ops_particle_decl_halo(particle, particle,
+      halo_dats, nhalo_dats, dx_halo, halo_dir, halo_dir, translate_p);
+  ops_particle_halo bord_x2 = ops_particle_decl_halo(particle, particle,
+      halo_dats, nhalo_dats, dx_halo, halo_dir, halo_dir, translate_m);
+
+  /* EXCHANGE moves particles across the seam, BORDER keeps the ghost band on
+     either side of it populated. They mirror the two branches of the
+     migration cycle in update_maps().                                       */
+  ops_particle_halo exch_grp[] = {exch_x1, exch_x2};
+  ops_particle_halo bord_grp[] = {bord_x1, bord_x2};
+
+  ops_particle_halo_group group_exch = ops_particle_decl_halo_group(
+      exch_grp, 2, OPS_HALO_GRP_EXCHANGE, OPS_WITH_VIRTUAL);
+  ops_particle_halo_group group_bord = ops_particle_decl_halo_group(
+      bord_grp, 2, OPS_HALO_GRP_DEFAULT, OPS_WITH_VIRTUAL);
+#endif /* OPS_MPI */
+
+  /* ---------------------------------------------------------------- *
    * 7. Partition
    * ---------------------------------------------------------------- */
 
@@ -375,6 +493,22 @@ int main(int argc, char **argv) {
      builds per-rank bounding boxes, initialises maps, sets up comms.   */
   ops_particle_setup_partition();
 
+#ifdef OPS_MPI
+  /* Halo groups can only be registered once the partition exists, because that
+     is when each rank learns which ranks it shares the seam with.           */
+  ops_particle_set_halo_group(group_exch);
+  ops_particle_set_halo_group(group_bord);
+#endif
+
+  /* The physical extent OPS will test against when it decides whether a
+     particle has left the domain. Take it from the box rather than assuming
+     [0,LENGTH]: the box is derived from the coordinate dat and is sized by the
+     bin count, so it need not agree with the grid range exactly. The boundary
+     kernel has to use the same numbers OPS uses, or particles get deleted on
+     the step they are re-injected.                                         */
+  const Real dom_lo[2] = {box->getGlobalMin().x, box->getGlobalMin().y};
+  const Real dom_hi[2] = {box->getGlobalMax().x, box->getGlobalMax().y};
+
   /* ---------------------------------------------------------------- *
    * 9. Seed particles, then build the maps for the first time
    * ---------------------------------------------------------------- */
@@ -383,9 +517,16 @@ int main(int argc, char **argv) {
 
   ops_particle_setup_maps_with_dats(particle, dat_border, nborder);
 
+#ifdef OPS_MPI
+  /* Populate the ghost band across the periodic seam for the first time. */
+  ops_particle_halo_transfer_group(OPS_HALO_GRP_BORDER, true);
+#endif
+
   ops_printf("OPS Particles tutorial 1: constant-velocity drift\n");
   ops_printf("grid %dx%d, %d particles, v = (%g, %g), dt = %g, %d steps\n",
              NX, NY, NPX * NPY, VEL[0], VEL[1], DT, NSTEPS);
+  ops_printf("domain [%g,%g] x [%g,%g]: re-injecting in x, walls in y\n",
+             dom_lo[0], dom_hi[0], dom_lo[1], dom_hi[1]);
 
   ops_particle_print_dats_to_txtfile(particle, dat_output, noutput,
                                      "particles_step_0.txt");
@@ -434,6 +575,29 @@ int main(int argc, char **argv) {
                                                map, OPS_READ),
                           ops_arg_gbl(&dt, 1, "double", OPS_READ));
 
+#ifndef OPS_MPI
+    /* Serial: re-inject by hand. Under MPI this is the halo groups' job and
+       doing it here as well would hide the crossing from them entirely.    */
+    ops_particle_par_loop(KerWrapX, "KerWrapX", particle, 2,
+                          OPS_PARTICLE_ITERATE_LOCAL, range_parts, map,
+                          ops_arg_dat_particle(p_pos, 2, "double", particle,
+                                               map, OPS_RW),
+                          ops_arg_gbl(dom_lo, 2, "double", OPS_READ),
+                          ops_arg_gbl(dom_hi, 2, "double", OPS_READ));
+#endif
+
+    /* Bounce anything that hit a wall. This MUST happen before update_maps():
+       that is where OPS deletes out-of-domain particles, and by then it is
+       too late. The x edges are handled above / by the halo groups.        */
+    ops_particle_par_loop(KerApplyWalls, "KerApplyWalls", particle, 2,
+                          OPS_PARTICLE_ITERATE_LOCAL, range_parts, map,
+                          ops_arg_dat_particle(p_pos, 2, "double", particle,
+                                               map, OPS_RW),
+                          ops_arg_dat_particle(p_vel, 2, "double", particle,
+                                               map, OPS_RW),
+                          ops_arg_gbl(dom_lo, 2, "double", OPS_READ),
+                          ops_arg_gbl(dom_hi, 2, "double", OPS_READ));
+
     /* Positions changed, so the spatial index may need repairing and
        particles may need to move to another rank.                      */
     update_maps(particle, dat_border, nborder, dat_forward, nforward);
@@ -459,7 +623,7 @@ int main(int argc, char **argv) {
    * 12. Check against the exact answer
    * ---------------------------------------------------------------- */
 
-  int status = check_result(particle, p_pos, p_x0, DT * NSTEPS);
+  int status = check_result(particle, p_pos, p_x0, DT * NSTEPS, dom_lo, dom_hi);
 
   ops_exit();
   return status;

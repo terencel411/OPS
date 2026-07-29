@@ -55,11 +55,13 @@ def plot_frame(path, outdir):
     ax.plot(xgrid[..., 0], xgrid[..., 1], color="0.85", linewidth=0.4)
     ax.plot(xgrid[..., 0].T, xgrid[..., 1].T, color="0.85", linewidth=0.4)
 
-    # Where the seed lattice should be by now: x0 + v*t, exactly.
-    box = seed_box + np.array([drift[0], drift[0], drift[1], drift[1]]) * time
-    ax.add_patch(plt.Rectangle((box[0], box[2]), box[1] - box[0],
-                               box[3] - box[2], fill=False, linestyle="--",
-                               edgecolor="steelblue", linewidth=1.0))
+    # Solid walls top and bottom, periodic seam left and right. Particles
+    # leaving through the right edge re-enter on the left, so the seed lattice
+    # no longer translates rigidly and there is nothing useful to overlay.
+    for wall in (0.0, length):
+        ax.axhline(wall, color="0.35", linewidth=2.5)
+    for seam in (0.0, length):
+        ax.axvline(seam, color="steelblue", linewidth=1.2, linestyle="--")
 
     # Colour by id so a given particle keeps its colour across frames.
     ax.scatter(pos[:, 0], pos[:, 1], s=18.0, c=ids, cmap="viridis",
