@@ -46,6 +46,11 @@
 #include "grid_kernels.h"
 #include "particle_kernels.h"
 
+/* Periodic HDF5 output -- one self-contained .h5 file per output step, holding
+   the block, the grid dat, the particle dats and the run constants.  Same
+   pattern as apps/c/oSEM and apps/c/LBM-Particle_tracking.                  */
+#include "drift_io.h"
+
 typedef double Real;
 
 /* ------------------------------------------------------------------ *
@@ -385,6 +390,16 @@ int main(int argc, char **argv) {
   ops_particle_print_dats_to_txtfile(particle, dat_output, noutput,
                                      "particles_step_0.txt");
 
+  /* Everything a plot script needs about the run, travelling with the data. */
+  drift_io_params io_params = {NX, NY, NPX, NPY, NSTEPS, NPRINT, LENGTH, DT,
+                               {VEL[0], VEL[1]},
+                               {SEED_BOX[0], SEED_BOX[1],
+                                SEED_BOX[2], SEED_BOX[3]}};
+
+  /* Initial state -> drift_output_000000.h5 */
+  HDF5_IO_Write_drift_block_dynamic(block, -1, x_grid, particle, dat_output,
+                                    noutput, io_params);
+
   /* ---------------------------------------------------------------- *
    * 10. Set the (constant) velocity once
    * ---------------------------------------------------------------- *
@@ -427,9 +442,18 @@ int main(int argc, char **argv) {
       std::string fname = "particles_step_" + std::to_string(step) + ".txt";
       ops_particle_print_dats_to_txtfile(particle, dat_output, noutput,
                                          fname.c_str());
+
+      /* Same state as the .txt dump, but as drift_output_<step>.h5 */
+      HDF5_IO_Write_drift_block_dynamic(block, step - 1, x_grid, particle,
+                                        dat_output, noutput, io_params);
+
       ops_printf("step %5d / %d\n", step, NSTEPS);
     }
   }
+
+  /* Final state -> drift_output.h5 */
+  HDF5_IO_Write_drift_block(block, NSTEPS - 1, x_grid, particle, dat_output,
+                            noutput, io_params);
 
   /* ---------------------------------------------------------------- *
    * 12. Check against the exact answer
