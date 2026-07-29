@@ -23,6 +23,14 @@ void KerInitGrid(ACC<double> &xf, const double *dx, const int *idx) {
  */
 void KerZeroDensity(ACC<double> &rho) { rho(0, 0) = 0.0; }
 
+/* Coordinate field for the mapping, with its origin shifted below the grid's.
+   Spacing is the same dx, so a bin still spans the same physical width. */
+void KerInitMapCoords(ACC<double> &xf, const double *dx, const double *org,
+                      const int *idx) {
+  xf(0, 0, 0) = (*org) + (*dx) * static_cast<double>(idx[0]);
+  xf(1, 0, 0) = (*org) + (*dx) * static_cast<double>(idx[1]);
+}
+
 /* ------------------------------------------------------------------ *
  *  The scatter kernel -- the whole point of this tutorial
  * ------------------------------------------------------------------ *
@@ -62,9 +70,10 @@ void KerDepositAll(ACC<double> &rho, const ACCP<double> &w) {
  */
 void KerDepositRadius(ACC<double> &rho, const ACC<double> &xf,
                       const ACCP<double> &xp, const ACCP<double> &w,
-                      const double *radius) {
-  const double dx = xp(0) - xf(0, 0, 0);
-  const double dy = xp(1) - xf(1, 0, 0);
+                      const double *radius, const double *shift) {
+  /* Undo the storage shift to get the particle's true position. */
+  const double dx = (xp(0) - *shift) - xf(0, 0, 0);
+  const double dy = (xp(1) - *shift) - xf(1, 0, 0);
   const double r2 = dx * dx + dy * dy;
   if (r2 < (*radius) * (*radius)) rho(0, 0) += w(0);
 }

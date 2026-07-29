@@ -1,3 +1,8 @@
+
+// Auto-generated at 2026-07-29 00:37:16.126306 by ops-translator
+
+void ops_init_backend();
+
 /*
  * OPS Particles -- Tutorial 3: scattering particle data onto the grid
  * ===================================================================
@@ -51,8 +56,16 @@
 
 #define OPS_2D
 
-#include <ops_seq_v2.h>              /* grid ops_par_loop                   */
+#include "ops_lib_core.h"              /* grid ops_par_loop                   */
 #include <ops_particle_seq.h>        /* ops_particle_par_loop               */
+/* ops_par_loop declarations */
+
+void ops_par_loop_KerInitGrid(char const *, ops_block, int, int*, ops_arg, ops_arg, ops_arg);
+
+void ops_par_loop_KerZeroDensity(char const *, ops_block, int, int*, ops_arg);
+
+void ops_par_loop_KerSumDensity(char const *, ops_block, int, int*, ops_arg, ops_arg);
+
 #include <ops_grid_part_seq_v2.h>    /* grid-outer particle ops_par_loop    */
 
 #ifdef OPS_MPI
@@ -105,22 +118,6 @@ int identity_mode = 0;
  * the radius while keeping the ghost band at the depth that works. */
 int STRIDE = 1;
 
-/* -offset N shifts the MAPPING's coordinate dat N cells below the grid origin.
- *
- * oSEM_3D needs this: its eddies are centred up to one radius OUTSIDE the grid
- * (below the wall in y, and at both spanwise ends), and the bounding box is
- * exactly [first node .. last node] of the coordinate dat, so particles beyond
- * it are deleted. Extending the dat downwards is the fix -- but it means bin k
- * no longer corresponds to grid node k*stride, and the grid-outer loop maps
- * grid index j to bin j/stride. Whether binhead->d_m absorbs that offset is
- * what this option tests.
- *
- * The check is a comparison, not an identity: with the same particles and the
- * same radius, shifting only the coordinate origin must leave the deposited
- * field UNCHANGED. (The -mode all / identity totals cannot see this: each
- * particle is still visited stencil_points times whatever the alignment.) */
-int OFFSET = 0;
-
 /* Interaction radius, in cells. HALO cells either side gives a
    (2*HALO+1)^2 search stencil. Overridable with -halo to probe how the
    stencil width interacts with the MPI halo depth.                     */
@@ -153,17 +150,11 @@ void seed_particles(ops_particle particle, ops_dat pos, ops_dat vel,
       /* Use the library's own ownership predicate rather than comparing
          against getLocalMin/Max by hand, so this cannot disagree with what
          the migration machinery believes.                                */
-      /* Stored position is shifted UP by OFFSET cells. This is how a particle
-         that physically sits below the grid origin can still be binned: the box
-         cannot extend downwards (that misaligns every rank under MPI), but it
-         can extend upwards for free, because the origin is what alignment
-         depends on. The kernel subtracts the shift to recover true positions. */
-      const Real xs = x + OFFSET * dx, ys = y + OFFSET * dx;
-      const Real xy[2] = {xs, ys};
+      const Real xy[2] = {x, y};
       if (!box->isCoordinateInBoundingBox(xy)) continue;
 
-      xp[2 * n]     = xs;
-      xp[2 * n + 1] = ys;
+      xp[2 * n]     = x;
+      xp[2 * n + 1] = y;
       up[2 * n]     = VEL[0];
       up[2 * n + 1] = VEL[1];
       /* IDENTITY MODE: a DISTINCT weight per particle -- the global lattice
@@ -196,22 +187,14 @@ void update_maps(ops_particle particle,
   ops_particle_reset_flags(particle, decide);
 }
 
-/* Square stencil of half-width h, CENTRED on bin offset `shift`.
- *
- * The shift compensates an offset coordinate origin. The library derives a
- * particle's bin from its position relative to the box, but the grid-outer loop
- * derives a node's bin as node_index/stride -- so if the mapping's coordinate
- * dat starts `offset` cells below the grid, the two disagree by offset/stride
- * bins. Nothing in the library reconciles that (binhead->d_m does not), so the
- * stencil is re-centred by hand. Requires offset to be an exact multiple of the
- * stride, otherwise the two indexings cannot be made to agree at all. */
-int *build_box_stencil(int h, int shift, int &npoints) {
+/* Build a square stencil of half-width h: (2h+1)^2 points. */
+int *build_box_stencil(int h, int &npoints) {
   npoints = (2 * h + 1) * (2 * h + 1);
   int *s = (int *)malloc(sizeof(int) * 2 * npoints);
   int k = 0;
   for (int i = -h; i <= h; i++)
     for (int j = -h; j <= h; j++) {
-      s[2 * k] = i + shift; s[2 * k + 1] = j + shift; k++;
+      s[2 * k] = i; s[2 * k + 1] = j; k++;
     }
   return s;
 }
@@ -232,6 +215,8 @@ int total_particles(ops_particle particle) {
 int main(int argc, char **argv) {
 
   ops_init(argc, argv, 1);
+	ops_init_backend();
+
 
   int radius_mode = 0;
   int nsteps = NSTEPS;
@@ -244,8 +229,6 @@ int main(int argc, char **argv) {
       HALO = atoi(argv[++i]);
     else if (strcmp(argv[i], "-stride") == 0 && i + 1 < argc)
       STRIDE = atoi(argv[++i]);
-    else if (strcmp(argv[i], "-offset") == 0 && i + 1 < argc)
-      OFFSET = atoi(argv[++i]);
     else if (strcmp(argv[i], "-nsteps") == 0 && i + 1 < argc)
       nsteps = atoi(argv[++i]);
     else if (strcmp(argv[i], "-npart") == 0 && i + 1 < argc)
@@ -268,12 +251,6 @@ int main(int argc, char **argv) {
   ops_dat rho    = ops_decl_dat(block, 1, size, base, d_m, d_p, null_dbl,
                                 "double", "density");
 
-  /* The mapping's own coordinate dat: OFFSET cells wider, with node k at
-     (k - OFFSET)*dx, so its first node sits below the grid origin. */
-  int map_size[] = {NX + OFFSET, NY + OFFSET};
-  ops_dat x_map = ops_decl_dat(block, 2, map_size, base, d_m, d_p, null_dbl,
-                               "double", "x_map");
-
   /* ---- 2. Stencils ------------------------------------------------- */
 
   int s2d_00[] = {0, 0};
@@ -286,11 +263,7 @@ int main(int argc, char **argv) {
          how far outside its subdomain a rank tracks ghost particles.
      Both need the same reach, so one object serves both.               */
   int nsten = 0;
-  if (OFFSET % STRIDE != 0) {
-    ops_printf("FATAL: offset %d is not a multiple of stride %d\n", OFFSET, STRIDE);
-    ops_exit(); return 1;
-  }
-  int *s2d_box = build_box_stencil(HALO, OFFSET / STRIDE, nsten);
+  int *s2d_box = build_box_stencil(HALO, nsten);
 
   /* Two stencils, because with a coarse mapping the loop indexes the FINE grid
      but addresses COARSE bins. A prolong stencil carries the ratio, and
@@ -304,7 +277,7 @@ int main(int argc, char **argv) {
   /* ---- 3. Bounding box -------------------------------------------- */
 
   Real dx_box[] = {0.0, 0.0};
-  BoundingBox<Real> *box = ops_create_bounding_box(block, x_map, 2, dx_box);
+  BoundingBox<Real> *box = ops_create_bounding_box(block, x_grid, 2, dx_box);
 
   /* ---- 4. Particle set and dats ------------------------------------ */
 
@@ -320,9 +293,9 @@ int main(int argc, char **argv) {
   /* ---- 5. Mapping -------------------------------------------------- */
 
   ops_particle_mapping map = (STRIDE > 1)
-      ? ops_decl_mapping(particle, x_map, S2D_BOX, map_stride,
+      ? ops_decl_mapping(particle, x_grid, S2D_BOX, map_stride,
                          OPS_WITH_VIRTUAL, OPS_UNIFORM_STAG, 1)
-      : ops_decl_mapping(particle, x_map, S2D_BOX,
+      : ops_decl_mapping(particle, x_grid, S2D_BOX,
                          OPS_WITH_VIRTUAL, OPS_UNIFORM_STAG, 1);
 
   /* p_wgt is in the border list because its value must survive a change of
@@ -340,17 +313,9 @@ int main(int argc, char **argv) {
   Real dx = LENGTH / static_cast<Real>(NX - 1);
   int grid_range[] = {0, NX, 0, NY};
 
-  ops_par_loop(KerInitGrid, "KerInitGrid", block, 2, grid_range,
+  ops_par_loop_KerInitGrid("KerInitGrid", block, 2, grid_range,
                ops_arg_dat(x_grid, 2, S2D_00, "double", OPS_WRITE),
                ops_arg_gbl(&dx, 1, "double", OPS_READ),
-               ops_arg_idx());
-
-  int map_range[] = {0, NX + OFFSET, 0, NY + OFFSET};
-  Real map_org = 0.0;   /* origin UNCHANGED: extend upward only */
-  ops_par_loop(KerInitMapCoords, "KerInitMapCoords", block, 2, map_range,
-               ops_arg_dat(x_map, 2, S2D_00, "double", OPS_WRITE),
-               ops_arg_gbl(&dx, 1, "double", OPS_READ),
-               ops_arg_gbl(&map_org, 1, "double", OPS_READ),
                ops_arg_idx());
 
   /* Only now are the coordinates real, so only now can the box be derived. */
@@ -361,7 +326,6 @@ int main(int argc, char **argv) {
 
   const int npart = total_particles(particle);
   Real radius = HALO * dx;
-  Real pos_shift = OFFSET * dx;
 
   ops_printf("OPS Particles tutorial 3: scatter onto the grid\n");
   ops_printf("grid %dx%d, %d particles, mode=%s, halo=%d, stride=%d, "
@@ -369,8 +333,6 @@ int main(int argc, char **argv) {
              NX, NY, npart,
              identity_mode ? "identity" : (radius_mode ? "radius" : "all"),
              HALO, STRIDE, 2 * HALO + 1, 2 * HALO + 1, nsten, HALO * STRIDE);
-  ops_printf("map coords %d x %d nodes, origin offset %d cells\n",
-             NX + OFFSET, NY + OFFSET, OFFSET);
 
   /* ---- 7. Time loop ------------------------------------------------ */
 
@@ -389,7 +351,7 @@ int main(int argc, char **argv) {
 
     update_maps(particle, dat_border, nborder, dat_forward, nforward);
 
-    ops_par_loop(KerZeroDensity, "KerZeroDensity", block, 2, grid_range,
+    ops_par_loop_KerZeroDensity("KerZeroDensity", block, 2, grid_range,
                  ops_arg_dat(rho, 1, S2D_00, "double", OPS_WRITE));
 
     /* THE LOOP THIS APP EXISTS TO TEST. */
@@ -402,8 +364,7 @@ int main(int argc, char **argv) {
                                         OPS_READ),
                    ops_arg_dat_particle(p_wgt, 1, "double", particle, map,
                                         OPS_READ),
-                   ops_arg_gbl(&radius, 1, "double", OPS_READ),
-                   ops_arg_gbl(&pos_shift, 1, "double", OPS_READ));
+                   ops_arg_gbl(&radius, 1, "double", OPS_READ));
     else
       ops_par_scatter_loop(KerDepositAll, "KerDepositAll", particle, map,
                    S2D_BOX, 2, grid_range,
@@ -417,7 +378,7 @@ int main(int argc, char **argv) {
   Real h_sum = 0.0;
   ops_reduction r_sum = ops_decl_reduction_handle(sizeof(Real), "double",
                                                   "rho_sum");
-  ops_par_loop(KerSumDensity, "KerSumDensity", block, 2, grid_range,
+  ops_par_loop_KerSumDensity("KerSumDensity", block, 2, grid_range,
                ops_arg_dat(rho, 1, S2D_00, "double", OPS_READ),
                ops_arg_reduce(r_sum, 1, "double", OPS_INC));
   ops_reduction_result(r_sum, &h_sum);

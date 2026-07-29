@@ -81,7 +81,66 @@ bin 0, which is where `x_fixed` bins — a ±1 stencil then reaches them.
 
 ---
 
-## Open design question: the box must extend below the grid
+## RESOLVED (negatively): the box CANNOT extend below the grid
+
+Tested in `particle_tutorial_3_deposit` via `-offset N`. **Both candidate
+approaches fail.** The intended design — give the mapping a coordinate dat whose
+origin sits below the grid's — does not work.
+
+### Attempt 1: offset the coordinate dat's origin
+
+The library derives a particle's bin from its position relative to the box, but
+the grid-outer loop derives a node's bin as `node_index / stride`. An offset
+origin makes the two disagree by `offset/stride` bins, and **nothing reconciles
+it** — `binhead->d_m` does not, contrary to what `get_mapping_address` suggested.
+`-mode radius`, serial, correct answer 318:
+
+| stride | reach | offset 0 | 1 | 4 | 8 |
+|---|---|---|---|---|---|
+| 1 | 1 cell | 318 | 318 | **0** | **0** |
+| 4 | 4 cells | 318 | — | 318 | **5** |
+
+It only appears to work while the offset stays inside the stencil reach.
+
+Re-centring the stencil by `offset/stride` bins fixes serial completely (318 at
+every offset, both strides) — but **breaks under MPI**, because the coordinate
+dat is then a different size from the grid dats and their per-rank
+decompositions no longer correspond:
+
+| stride | offset | np=1 | np=2 | np=4 |
+|---|---|---|---|---|
+| 1 | 4 | 318 | 220 | 138 |
+| 4 | 4 | 318 | FAIL | FAIL |
+| 4 | 8 | 318 | 204 | 130 |
+
+### Attempt 2: shift the particle positions instead
+
+Store each particle at `true + shift` so nothing sits below the origin, keep the
+coordinate dat's origin at the grid's (extending only *upward*, which is free),
+and subtract the shift in the kernel. This also fails — inexact even in serial
+(312 and 321 against 318), from integer-truncation mismatch between
+`floor(j/stride) + floor(offset/stride)` and `floor((j+offset)/stride)`.
+
+### What this means for oSEM_3D
+
+Eddies centred outside the grid cannot be represented. The remaining options:
+
+1. **Clamp eddy centres to the grid range.** Simple and certain. Drops eddies
+   centred in the outer `radius`, slightly reducing fluctuation energy near the
+   wall and the spanwise edges — a modelling change to accept deliberately.
+2. **Grow the flow grid** so the eddy box fits inside it, and treat the extra
+   cells as halo. Exact, but changes the solver's domain.
+3. **Fix the library** so bin indexing accounts for a coordinate dat whose
+   origin or size differs from the grid's. Correct at the root; requires
+   authorisation to modify `OPS/ops/`.
+
+Option 1 is the pragmatic choice for a first working port; option 3 is the right
+long-term answer and is now well characterised enough to be actionable.
+
+Note that **extending the coordinate dat upward is safe** — the 2-D app does
+exactly that, sizing the dat from the bin count. Only the origin is load-bearing.
+
+## Original framing (superseded by the section above)
 
 Eddies are centred down to −2.34 in **both** y and z, but the OPS bounding box is
 exactly `[first node .. last node]` of a coordinate dat
