@@ -4,12 +4,19 @@
  *
  * The smallest OPS Particles application that is still correct under MPI.
  *
- * Particles are seeded on a lattice and drift at a constant, prescribed
- * velocity. There is no fluid solver and no interpolation -- the point is to
- * show the *structure* of a particle application with nothing else in the way.
+ * Particles are seeded as a uniform lattice over the whole domain and drift at
+ * a constant, prescribed velocity along x. There is no fluid solver and no
+ * interpolation -- the point is to show the *structure* of a particle
+ * application with nothing else in the way.
  *
- * After N steps every particle must be at exactly  x0 + v*N*dt.  The program
- * checks this itself, so a correct run is unambiguous.
+ * The domain is periodic in x and walled in y, so the population never
+ * changes: a particle leaving the right-hand edge re-enters on the left and
+ * exactly fills the gap it left. The result is a steady stream that looks the
+ * same at every instant, however long you run.
+ *
+ * The exact answer is still known -- x0 + v*t, folded back into the domain by
+ * those boundary conditions -- and the program checks it itself, so a correct
+ * run is unambiguous.
  *
  * What this tutorial introduces
  *   1. the declaration order that OPS Particles requires
@@ -17,6 +24,10 @@
  *   3. ops_particle_par_loop and ACCP<T>& kernels
  *   4. the per-step map/migration cycle
  *   5. why some particle dats must be listed for border exchange
+ *   6. periodic boundaries via particle halo groups, and why a wrap written
+ *      by hand in a kernel is wrong under MPI (see section 6b)
+ *   7. reflecting walls in a kernel, and why they must run before the map
+ *      update (see KerApplyWalls)
  *
  * What it deliberately leaves out (see tutorial 2)
  *   - reading anything from the grid
@@ -64,10 +75,11 @@ const Real LENGTH  = 1.0;       /* domain is [0,LENGTH] x [0,LENGTH]      */
 const int  NPX     = 10;        /* particles seeded in x                  */
 const int  NPY     = 10;        /* particles seeded in y                  */
 
-/* Region the particles are seeded into (a sub-box of the domain).
-   Particles no longer have to stay inside it: anything that reaches the
-   right-hand edge is re-injected on the left (see KerApplyBoundaries).  */
-const Real SEED_BOX[4] = {0.20, 0.60, 0.20, 0.60}; /* xlo xhi ylo yhi    */
+/* The particles are seeded as a uniform lattice over the WHOLE domain, not
+   into a sub-box: with a periodic x boundary that makes the stream steady --
+   every column leaving the right edge re-enters on the left and exactly fills
+   the gap it left, so any snapshot looks like any other. See
+   seed_particles().                                                      */
 
 /* Drift is along x only. The top and bottom walls are still enforced, so
    giving VEL[1] a non-zero value makes the particles bounce between them
@@ -103,10 +115,42 @@ void seed_particles(ops_particle particle, ops_dat pos, ops_dat vel,
    * place the particles that fall inside its own subdomain.            */
   const Real lo[2] = {box->getLocalMin().x, box->getLocalMin().y};
   const Real hi[2] = {box->getLocalMax().x, box->getLocalMax().y};
+  const Real glo[2] = {box->getGlobalMin().x, box->getGlobalMin().y};
+  const Real ghi[2] = {box->getGlobalMax().x, box->getGlobalMax().y};
 
-  /* Uniform lattice over SEED_BOX, defined globally. */
-  const Real dx = (SEED_BOX[1] - SEED_BOX[0]) / static_cast<Real>(NPX - 1);
-  const Real dy = (SEED_BOX[3] - SEED_BOX[2]) / static_cast<Real>(NPY - 1);
+  /* Uniform lattice over the WHOLE domain, defined globally.
+   *
+   * Dividing by NPX and not NPX-1 is what makes the stream steady. The x
+   * boundary is periodic, so the lattice has to TILE: with NPX-1 spacing there
+   * would be a particle on both edges, and since those are the same point
+   * under periodicity the result is a double-density column at the seam and a
+   * gap of one dx beside it. The stream would then pulse once per lap instead
+   * of looking the same at every instant.
+   *
+   * The +0.5 puts particles at cell centres so none is ever seeded exactly on
+   * a boundary. In y that is a correctness matter, not tidiness: KerApplyWalls
+   * tests with strict inequalities, so a particle sitting exactly on y = 0
+   * would never be pushed back inside, and the half-open [lo,hi) binning
+   * convention can read one sitting exactly on y = LENGTH as outside.       */
+  const Real dx = (ghi[0] - glo[0]) / static_cast<Real>(NPX);
+  const Real dy = (ghi[1] - glo[1]) / static_cast<Real>(NPY);
+
+  /* Then shift the whole lattice half a GRID cell.
+   *
+   * Subdomain boundaries are cuts in index space, so they always land on grid
+   * nodes. A particle seeded exactly on a node can therefore sit exactly on a
+   * rank boundary, and one that does is lost in the first migration -- it
+   * survives seeding (the ownership filter below picks a single owner) but
+   * disappears from the count by the next output. Measured at np = 8: the
+   * column at x = 0.25, which is node 10, took all 10 of its particles with
+   * it while every other column was fine.
+   *
+   * Offsetting by half a cell puts every particle strictly inside a cell, so
+   * it cannot coincide with a boundary at ANY rank count. Shifting the whole
+   * lattice rigidly keeps the spacing uniform, so the pattern still tiles
+   * across the periodic seam and the stream stays steady.                  */
+  const Real half_cell_x = 0.5 * (ghi[0] - glo[0]) / static_cast<Real>(NX - 1);
+  const Real half_cell_y = 0.5 * (ghi[1] - glo[1]) / static_cast<Real>(NY - 1);
 
   /* Worst case every candidate lands on this rank, so make room for them. */
   if (NPX * NPY > (int)particle->Nmax)
@@ -120,8 +164,8 @@ void seed_particles(ops_particle particle, ops_dat pos, ops_dat vel,
   int n = 0;
   for (int i = 0; i < NPX; i++) {
     for (int j = 0; j < NPY; j++) {
-      Real x = SEED_BOX[0] + dx * static_cast<Real>(i);
-      Real y = SEED_BOX[2] + dy * static_cast<Real>(j);
+      Real x = glo[0] + dx * (static_cast<Real>(i) + 0.5) + half_cell_x;
+      Real y = glo[1] + dy * (static_cast<Real>(j) + 0.5) + half_cell_y;
 
       /* Skip candidates owned by another rank. In serial lo/hi span the
          whole domain, so nothing is skipped.                            */
@@ -534,8 +578,7 @@ int main(int argc, char **argv) {
   /* Everything a plot script needs about the run, travelling with the data. */
   drift_io_params io_params = {NX, NY, NPX, NPY, NSTEPS, NPRINT, LENGTH, DT,
                                {VEL[0], VEL[1]},
-                               {SEED_BOX[0], SEED_BOX[1],
-                                SEED_BOX[2], SEED_BOX[3]}};
+                               {dom_lo[0], dom_hi[0], dom_lo[1], dom_hi[1]}};
 
   /* Initial state -> drift_output_000000.h5 */
   HDF5_IO_Write_drift_block_dynamic(block, -1, x_grid, particle, dat_output,

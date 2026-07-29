@@ -177,6 +177,12 @@ int _ops_coord_to_bin(const int dim, const ops_point<T> xmin, const ops_point<T>
 
   if (ix < 0 || iy < 0 || iz < 0) return -1;
 
+  /* One past the last bin in any direction is not a bin: a point sitting
+     exactly on xmax floors to Ngrid[]. iz is only meaningful in 3D; in 2D it
+     is forced to 0 above. */
+  if (ix >= Ngrid[0] || iy >= Ngrid[1] ||
+      (dim == 3 && iz >= Ngrid[2])) return -1;
+
   return ix + iy * Ngrid[0] + iz * Ngrid[0] * Ngrid[1];
 }
 
@@ -187,21 +193,24 @@ int _ops_coord_to_bin(const int dim, const T *xmin, const T* xmax, const T* dx,
   T epsilon = std::numeric_limits<T>::epsilon();
 
 
-  int ix[3];
+  int ix[3] = {-1, -1, -1};
   int address = 0;
   int prd = 1;
   for (int i = 0; i < dim; i++) {
-    int within = 0;
-    if (xp[i] >= xmin[i] - epsilon && xp[i] <= xmax[i] + epsilon) {
-      ix[i] = (int) ops_floor((xp[i] - xmin[i]) / dx[i]);
-      within = 1;
-    }
+    /* A point outside the binning box has no bin here. Return -1, which every
+       caller already handles. Previously this case fell through with ix[i]
+       never assigned, and the uninitialised value was then read and used to
+       build the address -- an out-of-range index the callers cannot detect. */
+    if (xp[i] < xmin[i] - epsilon || xp[i] > xmax[i] + epsilon) return -1;
 
-    if ((ix[i] < 0) && within) {
+    ix[i] = (int) ops_floor((xp[i] - xmin[i]) / dx[i]);
+
+    if (ix[i] < 0) {
       ix[i] = (int) ops_floor((xp[i] - xmin[i]) / dx[i] + epsilon);
     }
 
-    if (ix[i] < 0) return -1;
+    /* xp[i] == xmax[i] floors to Ngrid[i], one past the last bin. */
+    if (ix[i] < 0 || ix[i] >= Ngrid[i]) return -1;
 
     address += ix[i] * prd;
     prd *= Ngrid[i];

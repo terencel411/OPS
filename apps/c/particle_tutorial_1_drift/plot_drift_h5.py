@@ -37,16 +37,13 @@ def read_frame(path):
 
         timestep = int(f["timestep"][0])
         time = float(f["time"][0])
-        seed_box = f["seed_box"][:]
-        drift = f["vel"][:]
         length = float(f["LENGTH"][0])
 
-    return xgrid, pos, vel, ids, timestep, time, seed_box, drift, length
+    return xgrid, pos, vel, ids, timestep, time, length
 
 
 def plot_frame(path, outdir):
-    xgrid, pos, vel, ids, timestep, time, seed_box, drift, length = \
-        read_frame(path)
+    xgrid, pos, vel, ids, timestep, time, length = read_frame(path)
 
     fig, ax = plt.subplots(figsize=(6.5, 6.5))
 
