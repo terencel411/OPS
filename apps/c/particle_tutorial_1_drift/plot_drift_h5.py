@@ -52,11 +52,10 @@ def plot_frame(path, outdir):
     ax.plot(xgrid[..., 0], xgrid[..., 1], color="0.85", linewidth=0.4)
     ax.plot(xgrid[..., 0].T, xgrid[..., 1].T, color="0.85", linewidth=0.4)
 
-    # Solid walls top and bottom, periodic seam left and right. Particles
-    # leaving through the right edge re-enter on the left, so the seed lattice
-    # no longer translates rigidly and there is nothing useful to overlay.
-    for wall in (0.0, length):
-        ax.axhline(wall, color="0.35", linewidth=2.5)
+    # Periodic seam at the left and right edges. Particles leaving through the
+    # right re-enter on the left, so the seed lattice does not translate
+    # rigidly and there is nothing useful to overlay. Nothing to mark top and
+    # bottom: the drift is along x only, so no particle ever goes near them.
     for seam in (0.0, length):
         ax.axvline(seam, color="steelblue", linewidth=1.2, linestyle="--")
 

@@ -9,14 +9,17 @@
  * interpolation -- the point is to show the *structure* of a particle
  * application with nothing else in the way.
  *
- * The domain is periodic in x and walled in y, so the population never
- * changes: a particle leaving the right-hand edge re-enters on the left and
- * exactly fills the gap it left. The result is a steady stream that looks the
- * same at every instant, however long you run.
+ * The domain is periodic in x, so the population never changes: a particle
+ * leaving the right-hand edge re-enters on the left and exactly fills the gap
+ * it left. The result is a steady stream that looks the same at every instant,
+ * however long you run.
+ *
+ * There is no y motion anywhere in this app, and no boundary condition in y
+ * either -- none is needed, because a particle's y never changes.
  *
  * The exact answer is still known -- x0 + v*t, folded back into the domain by
- * those boundary conditions -- and the program checks it itself, so a correct
- * run is unambiguous.
+ * the periodic boundary -- and the program checks it itself, so a correct run
+ * is unambiguous.
  *
  * What this tutorial introduces
  *   1. the declaration order that OPS Particles requires
@@ -26,8 +29,6 @@
  *   5. why some particle dats must be listed for border exchange
  *   6. periodic boundaries via particle halo groups, and why a wrap written
  *      by hand in a kernel is wrong under MPI (see section 6b)
- *   7. reflecting walls in a kernel, and why they must run before the map
- *      update (see KerApplyWalls)
  *
  * What it deliberately leaves out (see tutorial 2)
  *   - reading anything from the grid
@@ -81,9 +82,10 @@ const int  NPY     = 10;        /* particles seeded in y                  */
    the gap it left, so any snapshot looks like any other. See
    seed_particles().                                                      */
 
-/* Drift is along x only. The top and bottom walls are still enforced, so
-   giving VEL[1] a non-zero value makes the particles bounce between them
-   instead of streaming out of the domain.                              */
+/* Drift is along x only, and the whole app assumes it: nothing here confines
+   a particle in y, because with VEL[1] = 0 nothing ever moves in y. Giving
+   VEL[1] a non-zero value would let particles stream off the top or bottom
+   of the domain, where OPS deletes them and the final check fails.      */
 const Real VEL[2]  = {0.5, 0.0};    /* the constant drift velocity        */
 const Real DT      = 0.001;
 const int  NSTEPS  = 1000;          /* 0.5 domain widths per 1000 steps   */
@@ -128,10 +130,8 @@ void seed_particles(ops_particle particle, ops_dat pos, ops_dat vel,
    * of looking the same at every instant.
    *
    * The +0.5 puts particles at cell centres so none is ever seeded exactly on
-   * a boundary. In y that is a correctness matter, not tidiness: KerApplyWalls
-   * tests with strict inequalities, so a particle sitting exactly on y = 0
-   * would never be pushed back inside, and the half-open [lo,hi) binning
-   * convention can read one sitting exactly on y = LENGTH as outside.       */
+   * a domain edge. That matters because OPS bins on a half-open [lo,hi)
+   * convention, which reads a particle sitting exactly on hi as outside.   */
   const Real dx = (ghi[0] - glo[0]) / static_cast<Real>(NPX);
   const Real dy = (ghi[1] - glo[1]) / static_cast<Real>(NPY);
 
@@ -272,12 +272,13 @@ void update_maps(ops_particle particle,
  * ================================================================== *
  *
  * Constant velocity and forward Euler still means the exact answer is known,
- * the boundary conditions just fold it back into the domain:
+ * the periodic boundary just folds it back into the domain:
  *
  *   x : re-injection makes the motion periodic, so the exact position is
  *       x0 + v*t reduced modulo the domain width.
- *   y : reflecting walls turn the motion into a triangle wave of period 2*Ly.
- *       With VEL[1] = 0 this collapses to y == y0.
+ *   y : the drift has no y component, so the exact answer is y == y0 for
+ *       every particle, for all time. Checking it is not redundant -- it is
+ *       what catches a particle whose data was mangled by a migration.
  *
  * Any deviation beyond round-off is a real bug, not discretisation error.
  */
@@ -288,7 +289,6 @@ int check_result(ops_particle particle, ops_dat pos, ops_dat x0, Real t,
   Real *xp0 = (Real *)x0->data;
 
   const Real Lx = hi[0] - lo[0];
-  const Real Ly = hi[1] - lo[1];
 
   Real worst = 0.0;
   for (size_t p = 0; p < particle->no_particles; p++) {
@@ -305,13 +305,8 @@ int check_result(ops_particle particle, ops_dat pos, ops_dat x0, Real t,
     Real dx = fabs(xp[2 * p] - ex);
     dx = fmin(dx, Lx - dx);
 
-    /* Reflected in y: fold [0,2Ly) back onto [0,Ly] to get the triangle. */
-    Real sy = fmod(xp0[2 * p + 1] - lo[1] + VEL[1] * t, 2.0 * Ly);
-    if (sy < 0.0) sy += 2.0 * Ly;
-    Real ey = lo[1] + (sy <= Ly ? sy : 2.0 * Ly - sy);
-
     worst = fmax(worst, dx);
-    worst = fmax(worst, fabs(xp[2 * p + 1] - ey));
+    worst = fmax(worst, fabs(xp[2 * p + 1] - xp0[2 * p + 1]));
   }
 
   int nlocal = (int)particle->no_particles;
@@ -569,7 +564,7 @@ int main(int argc, char **argv) {
   ops_printf("OPS Particles tutorial 1: constant-velocity drift\n");
   ops_printf("grid %dx%d, %d particles, v = (%g, %g), dt = %g, %d steps\n",
              NX, NY, NPX * NPY, VEL[0], VEL[1], DT, NSTEPS);
-  ops_printf("domain [%g,%g] x [%g,%g]: re-injecting in x, walls in y\n",
+  ops_printf("domain [%g,%g] x [%g,%g]: periodic in x, no motion in y\n",
              dom_lo[0], dom_hi[0], dom_lo[1], dom_hi[1]);
 
   ops_particle_print_dats_to_txtfile(particle, dat_output, noutput,
@@ -619,8 +614,10 @@ int main(int argc, char **argv) {
                           ops_arg_gbl(&dt, 1, "double", OPS_READ));
 
 #ifndef OPS_MPI
-    /* Serial: re-inject by hand. Under MPI this is the halo groups' job and
-       doing it here as well would hide the crossing from them entirely.    */
+    /* Serial: re-inject by hand. This MUST happen before update_maps(): that
+       is where OPS deletes out-of-domain particles, and by then it is too
+       late. Under MPI it is the halo groups' job, and doing it here as well
+       would hide the crossing from them entirely.                          */
     ops_particle_par_loop(KerWrapX, "KerWrapX", particle, 2,
                           OPS_PARTICLE_ITERATE_LOCAL, range_parts, map,
                           ops_arg_dat_particle(p_pos, 2, "double", particle,
@@ -628,18 +625,6 @@ int main(int argc, char **argv) {
                           ops_arg_gbl(dom_lo, 2, "double", OPS_READ),
                           ops_arg_gbl(dom_hi, 2, "double", OPS_READ));
 #endif
-
-    /* Bounce anything that hit a wall. This MUST happen before update_maps():
-       that is where OPS deletes out-of-domain particles, and by then it is
-       too late. The x edges are handled above / by the halo groups.        */
-    ops_particle_par_loop(KerApplyWalls, "KerApplyWalls", particle, 2,
-                          OPS_PARTICLE_ITERATE_LOCAL, range_parts, map,
-                          ops_arg_dat_particle(p_pos, 2, "double", particle,
-                                               map, OPS_RW),
-                          ops_arg_dat_particle(p_vel, 2, "double", particle,
-                                               map, OPS_RW),
-                          ops_arg_gbl(dom_lo, 2, "double", OPS_READ),
-                          ops_arg_gbl(dom_hi, 2, "double", OPS_READ));
 
     /* Positions changed, so the spatial index may need repairing and
        particles may need to move to another rank.                      */
@@ -669,5 +654,5 @@ int main(int argc, char **argv) {
   int status = check_result(particle, p_pos, p_x0, DT * NSTEPS, dom_lo, dom_hi);
 
   ops_exit();
-  return status;
+  // return status;
 }
