@@ -4,15 +4,19 @@
  *
  * The smallest OPS Particles application that is still correct under MPI.
  *
- * Particles are seeded as a uniform lattice over the whole domain and drift at
- * a constant, prescribed velocity along x. There is no fluid solver and no
- * interpolation -- the point is to show the *structure* of a particle
- * application with nothing else in the way.
+ * A given number of particles are scattered at random through the whole domain
+ * and drift at a constant, prescribed velocity along x. There is no fluid
+ * solver and no interpolation -- the point is to show the *structure* of a
+ * particle application with nothing else in the way.
  *
  * The domain is periodic in x, so the population never changes: a particle
- * leaving the right-hand edge re-enters on the left and exactly fills the gap
- * it left. The result is a steady stream that looks the same at every instant,
- * however long you run.
+ * leaving the right-hand edge re-enters on the left. The cloud therefore
+ * simply translates and wraps; unlike the lattice this app used to seed, the
+ * arrangement is not identical from one instant to the next, but the count is.
+ *
+ * The seeding is random but not arbitrary: a fixed seed makes a run
+ * reproducible, and every rank draws the same global sequence, so the result
+ * is identical at any rank count.
  *
  * There is no y motion anywhere in this app, and no boundary condition in y
  * either -- none is needed, because a particle's y never changes.
@@ -44,6 +48,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <string>
 
 #define OPS_2D
@@ -73,13 +78,12 @@ const int  NX      = 41;        /* grid nodes in x                        */
 const int  NY      = 41;        /* grid nodes in y                        */
 const Real LENGTH  = 1.0;       /* domain is [0,LENGTH] x [0,LENGTH]      */
 
-const int  NPX     = 10;        /* particles seeded in x                  */
-const int  NPY     = 10;        /* particles seeded in y                  */
+const int  NPART   = 100;       /* how many particles to seed             */
+const unsigned int SEED = 12345u;  /* fixes the random seeding pattern    */
 
-/* The particles are seeded as a uniform lattice over the WHOLE domain, not
-   into a sub-box: with a periodic x boundary that makes the stream steady --
-   every column leaving the right edge re-enters on the left and exactly fills
-   the gap it left, so any snapshot looks like any other. See
+/* The particles are scattered at random through the WHOLE domain rather than
+   placed on a lattice. The count is all you specify; where they land is drawn
+   from a generator with a fixed seed, so a run is still reproducible. See
    seed_particles().                                                      */
 
 /* Drift is along x only, and the whole app assumes it: nothing here confines
@@ -104,6 +108,20 @@ const int  NPRINT  = 100;
  *   3. set particle->no_particles yourself -- nothing infers it
  *   4. under MPI, seed only inside THIS rank's part of the domain, and
  *      make the ids globally unique
+ *
+ * DO NOT SNAP PARTICLES ONTO GRID NODES. Subdomain boundaries are cuts in
+ * index space, so they always land exactly on grid nodes, and a particle
+ * seeded exactly on one can sit exactly on a rank boundary. Such a particle
+ * survives seeding -- the ownership filter below still picks a single owner --
+ * but is lost in the first migration and simply disappears from the count.
+ * This app used to seed on a lattice and had to be offset by half a grid cell
+ * for exactly this reason: at np = 8 the column at x = 0.25, grid node 10,
+ * took all ten of its particles with it while every other column was fine.
+ *
+ * Random seeding side-steps that by construction, because a continuously
+ * distributed coordinate has zero probability of landing exactly on a node.
+ * If you ever want particles "on the grid" rather than anywhere in the domain,
+ * put them at cell CENTRES, never at nodes.
  */
 void seed_particles(ops_particle particle, ops_dat pos, ops_dat vel,
                     ops_dat ids, ops_dat x0) {
@@ -120,92 +138,84 @@ void seed_particles(ops_particle particle, ops_dat pos, ops_dat vel,
   const Real glo[2] = {box->getGlobalMin().x, box->getGlobalMin().y};
   const Real ghi[2] = {box->getGlobalMax().x, box->getGlobalMax().y};
 
-  /* Uniform lattice over the WHOLE domain, defined globally.
-   *
-   * Dividing by NPX and not NPX-1 is what makes the stream steady. The x
-   * boundary is periodic, so the lattice has to TILE: with NPX-1 spacing there
-   * would be a particle on both edges, and since those are the same point
-   * under periodicity the result is a double-density column at the seam and a
-   * gap of one dx beside it. The stream would then pulse once per lap instead
-   * of looking the same at every instant.
-   *
-   * The +0.5 puts particles at cell centres so none is ever seeded exactly on
-   * a domain edge. That matters because OPS bins on a half-open [lo,hi)
-   * convention, which reads a particle sitting exactly on hi as outside.   */
-  const Real dx = (ghi[0] - glo[0]) / static_cast<Real>(NPX);
-  const Real dy = (ghi[1] - glo[1]) / static_cast<Real>(NPY);
-
-  /* Then shift the whole lattice half a GRID cell.
-   *
-   * Subdomain boundaries are cuts in index space, so they always land on grid
-   * nodes. A particle seeded exactly on a node can therefore sit exactly on a
-   * rank boundary, and one that does is lost in the first migration -- it
-   * survives seeding (the ownership filter below picks a single owner) but
-   * disappears from the count by the next output. Measured at np = 8: the
-   * column at x = 0.25, which is node 10, took all 10 of its particles with
-   * it while every other column was fine.
-   *
-   * Offsetting by half a cell puts every particle strictly inside a cell, so
-   * it cannot coincide with a boundary at ANY rank count. Shifting the whole
-   * lattice rigidly keeps the spacing uniform, so the pattern still tiles
-   * across the periodic seam and the stream stays steady.                  */
-  const Real half_cell_x = 0.5 * (ghi[0] - glo[0]) / static_cast<Real>(NX - 1);
-  const Real half_cell_y = 0.5 * (ghi[1] - glo[1]) / static_cast<Real>(NY - 1);
-
   /* Worst case every candidate lands on this rank, so make room for them. */
-  if (NPX * NPY > (int)particle->Nmax)
-    ops_particle_realloc_data(particle, NPX * NPY);
+  if (NPART > (int)particle->Nmax)
+    ops_particle_realloc_data(particle, NPART);
 
   Real *xp   = (Real *)pos->data;
   Real *up   = (Real *)vel->data;
   Real *xp0  = (Real *)x0->data;
   int  *idp  = (int  *)ids->data;
 
+  /* EVERY RANK DRAWS THE WHOLE GLOBAL SEQUENCE.
+   *
+   * The generator is seeded with the same constant everywhere, so all ranks
+   * walk an identical list of NPART candidate positions and each simply keeps
+   * the ones that fall inside its own subdomain. Nothing is communicated.
+   *
+   * That is what makes the run reproducible AND rank-independent: particle
+   * number i is at the same place whether you run on 1 rank or 8, so results
+   * can be compared across rank counts the same way the lattice version was.
+   * Generating only "my share" locally on each rank would be cheaper, but the
+   * pattern would then change with the rank count and that comparison would
+   * be lost.                                                              */
+  std::mt19937 rng(SEED);
+  std::uniform_real_distribution<Real> draw_x(glo[0], ghi[0]);
+  std::uniform_real_distribution<Real> draw_y(glo[1], ghi[1]);
+
   int n = 0;
-  for (int i = 0; i < NPX; i++) {
-    for (int j = 0; j < NPY; j++) {
-      Real x = glo[0] + dx * (static_cast<Real>(i) + 0.5) + half_cell_x;
-      Real y = glo[1] + dy * (static_cast<Real>(j) + 0.5) + half_cell_y;
+  for (int i = 0; i < NPART; i++) {
 
-      /* Skip candidates owned by another rank. In serial lo/hi span the
-         whole domain, so nothing is skipped.                            */
-      if (x < lo[0] || x >= hi[0] || y < lo[1] || y >= hi[1]) continue;
+    /* Draw for EVERY particle, before the ownership test, so that every rank
+       consumes the generator identically. Drawing only when a candidate is
+       local would desynchronise the sequence between ranks.               */
+    Real x = draw_x(rng);
+    Real y = draw_y(rng);
 
-      /* Particle dats are AoS: data[dim * particle_index + component] */
-      xp[2 * n]     = x;
-      xp[2 * n + 1] = y;
+    /* uniform_real_distribution is specified as [a,b), but rounding in the
+       implementation can occasionally hand back b. A particle sitting exactly
+       on the upper bound is outside the half-open box, so no rank would claim
+       it and the population would silently come up short. Nudge it inside. */
+    if (x >= ghi[0]) x = std::nextafter(ghi[0], glo[0]);
+    if (y >= ghi[1]) y = std::nextafter(ghi[1], glo[1]);
 
-      /* x0 records where this particle started. We never touch it again.
-         It rides along with the particle when it migrates between ranks,
-         which is what makes the final check below possible.             */
-      xp0[2 * n]     = x;
-      xp0[2 * n + 1] = y;
+    /* Skip candidates owned by another rank. In serial lo/hi span the
+       whole domain, so nothing is skipped.                              */
+    if (x < lo[0] || x >= hi[0] || y < lo[1] || y >= hi[1]) continue;
 
-      up[2 * n]     = 0.0;
-      up[2 * n + 1] = 0.0;
+    /* Particle dats are AoS: data[dim * particle_index + component] */
+    xp[2 * n]     = x;
+    xp[2 * n + 1] = y;
 
-      /* (4) Ids must be unique across ALL ranks. Here the seeding pattern
-             is a known global lattice, so the cleanest id is the global
-             lattice index: it is unique by construction, identical no
-             matter how many ranks you run on, and it lets you follow one
-             particle across runs.
+    /* x0 records where this particle started. We never touch it again.
+       It rides along with the particle when it migrates between ranks,
+       which is what makes the final check below possible.             */
+    xp0[2 * n]     = x;
+    xp0[2 * n + 1] = y;
 
-             When you CANNOT derive a global index -- random seeding, say
-             -- the general pattern is a prefix sum over per-rank counts:
+    up[2 * n]     = 0.0;
+    up[2 * n + 1] = 0.0;
 
-               int n_local = n, offset = 0;
-               int *counts = (int *)malloc(nprocs * sizeof(int));
-               MPI_Allgather(&n_local, 1, MPI_INT, counts, 1, MPI_INT,
-                             MPI_COMM_WORLD);
-               for (int r = 0; r < myrank; r++) offset += counts[r];
-               for (int p = 0; p < n; p++) idp[p] += offset;
+    /* (4) Ids must be unique across ALL ranks. Because every rank walks the
+           same global sequence, the index into that sequence is already a
+           good id: unique by construction, identical at any rank count, and
+           it lets you follow one particle across runs.
 
-             That yields unique ids, but a given id then labels a
-             different particle at a different rank count.               */
-      idp[n] = i * NPY + j;
+           If you ever switch to drawing only local particles per rank, that
+           no longer holds and you need a prefix sum over per-rank counts:
 
-      n++;
-    }
+             int n_local = n, offset = 0;
+             int *counts = (int *)malloc(nprocs * sizeof(int));
+             MPI_Allgather(&n_local, 1, MPI_INT, counts, 1, MPI_INT,
+                           MPI_COMM_WORLD);
+             for (int r = 0; r < myrank; r++) offset += counts[r];
+             for (int p = 0; p < n; p++) idp[p] += offset;
+
+           That yields unique ids, but a given id then labels a different
+           particle at a different rank count.                            */
+    idp[n] = i;
+
+    n++;
   }
 
   /* (3) Tell OPS how many particles this rank now owns. */
@@ -322,10 +332,10 @@ int check_result(ops_particle particle, ops_dat pos, ops_dat x0, Real t,
   /* Accumulating v*dt NSTEPS times loses a little precision, so scale the
      tolerance with the number of steps rather than demanding exactness. */
   const Real tol = 1e-12 * NSTEPS;
-  int ok = (worst < tol) && (ntotal == NPX * NPY);
+  int ok = (worst < tol) && (ntotal == NPART);
 
   ops_printf("\n---------------------------------------------\n");
-  ops_printf("particles expected : %d\n", NPX * NPY);
+  ops_printf("particles expected : %d\n", NPART);
   ops_printf("particles found    : %d\n", ntotal);
   ops_printf("max position error : %.3e  (tol %.1e)\n", worst, tol);
   ops_printf("RESULT             : %s\n", ok ? "PASS" : "FAIL");
@@ -563,7 +573,7 @@ int main(int argc, char **argv) {
 
   ops_printf("OPS Particles tutorial 1: constant-velocity drift\n");
   ops_printf("grid %dx%d, %d particles, v = (%g, %g), dt = %g, %d steps\n",
-             NX, NY, NPX * NPY, VEL[0], VEL[1], DT, NSTEPS);
+             NX, NY, NPART, VEL[0], VEL[1], DT, NSTEPS);
   ops_printf("domain [%g,%g] x [%g,%g]: periodic in x, no motion in y\n",
              dom_lo[0], dom_hi[0], dom_lo[1], dom_hi[1]);
 
@@ -571,7 +581,7 @@ int main(int argc, char **argv) {
                                      "particles_step_0.txt");
 
   /* Everything a plot script needs about the run, travelling with the data. */
-  drift_io_params io_params = {NX, NY, NPX, NPY, NSTEPS, NPRINT, LENGTH, DT,
+  drift_io_params io_params = {NX, NY, NPART, (int)SEED, NSTEPS, NPRINT, LENGTH, DT,
                                {VEL[0], VEL[1]},
                                {dom_lo[0], dom_hi[0], dom_lo[1], dom_hi[1]}};
 

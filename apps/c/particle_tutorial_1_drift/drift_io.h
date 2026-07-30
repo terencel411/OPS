@@ -28,8 +28,8 @@
 struct drift_io_params {
   int NX;
   int NY;
-  int NPX;
-  int NPY;
+  int NPART;
+  int SEED;
   int NSTEPS;
   int NPRINT;
   double LENGTH;
@@ -121,8 +121,8 @@ inline void write_constants(const char *file_name,
                             const drift_io_params &params, int timestep) {
   ops_write_const_hdf5("NX", 1, "int", (char *)&params.NX, file_name);
   ops_write_const_hdf5("NY", 1, "int", (char *)&params.NY, file_name);
-  ops_write_const_hdf5("NPX", 1, "int", (char *)&params.NPX, file_name);
-  ops_write_const_hdf5("NPY", 1, "int", (char *)&params.NPY, file_name);
+  ops_write_const_hdf5("NPART", 1, "int", (char *)&params.NPART, file_name);
+  ops_write_const_hdf5("SEED", 1, "int", (char *)&params.SEED, file_name);
   ops_write_const_hdf5("NSTEPS", 1, "int", (char *)&params.NSTEPS, file_name);
   ops_write_const_hdf5("NPRINT", 1, "int", (char *)&params.NPRINT, file_name);
   ops_write_const_hdf5("timestep", 1, "int", (char *)&timestep, file_name);
