@@ -29,11 +29,11 @@ struct drift_io_params {
   int NX;
   int NY;
   int NZ;
-  int NPX;
   int NPY;
   int NPZ;
   int NSTEPS;
   int NPRINT;
+  double X_SEED;   /* x of the seeding sheet */
   double LX;
   double LY;
   double LZ;
@@ -126,11 +126,11 @@ inline void write_constants(const char *file_name,
   ops_write_const_hdf5("NX", 1, "int", (char *)&params.NX, file_name);
   ops_write_const_hdf5("NY", 1, "int", (char *)&params.NY, file_name);
   ops_write_const_hdf5("NZ", 1, "int", (char *)&params.NZ, file_name);
-  ops_write_const_hdf5("NPX", 1, "int", (char *)&params.NPX, file_name);
   ops_write_const_hdf5("NPY", 1, "int", (char *)&params.NPY, file_name);
   ops_write_const_hdf5("NPZ", 1, "int", (char *)&params.NPZ, file_name);
   ops_write_const_hdf5("NSTEPS", 1, "int", (char *)&params.NSTEPS, file_name);
   ops_write_const_hdf5("NPRINT", 1, "int", (char *)&params.NPRINT, file_name);
+  ops_write_const_hdf5("X_SEED", 1, "double", (char *)&params.X_SEED, file_name);
   ops_write_const_hdf5("timestep", 1, "int", (char *)&timestep, file_name);
   ops_write_const_hdf5("LX", 1, "double", (char *)&params.LX, file_name);
   ops_write_const_hdf5("LY", 1, "double", (char *)&params.LY, file_name);

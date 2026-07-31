@@ -6,19 +6,18 @@
  * the structure is identical and its comments explain the *why*. This file
  * notes only what changes when you go from 2D to 3D.
  *
- * Particles are seeded as a uniform lattice through the whole box and drift at
- * a constant, prescribed velocity along x. There is no fluid solver and no
- * interpolation -- the point is to show the *structure* of a particle
- * application with nothing else in the way.
+ * Particles are seeded as a SHEET on a y-z plane -- a grid perpendicular to the
+ * drift -- and the whole sheet moves downstream at a constant, prescribed
+ * velocity along x. There is no fluid solver and no interpolation: the point is
+ * to show the *structure* of a particle application with nothing else in the
+ * way.
  *
- * The box is periodic in x, so the population never changes: a particle
- * leaving the downstream face re-enters upstream and exactly fills the gap it
- * left. The result is a steady stream that looks the same at every instant,
- * however long you run.
+ * The box is periodic in x, so the population never changes: the sheet reaches
+ * the downstream face and re-enters upstream, still a sheet.
  *
  * There is no y or z motion anywhere in this app, and no boundary condition on
  * the four side faces either -- none is needed, because a particle's y and z
- * never change.
+ * never change. That is also why the sheet stays flat.
  *
  * The exact answer is still known -- x0 + v*t, folded back into the box by the
  * periodic boundary -- and the program checks it itself, so a correct run is
@@ -28,8 +27,9 @@
  *   1. #define OPS_3D, block dims 3, every geometry array gains a third entry
  *   2. the grid accessor is xf(component, i, j, k)
  *   3. the mapping stencil is the 27-point cube, not the 9-point square
- *   4. the seeding lattice is a triple loop, and the half-grid-cell offset is
- *      applied in all three directions -- see seed_particles()
+ *   4. the seeding is a y-z sheet at one x, not a lattice filling the domain,
+ *      with the half-grid-cell offset applied in y and z -- see
+ *      seed_particles()
  *   5. translate/dx_halo for the periodic halo are 3-vectors
  *
  * Build:  make tutorial1_3d_dev_seq   (fastest: no translator)
@@ -76,14 +76,20 @@ const Real LX      = 1.0;
 const Real LY      = 0.5;
 const Real LZ      = 0.5;
 
-const int  NPX     = 10;        /* particles seeded along x               */
-const int  NPY     = 5;         /* particles seeded along y               */
-const int  NPZ     = 5;         /* particles seeded along z               */
+const int  NPY     = 10;        /* particles across the sheet, along y    */
+const int  NPZ     = 10;        /* particles across the sheet, along z    */
 
-/* The particles are seeded as a uniform lattice through the WHOLE box, not
-   into a sub-region: with a periodic x boundary that makes the stream steady
-   -- every plane of particles leaving the downstream face re-enters upstream
-   and exactly fills the gap it left, so any snapshot looks like any other.  */
+/* The particles form a SHEET on a y-z plane -- perpendicular to the drift --
+   not a cloud filling the box. All NPY*NPZ of them share one x coordinate,
+   move downstream together, and re-enter at the upstream face. There is no
+   NPX: a sheet has no extent along x.
+
+   The sheet starts half a grid cell inside the upstream face. Half a cell
+   rather than exactly on it because subdomain boundaries are cuts in index
+   space and so always land on grid nodes, and a particle sitting exactly on a
+   node can coincide with a rank boundary and be lost in the first
+   migration.                                                              */
+const Real X_SEED  = 0.5 * LX / static_cast<Real>(NX - 1);
 
 /* Drift is along x only, and the whole app assumes it: nothing here confines
    a particle in y or z, because with VEL[1] = VEL[2] = 0 nothing ever moves
@@ -93,7 +99,11 @@ const int  NPZ     = 5;         /* particles seeded along z               */
    documentation/ops-particles-defects.md section 7.                      */
 const Real VEL[3]  = {0.5, 0.0, 0.0};   /* the constant drift velocity    */
 const Real DT      = 0.001;
-const int  NSTEPS  = 1000;      /* 0.5 box lengths per 1000 steps         */
+/* 1000 steps would move the sheet 0.5, i.e. only half way down the box, so it
+   would never reach the downstream face and nothing would be re-injected.
+   2500 steps is 1.25 box lengths: the sheet wraps once and is well clear of
+   the seam by the end, so a default run actually demonstrates re-injection. */
+const int  NSTEPS  = 2500;      /* 1.25 box lengths per 2500 steps        */
 const int  NPRINT  = 100;
 
 /* ================================================================== *
@@ -129,23 +139,18 @@ void seed_particles(ops_particle particle, ops_dat pos, ops_dat vel,
   const Real ghi[3] = {box->getGlobalMax().x, box->getGlobalMax().y,
                        box->getGlobalMax().z};
 
-  /* Uniform lattice through the WHOLE box, defined globally.
+  /* The sheet: a uniform NPY x NPZ lattice spread over the y-z plane, all of
+   * it at the single x coordinate X_SEED. Nothing varies along x.
    *
-   * Dividing by NPX and not NPX-1 is what makes the stream steady. The x
-   * boundary is periodic, so the lattice has to TILE: with NPX-1 spacing there
-   * would be a plane of particles on both end faces, and since those are the
-   * same place under periodicity the result is a double-density plane at the
-   * seam and a gap of one dx beside it. The stream would then pulse once per
-   * lap instead of looking the same at every instant.
-   *
-   * The +0.5 puts particles at cell centres so none is ever seeded exactly on
-   * a face. That matters because OPS bins on a half-open [lo,hi) convention,
+   * Spacing is L/NP rather than L/(NP-1) so the particles sit *inside* the
+   * span rather than touching both faces -- combined with the +0.5 below that
+   * places them at the centres of NPY x NPZ equal tiles, none of them on a
+   * face. That matters because OPS bins on a half-open [lo,hi) convention,
    * which reads a particle sitting exactly on hi as outside.               */
-  const Real dx = (ghi[0] - glo[0]) / static_cast<Real>(NPX);
   const Real dy = (ghi[1] - glo[1]) / static_cast<Real>(NPY);
   const Real dz = (ghi[2] - glo[2]) / static_cast<Real>(NPZ);
 
-  /* Then shift the whole lattice half a GRID cell, in ALL THREE directions.
+  /* Then shift the sheet half a GRID cell in y and z.
    *
    * Subdomain boundaries are cuts in index space, so they always land on grid
    * nodes. A particle seeded exactly on a node can therefore sit exactly on a
@@ -157,64 +162,58 @@ void seed_particles(ops_particle particle, ops_dat pos, ops_dat vel,
    *
    * This matters MORE in 3D than in 2D. MPI_Dims_create splits y and z as well
    * as x -- np = 8 gives a 2x2x2 decomposition -- so there are node-aligned
-   * rank boundaries in every direction, not just along the drift.
-   *
-   * Offsetting by half a cell puts every particle strictly inside a cell, so
-   * it cannot coincide with a boundary at ANY rank count. Shifting the whole
-   * lattice rigidly keeps the spacing uniform, so the pattern still tiles
-   * across the periodic seam and the stream stays steady.                  */
-  const Real half_cell_x = 0.5 * (ghi[0] - glo[0]) / static_cast<Real>(NX - 1);
+   * rank boundaries in every direction, not just along the drift. X_SEED is
+   * offset for the same reason.                                             */
   const Real half_cell_y = 0.5 * (ghi[1] - glo[1]) / static_cast<Real>(NY - 1);
   const Real half_cell_z = 0.5 * (ghi[2] - glo[2]) / static_cast<Real>(NZ - 1);
 
   /* Worst case every candidate lands on this rank, so make room for them. */
-  if (NPX * NPY * NPZ > (int)particle->Nmax)
-    ops_particle_realloc_data(particle, NPX * NPY * NPZ);
+  if (NPY * NPZ > (int)particle->Nmax)
+    ops_particle_realloc_data(particle, NPY * NPZ);
 
   Real *xp   = (Real *)pos->data;
   Real *up   = (Real *)vel->data;
   Real *xp0  = (Real *)x0->data;
   int  *idp  = (int  *)ids->data;
 
+  const Real x = glo[0] + X_SEED;   /* one plane; the same for every particle */
+
   int n = 0;
-  for (int i = 0; i < NPX; i++) {
-    for (int j = 0; j < NPY; j++) {
-      for (int k = 0; k < NPZ; k++) {
-        Real x = glo[0] + dx * (static_cast<Real>(i) + 0.5) + half_cell_x;
-        Real y = glo[1] + dy * (static_cast<Real>(j) + 0.5) + half_cell_y;
-        Real z = glo[2] + dz * (static_cast<Real>(k) + 0.5) + half_cell_z;
+  for (int j = 0; j < NPY; j++) {
+    for (int k = 0; k < NPZ; k++) {
+      Real y = glo[1] + dy * (static_cast<Real>(j) + 0.5) + half_cell_y;
+      Real z = glo[2] + dz * (static_cast<Real>(k) + 0.5) + half_cell_z;
 
-        /* Skip candidates owned by another rank. In serial lo/hi span the
-           whole box, so nothing is skipped.                              */
-        if (x < lo[0] || x >= hi[0] ||
-            y < lo[1] || y >= hi[1] ||
-            z < lo[2] || z >= hi[2]) continue;
+      /* Skip candidates owned by another rank. In serial lo/hi span the
+         whole box, so nothing is skipped.                              */
+      if (x < lo[0] || x >= hi[0] ||
+          y < lo[1] || y >= hi[1] ||
+          z < lo[2] || z >= hi[2]) continue;
 
-        /* Particle dats are AoS: data[dim * particle_index + component] */
-        xp[3 * n]     = x;
-        xp[3 * n + 1] = y;
-        xp[3 * n + 2] = z;
+      /* Particle dats are AoS: data[dim * particle_index + component] */
+      xp[3 * n]     = x;
+      xp[3 * n + 1] = y;
+      xp[3 * n + 2] = z;
 
-        /* x0 records where this particle started. We never touch it again.
-           It rides along with the particle when it migrates between ranks,
-           which is what makes the final check below possible.             */
-        xp0[3 * n]     = x;
-        xp0[3 * n + 1] = y;
-        xp0[3 * n + 2] = z;
+      /* x0 records where this particle started. We never touch it again.
+         It rides along with the particle when it migrates between ranks,
+         which is what makes the final check below possible.             */
+      xp0[3 * n]     = x;
+      xp0[3 * n + 1] = y;
+      xp0[3 * n + 2] = z;
 
-        up[3 * n]     = 0.0;
-        up[3 * n + 1] = 0.0;
-        up[3 * n + 2] = 0.0;
+      up[3 * n]     = 0.0;
+      up[3 * n + 1] = 0.0;
+      up[3 * n + 2] = 0.0;
 
-        /* (4) Ids must be unique across ALL ranks. The seeding pattern is a
-               known global lattice, so the cleanest id is the global lattice
-               index: unique by construction, identical no matter how many
-               ranks you run on, and it lets you follow one particle across
-               runs.                                                        */
-        idp[n] = (i * NPY + j) * NPZ + k;
+      /* (4) Ids must be unique across ALL ranks. The seeding pattern is a
+             known global lattice, so the cleanest id is the global lattice
+             index: unique by construction, identical no matter how many
+             ranks you run on, and it lets you follow one particle across
+             runs.                                                        */
+      idp[n] = j * NPZ + k;
 
-        n++;
-      }
+      n++;
     }
   }
 
@@ -330,10 +329,10 @@ int check_result(ops_particle particle, ops_dat pos, ops_dat x0, Real t,
   /* Accumulating v*dt NSTEPS times loses a little precision, so scale the
      tolerance with the number of steps rather than demanding exactness. */
   const Real tol = 1e-12 * NSTEPS;
-  int ok = (worst < tol) && (ntotal == NPX * NPY * NPZ);
+  int ok = (worst < tol) && (ntotal == NPY * NPZ);
 
   ops_printf("\n---------------------------------------------\n");
-  ops_printf("particles expected : %d\n", NPX * NPY * NPZ);
+  ops_printf("particles expected : %d\n", NPY * NPZ);
   ops_printf("particles found    : %d\n", ntotal);
   ops_printf("max position error : %.3e  (tol %.1e)\n", worst, tol);
   ops_printf("RESULT             : %s\n", ok ? "PASS" : "FAIL");
@@ -399,30 +398,34 @@ int main(int argc, char **argv) {
    * Derived from the coordinate dat, exactly as in the 2D app, so that it
    * cannot disagree with the grid.
    *
-   * !! THIS APP DOES NOT RUN UNDER MPI YET. !!  Every rank dies in
-   * ops_particle_setup_partition() with "Defined bounding box of non-positive
-   * volume". The cause is a library defect, not this app:
+   * THIS NEEDS A LIBRARY FIX THAT IS NOT IN UPSTREAM OPS. Until 2026-07-30,
    * _ops_construct_local_box_from_dat()
-   * (ops/c/include/ops_particle_box_host_funcs.h:45) has a 3D array-of-structs
-   * branch that assigns xmin[0..2], xmax[0] and xmax[1] but *never assigns
-   * xmax[2]*. The MPI caller zero-initialises its xmin/xmax
-   * (ops_particle_box_mpi_funcs.h:139-141), so xmax[2] stays equal to xmin[2]
-   * and the volume check rejects it. The 2D branch and the 3D SoA branch of
-   * the same function are both complete -- only 3D AoS, the default, is hit.
+   * (ops/c/include/ops_particle_box_host_funcs.h:45) had a 3D array-of-structs
+   * branch that assigned xmin[0..2], xmax[0] and xmax[1] but *never assigned
+   * xmax[2]*. The 2D branch and the 3D SoA branch were both complete -- only
+   * 3D AoS, the default, was affected. It broke both backends, differently:
    *
-   * Serial only appears to work: its caller
-   * (ops_particle_box_host_funcs.h:128) leaves xmin/xmax uninitialised, so
-   * xmax[2] is read from stack garbage. The z bounds in a serial run are
-   * therefore not trustworthy even though the run reports PASS.
+   *   MPI    - the caller zero-initialises xmin/xmax
+   *            (ops_particle_box_mpi_funcs.h:139-141), so xmax[2] stayed equal
+   *            to xmin[2] and every rank threw "Defined bounding box of
+   *            non-positive volume".
+   *   serial - the caller (ops_particle_box_host_funcs.h:128) leaves them
+   *            uninitialised, so xmax[2] was stack garbage. The run did not
+   *            throw; it reported the box as z[0, 6.95e-310], collapsed every
+   *            particle onto z = 0, and still printed PASS. A silently wrong
+   *            answer, which is the worse failure of the two.
+   *
+   * If a 3D particle app here ever reports a degenerate z extent or throws on
+   * a non-positive volume, check that assignment is still present.
    *
    * Declaring the region explicitly instead --
    *   Real region[] = {0,0,0, LX,LY,LZ};
    *   ops_create_bounding_box(block, 3, region);
-   * -- does reach the correct branch, but that branch needs the mapping's
-   * cell size, and a grid+stencil mapping derives that from the coordinate
-   * dat through the box, so map->dx comes out {0,0,0} and it fails a step
-   * later. There is no app-side workaround; the library needs the one missing
-   * assignment. See documentation/ops-particles-defects.md.             */
+   * -- reaches a different, correct branch, but that branch needs the
+   * mapping's cell size, and a grid+stencil mapping derives that from the
+   * coordinate dat through the box, so map->dx comes out {0,0,0} and it fails
+   * a step later. That is why this app takes the coordinate-dat route.
+   * See documentation/ops-particles-defects.md.                          */
 
   Real dx_box[] = {0.0, 0.0, 0.0};
   BoundingBox<Real> *box = ops_create_bounding_box(block, x_grid, 3, dx_box);
@@ -599,8 +602,10 @@ int main(int argc, char **argv) {
 #endif
 
   ops_printf("OPS Particles tutorial 1 (3D): constant-velocity drift\n");
+  ops_printf("seeding a %dx%d sheet on the y-z plane at x = %g\n",
+             NPY, NPZ, X_SEED);
   ops_printf("grid %dx%dx%d, %d particles, v = (%g, %g, %g), dt = %g, %d steps\n",
-             NX, NY, NZ, NPX * NPY * NPZ, VEL[0], VEL[1], VEL[2], DT, NSTEPS);
+             NX, NY, NZ, NPY * NPZ, VEL[0], VEL[1], VEL[2], DT, NSTEPS);
   ops_printf("box [%g,%g] x [%g,%g] x [%g,%g]: periodic in x, no motion in y/z\n",
              dom_lo[0], dom_hi[0], dom_lo[1], dom_hi[1], dom_lo[2], dom_hi[2]);
 
@@ -608,7 +613,7 @@ int main(int argc, char **argv) {
                                      "particles_step_0.txt");
 
   /* Everything a plot script needs about the run, travelling with the data. */
-  drift_io_params io_params = {NX, NY, NZ, NPX, NPY, NPZ, NSTEPS, NPRINT,
+  drift_io_params io_params = {NX, NY, NZ, NPY, NPZ, NSTEPS, NPRINT, X_SEED,
                                LX, LY, LZ, DT,
                                {VEL[0], VEL[1], VEL[2]},
                                {dom_lo[0], dom_hi[0], dom_lo[1], dom_hi[1],

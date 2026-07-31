@@ -6,9 +6,9 @@ particle dats as flat arrays, and the simulation constants.
     python3 plot_drift3d_h5.py                     # every drift3d_output_??????.h5
     python3 plot_drift3d_h5.py drift3d_output.h5   # a single file
 
-NOTE: unvalidated. The 3D app does not yet produce a correct z extent -- see the
-bounding-box comment in drift3d.cpp -- so until that library defect is fixed
-every particle sits on the z = 0 plane and these views will look flat.
+Three panels: the 3D cloud, the view down z (where the drift and the periodic
+seam read most clearly), and the view down x (where the sheet is seen face-on
+and should look like a filled NPY x NPZ grid).
 """
 
 import glob
@@ -44,11 +44,11 @@ def read_frame(path):
 def plot_frame(path, outdir):
     pos, ids, timestep, time, dom = read_frame(path)
 
-    fig = plt.figure(figsize=(12.0, 5.0))
+    fig = plt.figure(figsize=(16.0, 5.0))
 
     # Left: the 3D cloud. Colour by id so a particle keeps its colour across
     # frames, which is what makes the re-injection at the upstream face visible.
-    ax = fig.add_subplot(1, 2, 1, projection="3d")
+    ax = fig.add_subplot(1, 3, 1, projection="3d")
     ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], s=12.0, c=ids, cmap="viridis",
                edgecolors="none", depthshade=True)
     ax.set_xlim(dom[0], dom[1])
@@ -59,9 +59,9 @@ def plot_frame(path, outdir):
     ax.set_zlabel("z")
     ax.set_title("t = %.3f  -  %d particles" % (time, len(pos)))
 
-    # Right: looking down z, which is where the drift and the periodic seam are
-    # easiest to read.
-    ax2 = fig.add_subplot(1, 2, 2)
+    # Middle: looking down z, which is where the drift and the periodic seam are
+    # easiest to read. A correct sheet appears here as a single vertical line.
+    ax2 = fig.add_subplot(1, 3, 2)
     ax2.scatter(pos[:, 0], pos[:, 1], s=14.0, c=ids, cmap="viridis",
                 edgecolors="none")
     for seam in (dom[0], dom[1]):
@@ -71,7 +71,19 @@ def plot_frame(path, outdir):
     ax2.set_aspect("equal")
     ax2.set_xlabel("x")
     ax2.set_ylabel("y")
-    ax2.set_title("projection along z  -  step %d" % timestep)
+    ax2.set_title("along z  -  step %d  (sheet = one line)" % timestep)
+
+    # Right: looking down x, i.e. the sheet face-on. This is the view that shows
+    # the seeding actually is an NPY x NPZ grid on the y-z plane.
+    ax3 = fig.add_subplot(1, 3, 3)
+    ax3.scatter(pos[:, 1], pos[:, 2], s=18.0, c=ids, cmap="viridis",
+                edgecolors="none")
+    ax3.set_xlim(dom[2], dom[3])
+    ax3.set_ylim(dom[4], dom[5])
+    ax3.set_aspect("equal")
+    ax3.set_xlabel("y")
+    ax3.set_ylabel("z")
+    ax3.set_title("along x  -  the sheet face-on")
 
     fig.suptitle(os.path.basename(path))
 

@@ -115,6 +115,8 @@ void _ops_construct_local_box_from_dat(ops_dat coords, const int dim,
                   + imax[2] * coords->dim * size[0] * size[1]);
       xmax[1] = *(  data + 1 + imax[0] * coords->dim + imax[1] * coords->dim * size[0]
                   + imax[2] * coords->dim * size[0] * size[1]);
+      xmax[2] = *(  data + 2 + imax[0] * coords->dim + imax[1] * coords->dim * size[0]
+                  + imax[2] * coords->dim * size[0] * size[1]);
     }
   }
   else
