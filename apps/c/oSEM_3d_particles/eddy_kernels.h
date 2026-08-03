@@ -141,22 +141,32 @@ void KerInstantiateEddies(ACCP<double> &pos, ACCP<double> &r,
  * kernel exists to prove that function works end to end: filled by OPS-style
  * bulk call, consumed through ops_arg_dat_particle in an ops_particle_par_loop.
  *
- * The dat is double, so rng(k) is already in [0,1) and no rescaling of an int
- * range is needed -- which is also why this path cannot reproduce ../oSEM_3d's
- * finding 1.
+ * THE ARITHMETIC BELOW IS ../oSEM_3d's, UNCHANGED -- same +2147483648.0, same
+ * /4294967295.0, same (rng < 0) ? -1 : 1, on an int dat exactly as there. That
+ * is deliberate, and it makes this a controlled experiment: if the same kernel
+ * on a CORRECTLY distributed int stream produces a correct eddy field, then the
+ * kernel was never at fault and the whole of finding 1 belongs to
+ * ops_fill_random_uniform drawing int dats from (0, INT_MAX) instead of the full
+ * signed range. Only the fill differs between the two apps.
+ *
+ * ONE DETAIL THE ORIGINAL GLOSSES OVER: at rng = INT_MAX the expression
+ * (2147483647 + 2147483648.0)/4294967295.0 is exactly 1.0, so this maps to a
+ * CLOSED [0,1] and can place an eddy precisely on a box face, which a half-open
+ * bin reads as outside. Probability 2^-32 per draw, about 2e-7 over the 801
+ * position draws here. It is why the hash path divides by 2^32 instead.
  */
 void KerInstantiateEddiesOpsRng(ACCP<double> &pos, ACCP<double> &r,
                                 ACCP<double> &inc, ACCP<int> &eps,
                                 ACCP<int> &ctr, ACCP<int> &id,
-                                const ACCP<double> &rng, const int *idp) {
+                                const ACCP<int> &rng, const int *idp) {
 
-  pos(0) = eddy_x_min + (eddy_x_max - eddy_x_min) * rng(0);
-  pos(1) = eddy_y_min + (eddy_y_max - eddy_y_min) * rng(1);
-  pos(2) = eddy_z_min + (eddy_z_max - eddy_z_min) * rng(2);
+  pos(0) = eddy_x_min + (rng(0) + 2147483648.0) / (4294967295.0) * (eddy_x_max - eddy_x_min);
+  pos(1) = eddy_y_min + (rng(1) + 2147483648.0) / (4294967295.0) * (eddy_y_max - eddy_y_min);
+  pos(2) = eddy_z_min + (rng(2) + 2147483648.0) / (4294967295.0) * (eddy_z_max - eddy_z_min);
 
-  eps(0) = (rng(3) < 0.5) ? -1 : 1;
-  eps(1) = (rng(4) < 0.5) ? -1 : 1;
-  eps(2) = (rng(5) < 0.5) ? -1 : 1;
+  eps(0) = (rng(3) < 0) ? -1 : 1;
+  eps(1) = (rng(4) < 0) ? -1 : 1;
+  eps(2) = (rng(5) < 0) ? -1 : 1;
 
   r(0)   = radius;
   inc(0) = u0 * dt;

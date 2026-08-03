@@ -31,12 +31,14 @@
  *      -seed N           base seed
  *      -ops-rng          fill a dat with ops_fill_random_uniform_particle and
  *                        read it from the kernel, instead of hashing in-kernel
+ *      -rng-selftest     test ops_particle_rng.h and exit
  *      -noh5             skip the HDF5 output
  */
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <climits>
 #include <cstring>
 #include <random>
 #include <vector>
@@ -260,6 +262,170 @@ int report_eddy_field(ops_particle particle, ops_dat pos, ops_dat peps) {
    prove that function, which is a candidate for the OPS library. */
 enum sem_rng_mode { RNG_HASH = 0, RNG_OPS = 1 };
 
+/* ================================================================== *
+ *  Self-test for ops_particle_rng.h  (-rng-selftest)
+ * ================================================================== *
+ *
+ * ops_particle_rng.h is destined for the OPS library, so it gets tested as a
+ * library function rather than only through the eddies. Six checks, and two of
+ * them mean nothing except under MPI.
+ *
+ * The int check is the important one: it asserts the exact behaviour where
+ * ops_fill_random_uniform_particle DIVERGES from ops_fill_random_uniform_host,
+ * which draws int dats from (0, INT_MAX) and would fail it.
+ */
+
+/* Order-independent digest of a dat's raw bytes, so ranks can be compared
+   without gathering the data itself. FNV-1a. */
+static unsigned long long rng_digest(const ops_dat dat, size_t nelems) {
+  const unsigned char *b = (const unsigned char *)dat->data;
+  const size_t nbytes = nelems * dat->type_size;
+  unsigned long long h = 1469598103934665603ULL;
+  for (size_t i = 0; i < nbytes; i++) {
+    h ^= (unsigned long long)b[i];
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+static void rng_check(const char *name, int pass, const char *detail, int *all) {
+  ops_printf("  %-46s %s   %s\n", name, pass ? "PASS" : "FAIL", detail);
+  *all = *all && pass;
+}
+
+static int rng_selftest(ops_dat d_uni, ops_dat d_int, ops_dat d_nrm,
+                        ops_dat grid_dat, unsigned int seed) {
+
+  int all = 1;
+  char detail[256];
+
+  const size_t n_uni = (size_t)d_uni->size[0] * d_uni->dim;
+  const size_t n_int = (size_t)d_int->size[0] * d_int->dim;
+  const size_t n_nrm = (size_t)d_nrm->size[0] * d_nrm->dim;
+
+  ops_printf("\n--- ops_particle_rng.h self-test ---\n");
+
+  std::mt19937 gen;
+
+  /* 1. uniform, double: range and mean. */
+  ops_particle_randomgen_init(seed, 0, gen);
+  ops_fill_random_uniform_particle(d_uni, gen);
+  {
+    const double *v = (const double *)d_uni->data;
+    double lo = 2.0, hi = -1.0, sum = 0.0;
+    for (size_t i = 0; i < n_uni; i++) {
+      if (v[i] < lo) lo = v[i];
+      if (v[i] > hi) hi = v[i];
+      sum += v[i];
+    }
+    const double mean = sum / (double)n_uni;
+    snprintf(detail, sizeof detail, "n=%zu range [%.6f, %.6f] mean %.4f",
+             n_uni, lo, hi, mean);
+    rng_check("uniform double in [0,1), mean ~ 0.5",
+              lo >= 0.0 && hi < 1.0 && fabs(mean - 0.5) < 0.02, detail, &all);
+  }
+
+  /* 2. uniform, int -- THE DIVERGENCE. ops_fill_random_uniform_host would
+        produce nothing below zero here and fail this outright. */
+  ops_particle_randomgen_init(seed, 0, gen);
+  ops_fill_random_uniform_particle(d_int, gen);
+  {
+    const int *v = (const int *)d_int->data;
+    int lo = INT_MAX, hi = INT_MIN;
+    size_t nneg = 0;
+    for (size_t i = 0; i < n_int; i++) {
+      if (v[i] < lo) lo = v[i];
+      if (v[i] > hi) hi = v[i];
+      if (v[i] < 0) nneg++;
+    }
+    const double frac_neg = (double)nneg / (double)n_int;
+    /* Both halves populated, and the extremes reached to within 1% of the
+       range -- i.e. the distribution really is over the full signed int. */
+    const double reach = 0.01 * 4294967296.0;
+    snprintf(detail, sizeof detail, "n=%zu range [%d, %d] %.1f%% negative",
+             n_int, lo, hi, 100.0 * frac_neg);
+    rng_check("uniform int over FULL signed range",
+              nneg > 0 && nneg < n_int && fabs(frac_neg - 0.5) < 0.02 &&
+              (double)lo < (double)INT_MIN + reach &&
+              (double)hi > (double)INT_MAX - reach, detail, &all);
+  }
+
+  /* 3. normal, double: mean and standard deviation. */
+  ops_particle_randomgen_init(seed, 0, gen);
+  ops_fill_random_normal_particle(d_nrm, gen);
+  {
+    const double *v = (const double *)d_nrm->data;
+    double sum = 0.0, sum2 = 0.0;
+    for (size_t i = 0; i < n_nrm; i++) { sum += v[i]; sum2 += v[i] * v[i]; }
+    const double mean = sum / (double)n_nrm;
+    const double sd   = sqrt(sum2 / (double)n_nrm - mean * mean);
+    snprintf(detail, sizeof detail, "n=%zu mean %+.4f sd %.4f", n_nrm, mean, sd);
+    rng_check("normal double, mean ~ 0, sd ~ 1",
+              fabs(mean) < 0.05 && fabs(sd - 1.0) < 0.05, detail, &all);
+  }
+
+  /* 4. The is_particle guard: a grid dat must be refused. */
+  {
+    int threw = 0;
+    try {
+      ops_fill_random_uniform_particle(grid_dat, gen);
+    } catch (OPSException &) {
+      threw = 1;
+    }
+    snprintf(detail, sizeof detail, "grid dat \"%s\" %s", grid_dat->name,
+             threw ? "rejected" : "ACCEPTED");
+    rng_check("is_particle guard rejects a grid dat", threw, detail, &all);
+  }
+
+  /* 5. options = 0: reproducible, and identical on every rank. */
+  {
+    ops_particle_randomgen_init(seed, 0, gen);
+    ops_fill_random_uniform_particle(d_uni, gen);
+    const unsigned long long a = rng_digest(d_uni, n_uni);
+
+    ops_particle_randomgen_init(seed, 0, gen);
+    ops_fill_random_uniform_particle(d_uni, gen);
+    const unsigned long long b = rng_digest(d_uni, n_uni);
+
+    int same_across_ranks = 1;
+#ifdef OPS_MPI
+    unsigned long long dmin, dmax;
+    MPI_Allreduce(&b, &dmin, 1, MPI_UNSIGNED_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
+    MPI_Allreduce(&b, &dmax, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    same_across_ranks = (dmin == dmax);
+#endif
+    snprintf(detail, sizeof detail, "reseed reproduces: %s; all ranks equal: %s",
+             (a == b) ? "yes" : "NO", same_across_ranks ? "yes" : "NO");
+    rng_check("options=0 -- same stream on every rank",
+              (a == b) && same_across_ranks, detail, &all);
+  }
+
+  /* 6. options = 1: the rank offset, i.e. the flag actually selects. Vacuous on
+        one rank, where ops_randomgen_init_host also skips the offset. */
+  {
+    ops_particle_randomgen_init(seed, 1, gen);
+    ops_fill_random_uniform_particle(d_uni, gen);
+    const unsigned long long b = rng_digest(d_uni, n_uni);
+
+    int differs = 1;
+    const char *note = "single rank, vacuous";
+#ifdef OPS_MPI
+    if (ops_num_procs() > 1) {
+      unsigned long long dmin, dmax;
+      MPI_Allreduce(&b, &dmin, 1, MPI_UNSIGNED_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
+      MPI_Allreduce(&b, &dmax, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+      differs = (dmin != dmax);
+      note = differs ? "ranks differ, as intended" : "RANKS IDENTICAL";
+    }
+#endif
+    snprintf(detail, sizeof detail, "%s", note);
+    rng_check("options=1 -- per-rank stream", differs, detail, &all);
+  }
+
+  ops_printf("\nOPS_PARTICLE_RNG SELF-TEST : %s\n", all ? "PASS" : "FAIL");
+  return all;
+}
+
 static const char *sem_rng_name(int mode) {
   return (mode == RNG_OPS) ? "ops_fill_random_uniform_particle (-ops-rng)"
                            : "counter-based hash of the eddy index";
@@ -294,6 +460,7 @@ int main(int argc, char **argv) {
   eddy_seed = 182383739;      /* oSEM_3d's seed_gbl, opensbli.cpp:135 */
   int write_h5 = 1;
   int rng_mode = RNG_HASH;
+  int selftest = 0;
 
   /* The eddy-box grid is not a physical grid -- nothing is solved on it. It
      defines the bounding box and the bins, so the only sensible scale is the
@@ -312,6 +479,8 @@ int main(int argc, char **argv) {
       write_h5 = 0;
     } else if (strcmp(argv[i], "-ops-rng") == 0) {
       rng_mode = RNG_OPS;
+    } else if (strcmp(argv[i], "-rng-selftest") == 0) {
+      selftest = 1;
     } else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) {
       eddy_seed = (int)strtoul(argv[++i], NULL, 10);
     }
@@ -441,11 +610,26 @@ int main(int argc, char **argv) {
   ops_dat p_del = ops_decl_particle_dat(eddy_parts, 1, base, null_int,
                                         "int", "eddy_unowned");
 
-  /* -ops-rng only: six uniforms per eddy, three for the position and three for
-     the signs, filled by ops_fill_random_uniform_particle(). double, so the
-     values arrive already in [0,1). */
-  ops_dat p_rng = ops_decl_particle_dat(eddy_parts, 6, base, null_dbl,
-                                        "double", "eddy_rng");
+  /* -ops-rng only: six random ints per eddy, filled by
+     ops_fill_random_uniform_particle(). This is ../oSEM_3d's eddy_x_rng (dim 1,
+     for x) and eddy_bulk_rng (dim 5, for y, z and the three signs) merged into
+     one particle dat, and it is int for the same reason theirs is -- so that
+     KerInstantiateEddiesOpsRng can be their kernel verbatim.
+
+     int also exercises the branch of ops_fill_random_uniform_particle that
+     DIVERGES from ops_fill_random_uniform_host: full signed range rather than
+     (0, INT_MAX). See -rng-selftest. */
+  ops_dat p_rng = ops_decl_particle_dat(eddy_parts, 6, base, null_int,
+                                        "int", "eddy_rng");
+
+  /* Scratch for -rng-selftest, declared only in that mode so the normal path
+     carries no extra particle dats. */
+  ops_dat t_uni = NULL, t_int = NULL, t_nrm = NULL;
+  if (selftest) {
+    t_uni = ops_decl_particle_dat(eddy_parts, 4, base, null_dbl, "double", "rngtest_uniform");
+    t_int = ops_decl_particle_dat(eddy_parts, 4, base, null_int, "int",    "rngtest_int");
+    t_nrm = ops_decl_particle_dat(eddy_parts, 4, base, null_dbl, "double", "rngtest_normal");
+  }
 
   /* ---- 4. Mapping -------------------------------------------------- *
    *
@@ -504,6 +688,13 @@ int main(int argc, char **argv) {
      "Defined bounding box of non-positive volume". */
   ops_particle_setup_partition();
 
+  if (selftest) {
+    const int ok_rng = rng_selftest(t_uni, t_int, t_nrm, d_coords,
+                                    (unsigned int)eddy_seed);
+    ops_exit();
+    return ok_rng ? 0 : 1;
+  }
+
   /* Storage and count for the whole eddy list, on every rank. OPS infers
      neither: a particle loop iterates over particles that already exist, so the
      slots have to be there before the kernel can write into them. The tutorials
@@ -557,7 +748,7 @@ int main(int argc, char **argv) {
                           ops_arg_dat_particle(p_eps, 3, "int",    eddy_parts, map, OPS_WRITE),
                           ops_arg_dat_particle(p_ctr, 1, "int",    eddy_parts, map, OPS_WRITE),
                           ops_arg_dat_particle(p_id,  1, "int",    eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_rng, 6, "double", eddy_parts, map, OPS_READ),
+                          ops_arg_dat_particle(p_rng, 6, "int",    eddy_parts, map, OPS_READ),
                           ops_arg_idp());
   } else {
     ops_particle_par_loop(KerInstantiateEddies, "instantiate_eddies", eddy_parts, 3,
