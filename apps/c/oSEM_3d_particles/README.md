@@ -41,7 +41,7 @@ make oSEM_3d_particles_mpi
 python3 plot_osem3d_h5.py      # -> frames/*.png
 ```
 
-Options: `-ngrid NX NY NZ`, `-seed N`, `-noh5`.
+Options: `-ngrid NX NY NZ`, `-seed N`, `-ops-rng`, `-noh5`.
 
 ## What the app does
 
@@ -89,6 +89,12 @@ with `ops_fill_random_uniform` and has the kernel read them; that is a stateful
 generator run outside the kernel, and it is where its defects live (finding 1).
 A counter-based hash of `(eddy index, draw index)` needs no dat and no state, so
 it can live in the kernel and gives the same eddy the same draw on every rank.
+
+`-ops-rng` runs the alternative — `ops_fill_random_uniform` into a `double`
+particle dat, read by `KerInstantiateEddiesOpsRng` — to show why the hash is
+there. It is a demonstration, not a supported mode: see "There is no RNG a
+kernel can call" and "`ops_randomgen_init` cannot produce a rank-independent
+stream" below. It passes in serial and diverges at every rank count above one.
 
 **Ownership is a second kernel**, `KerMarkUnownedEddies`, applying
 `BoundingBox::getLocalMaxMin()` — the library's own subdomain bounds, so this app
@@ -209,11 +215,66 @@ rebuilt from scratch by `ops_particle_setup_maps_with_dats()` immediately after.
 
 `ops_particle_insert_del.h:421`. Calling it fails at link.
 
-### `ops_fill_random_uniform` cannot fill a particle dat
+### There is no RNG a kernel can call, and none that fills a particle dat
 
-`ops_fill_random_uniform_host` (`ops_lib_core.cpp:2581`) multiplies `dat->size`
-over all `OPS_MAX_DIM` and then calls `ops_set_halo_dirtybit3` on the dat, which
-is meaningless for particle storage.
+The whole public API is four host functions (`ops_lib_core.h:1391-1397`):
+`ops_randomgen_init`, `ops_fill_random_uniform`, `ops_fill_random_normal`,
+`ops_randomgen_exit`. Each fills a whole `ops_dat`, so **none can be called from
+inside a kernel** — curand/hiprand appear only in `ops_cuda_rt_support.h` /
+`ops_hip_rt_support.h` as the device implementation of that same bulk fill, not
+as a per-thread generator. That is why `eddy_kernels.h` carries its own hash.
+
+`ops_fill_random_uniform` also **throws on a particle dat, at every rank
+count**. Its last act is `ops_set_halo_dirtybit3`, for which it builds an
+`ops_arg_dat` (`ops_lib_core.cpp:2618`), and `ops_arg_dat` rejects any dat with
+`is_particle` set (`ops_lib_core.cpp:1229-1233`):
+
+```
+Error: ops_arg_dat_opt cannot be called for particle_ops_dat structure
+```
+
+The incompatibility is **only** that trailing bookkeeping. The fill loop
+(`:2589-2612`) runs to completion first, so the numbers are already written and
+`dirty_hd` is already set when the exception is raised — `-ops-rng` catches it
+and carries on with values that are perfectly sound (267 eddies, every
+distribution check passing in serial). A one-line guard in OPS would make the
+call usable.
+
+Sizing is *not* the problem, contrary to what this file said before:
+`ops_dat_init_metadata_core` sets `size[n] = 1` for `n >= block->dims`, so a
+particle dat is `{Nmax,1,1,1,1}` and the fill's `cumsize` comes out as exactly
+`dim * Nmax` — the allocation.
+
+### `ops_randomgen_init` cannot produce a rank-independent stream
+
+It ignores its `options` argument and seeds
+`seed + my_global_rank * 2654435761u` whenever comm size > 1
+(`ops_lib_core.cpp:2570-2579`). Measured with `-ops-rng`, against a serial run
+of the same mode:
+
+| | eddies | unique `eddy_id` | duplicated | positions matching serial |
+|---|---|---|---|---|
+| np = 1 | 267 | 267 | 0 | 267 / 267 |
+| np = 2 | 278 | 201 | 77 | 141 / 278 |
+| np = 4 | 263 | 186 | 77 | 64 / 263 |
+| np = 8 | 270 | 179 | 91 | 28 / 270 |
+
+Every rank draws its own eddy 7 at its own position. Sometimes two ranks both
+keep theirs (duplicated ids); sometimes each rank's draw lands in a *different*
+rank's subdomain and nobody keeps it (unique < 267). The matching count tracks
+rank 0's share of the box, because rank 0's offset is `0 * 2654435761 = 0` and
+so rank 0 alone walks the serial stream.
+
+Note the eddy **count** is a poor detector here — its expectation is 267 either
+way, and 263 at np = 4 is within noise of passing. The field comparison is what
+shows it.
+
+### `ops_insert_random_particles.h` and `_v2` are dead code
+
+OPS's own "particles from a distribution" API calls
+`ops_find_intersection_region`, which is declared nowhere in the tree, and uses
+bare `BoundingBox` like the insert/delete header. Only `ops_distributions.h`
+compiles, and it is host-side too.
 
 ### Two smaller ones
 
@@ -329,7 +390,7 @@ an initialisation question — and they will need settling before the coupling.
 |---|---|
 | `sem3d.cpp` | declarations, the loop sequence, the checks |
 | `sem3d_constants.h` | Geometry and eddy population, from `../oSEM_3d` |
-| `eddy_kernels.h` | the RNG, `KerInstantiateEddies`, `KerMarkUnownedEddies`, `KerInitEddyGrid` |
+| `eddy_kernels.h` | the RNG, `KerInstantiateEddies`, `KerInstantiateEddiesOpsRng`, `KerMarkUnownedEddies`, `KerInitEddyGrid` |
 | `sem3d_stats.h` | chi-square and sign-statistics helpers |
 | `sem3d_io.h` | Particle HDF5 writer |
 | `plot_osem3d_h5.py` | 3-D cloud, (y,z) plane, side view, wall-normal spread |

@@ -20,7 +20,7 @@ include $(OPS_INSTALL_PATH)/../makefiles/Makefile.common
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.mpi
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
-HEADERS=eddy_kernels.h sem3d_constants.h sem3d_stats.h sem3d_io.h
+HEADERS=eddy_kernels.h sem3d_constants.h sem3d_stats.h sem3d_io.h ops_particle_rng.h
 
 OPS_FILES=sem3d.cpp
 

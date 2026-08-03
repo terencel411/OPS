@@ -129,6 +129,46 @@ void KerInstantiateEddies(ACCP<double> &pos, ACCP<double> &r,
 }
 
 /* ------------------------------------------------------------------ *
+ *  instantiate_eddies, reading a filled dat  (-ops-rng)
+ * ------------------------------------------------------------------ *
+ * The same instantiation, taking its randomness from a dat filled before the
+ * loop instead of hashing the eddy index -- which is the structure ../oSEM_3d
+ * uses (opensbli.cpp:305-311 fills eddy_x_rng and eddy_bulk_rng,
+ * opensbliblock00_kernels.h:39-48 reads them).
+ *
+ * The fill is ops_fill_random_uniform_particle() from ops_particle_rng.h, the
+ * particle counterpart of ops_fill_random_uniform() that OPS is missing. This
+ * kernel exists to prove that function works end to end: filled by OPS-style
+ * bulk call, consumed through ops_arg_dat_particle in an ops_particle_par_loop.
+ *
+ * The dat is double, so rng(k) is already in [0,1) and no rescaling of an int
+ * range is needed -- which is also why this path cannot reproduce ../oSEM_3d's
+ * finding 1.
+ */
+void KerInstantiateEddiesOpsRng(ACCP<double> &pos, ACCP<double> &r,
+                                ACCP<double> &inc, ACCP<int> &eps,
+                                ACCP<int> &ctr, ACCP<int> &id,
+                                const ACCP<double> &rng, const int *idp) {
+
+  pos(0) = eddy_x_min + (eddy_x_max - eddy_x_min) * rng(0);
+  pos(1) = eddy_y_min + (eddy_y_max - eddy_y_min) * rng(1);
+  pos(2) = eddy_z_min + (eddy_z_max - eddy_z_min) * rng(2);
+
+  eps(0) = (rng(3) < 0.5) ? -1 : 1;
+  eps(1) = (rng(4) < 0.5) ? -1 : 1;
+  eps(2) = (rng(5) < 0.5) ? -1 : 1;
+
+  r(0)   = radius;
+  inc(0) = u0 * dt;
+
+  /* No counter to carry. The hash path records where an eddy's stream has got
+     to so a respawn can continue it; a bulk fill has no per-eddy position in
+     the stream to record. */
+  ctr(0) = 0;
+  id(0)  = idp[0];
+}
+
+/* ------------------------------------------------------------------ *
  *  The ownership cull
  * ------------------------------------------------------------------ *
  * Writes 1 for an eddy this rank does not own, 0 otherwise.
