@@ -25,12 +25,11 @@ As particles, an eddy is owned by the rank whose subdomain it occupies.
 | | dev_seq | seq | np=1 | np=2 | np=4 | np=8 |
 |---|---|---|---|---|---|---|
 | initialisation | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
-| `-ops-rng` | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
+| `-rng-selftest` | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
 
-All four targets build. Both instantiation paths give 267 eddies, and both are
-**bit-identical at every rank count**: the HDF5 output from `mpirun -np 8`,
-sorted by `eddy_id`, compares bit-equal to the serial output in position, sign
-and id.
+All four targets build. 267 eddies, **bit-identical at every rank count**: the
+HDF5 output from `mpirun -np 8`, sorted by `eddy_id`, compares bit-equal to the
+serial output in position, sign and id.
 
 ## Build and run
 
@@ -43,7 +42,7 @@ make oSEM_3d_particles_mpi
 python3 plot_osem3d_h5.py      # -> frames/*.png
 ```
 
-Options: `-ngrid NX NY NZ`, `-seed N`, `-ops-rng`, `-rng-selftest`, `-noh5`.
+Options: `-ngrid NX NY NZ`, `-seed N`, `-rng-selftest`, `-noh5`.
 
 ## What the app does
 
@@ -86,19 +85,16 @@ holds the whole list in order — that index *is* the global eddy index. It is
 what the random stream is a function of, and `eddy_id` records it so it survives
 the cull and every later migration.
 
-**The random stream is inside the kernel.** `oSEM_3d` fills two `int` `ops_dat`s
-with `ops_fill_random_uniform` and has the kernel read them; that is a stateful
-generator run outside the kernel, and it is where its defects live (finding 1).
-A counter-based hash of `(eddy index, draw index)` needs no dat and no state, so
-it can live in the kernel and gives the same eddy the same draw on every rank.
+**The random stream comes from a filled dat**, as it does in `oSEM_3d` — there
+is no OPS generator a kernel can call, so fill-then-read is the only structure
+available (`ops_lib_core.h:1391-1397` are all whole-dat host fills).
 
-`-ops-rng` is the other structure — fill an `int` dat, read it from the kernel —
-built on `ops_fill_random_uniform_particle()` in
+The fill is `ops_fill_random_uniform_particle()` in
 [`ops_particle_rng.h`](ops_particle_rng.h), a function OPS does not have and
-which is written here to be moved into it. Its kernel is `../oSEM_3d`'s
-arithmetic verbatim, so it doubles as a controlled experiment on finding 1. It
-reaches the same 267 eddies, bit-equal to serial at every rank count. See
-"Filling a particle dat with random numbers" below.
+which is written here to be moved into it: `ops_fill_random_uniform()` throws on
+a particle dat and its stream is rank-seeded. `KerInstantiateEddies` is then
+`../oSEM_3d`'s kernel arithmetic verbatim, which makes this app a controlled
+comparison against it — see "Filling a particle dat with random numbers" below.
 
 **Ownership is a second kernel**, `KerMarkUnownedEddies`, applying
 `BoundingBox::getLocalMaxMin()` — the library's own subdomain bounds, so this app
@@ -225,24 +221,26 @@ rebuilt from scratch by `ops_particle_setup_maps_with_dats()` immediately after.
 three reasons, any one of which is enough:**
 
 1. **It is a host function that fills a whole `ops_dat`.** It cannot be called
-   from inside a kernel, so it can never replace `sem_uniform()` where it sits.
-   The most it could do is the fill-then-read shape `oSEM_3d` uses.
+   from inside a kernel, so fill-then-read — the shape `oSEM_3d` uses, and this
+   app with it — is the only structure available.
 2. **It throws on a particle dat** — `ops_arg_dat` rejects `is_particle`, so
-   even the fill-then-read shape does not run.
+   even that shape does not run.
 3. **Its stream depends on the rank count.** `ops_randomgen_init` adds
    `rank * 2654435761` to the seed, so each rank would instantiate a *different*
-   eddy list — which is fatal here, because every rank instantiates the whole
-   list and then culls.
+   eddy list — fatal here, because every rank instantiates the whole list and
+   then culls.
 
-(1) is why the hash is in `eddy_kernels.h` at all. (3) is why no rearrangement
-of the app could rescue the approach. Detail and measurements below.
+(2) and (3) are what `ops_particle_rng.h` fixes: the halo tail dropped, and the
+generator passed in so the caller controls the seeding. (1) is not a defect,
+just the shape the API has. Detail and measurements below.
 
 The whole public API is four host functions (`ops_lib_core.h:1391-1397`):
 `ops_randomgen_init`, `ops_fill_random_uniform`, `ops_fill_random_normal`,
 `ops_randomgen_exit`. Each fills a whole `ops_dat`, so **none can be called from
 inside a kernel** — curand/hiprand appear only in `ops_cuda_rt_support.h` /
 `ops_hip_rt_support.h` as the device implementation of that same bulk fill, not
-as a per-thread generator. That is why `eddy_kernels.h` carries its own hash.
+as a per-thread generator. So the randomness has to be produced outside the
+kernel and read from a dat, which is what this app does.
 
 `ops_fill_random_uniform` also **throws on a particle dat, at every rank
 count**. Its last act is `ops_set_halo_dirtybit3`, for which it builds an
@@ -323,18 +321,15 @@ void ops_fill_random_uniform_particle(ops_dat dat, std::mt19937 &gen);
 void ops_fill_random_normal_particle (ops_dat dat, std::mt19937 &gen);
 ```
 
-`-ops-rng` exercises them end to end: filled by the bulk call, consumed through
-`ops_arg_dat_particle` in an `ops_particle_par_loop`, by
-`KerInstantiateEddiesOpsRng`. One run shows both halves of the argument —
+The app exercises them end to end on every run: `eddy_rng` is filled by the bulk
+call and consumed through `ops_arg_dat_particle` in an `ops_particle_par_loop`,
+by `KerInstantiateEddies`. The result is 267 eddies, `PASS`, bit-equal to serial
+at np = 1, 2, 4, 8.
 
-```
-ops_fill_random_uniform          : threw -- Error: ops_arg_dat_opt cannot be
-                                   called for particle_ops_dat structure
-ops_fill_random_uniform_particle : returned normally
-```
-
-— and the result is 267 eddies, `PASS`, bit-equal to serial at np = 1, 2, 4, 8,
-against 278 / 263 / 270 and `FAIL` for the OPS-generator version.
+For contrast, the same structure built on OPS's own generator — measured before
+this header existed — throws on the fill, and once the exception is caught and
+the partially written values used, gives 278 / 263 / 270 eddies at np = 2 / 4 / 8
+with duplicated and missing ids.
 
 `-rng-selftest` tests the header as a library component rather than only through
 the eddies, and is the thing to re-run after any change to it:
@@ -388,7 +383,7 @@ is a behaviour change for any app that has adapted to the truncation. It is
 populate both halves of the range to within 2% of even and to reach within 1% of
 both extremes, which is exactly what `ops_fill_random_uniform_host` cannot do.
 
-The `-ops-rng` field is what the change buys. `KerInstantiateEddiesOpsRng` is
+The eddy field is what the change buys. `KerInstantiateEddies` is
 `../oSEM_3d`'s kernel arithmetic verbatim — same `+ 2147483648.0`, same
 `/ 4294967295.0`, same `(rng < 0) ? -1 : 1`, on an `int` dat exactly as there —
 so the *only* difference between the two apps is which function filled the dat.
@@ -404,7 +399,7 @@ as a full-range **signed** int, while `ops_fill_random_uniform` fills `int` dats
 from `std::uniform_int_distribution<int>(0, INT_MAX)`
 (`ops_lib_core.cpp:2604`) — never negative.
 
-**That attribution is measured, not inferred.** `-ops-rng` runs that kernel's
+**That attribution is measured, not inferred.** This app runs that kernel's
 arithmetic verbatim on an `int` dat filled by
 `ops_fill_random_uniform_particle`, whose only difference is the full signed
 range. The field comes out correct — eddies spanning the whole box including the
@@ -435,11 +430,10 @@ cancellation between `+1` and `-1` eddies; with no `-1` eddies it produces a
 systematic offset instead.
 
 `frames/osem3d_eddies_osemrng_000000.png` is this field, against
-`frames/osem3d_eddies_000000.png` for the counter-based hash. It was produced by
-a `-osem3d-rng` mode that has since been removed: reproducing it needs
-`mt19937` and `std::uniform_int_distribution`, neither of which a kernel can
-run, so keeping it meant keeping a host reimplementation of the instantiation —
-exactly what this app no longer has.
+`frames/osem3d_eddies_000000.png` for the same kernel fed by
+`ops_fill_random_uniform_particle`. It was produced by a `-osem3d-rng` mode that
+has since been removed, since reproducing OPS's truncated int range meant
+reimplementing the fill on the host.
 
 ### 2. The shape-function constant does not match the truncation
 
@@ -501,7 +495,7 @@ an initialisation question — and they will need settling before the coupling.
 |---|---|
 | `sem3d.cpp` | declarations, the loop sequence, the checks |
 | `sem3d_constants.h` | Geometry and eddy population, from `../oSEM_3d` |
-| `eddy_kernels.h` | the RNG, `KerInstantiateEddies`, `KerInstantiateEddiesOpsRng`, `KerMarkUnownedEddies`, `KerInitEddyGrid` |
+| `eddy_kernels.h` | `KerInstantiateEddies`, `KerMarkUnownedEddies`, `KerInitEddyGrid` |
 | `ops_particle_rng.h` | `ops_fill_random_uniform_particle` — **for the OPS library, not this app** |
 | `sem3d_stats.h` | chi-square and sign-statistics helpers |
 | `sem3d_io.h` | Particle HDF5 writer |

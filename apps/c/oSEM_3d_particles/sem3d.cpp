@@ -29,8 +29,6 @@
  *  Options:
  *      -ngrid NX NY NZ   eddy-box grid resolution
  *      -seed N           base seed
- *      -ops-rng          fill a dat with ops_fill_random_uniform_particle and
- *                        read it from the kernel, instead of hashing in-kernel
  *      -rng-selftest     test ops_particle_rng.h and exit
  *      -noh5             skip the HDF5 output
  */
@@ -252,16 +250,6 @@ int report_eddy_field(ops_particle particle, ops_dat pos, ops_dat peps) {
   return ok;
 }
 
-/* Where the randomness comes from.
-
-   RNG_HASH is the default: KerInstantiateEddies hashes the eddy index, needing
-   no storage and no state.
-
-   RNG_OPS is ../oSEM_3d's shape -- fill a dat, read it from the kernel -- built
-   on ops_fill_random_uniform_particle() from ops_particle_rng.h. It is here to
-   prove that function, which is a candidate for the OPS library. */
-enum sem_rng_mode { RNG_HASH = 0, RNG_OPS = 1 };
-
 /* ================================================================== *
  *  Self-test for ops_particle_rng.h  (-rng-selftest)
  * ================================================================== *
@@ -426,11 +414,6 @@ static int rng_selftest(ops_dat d_uni, ops_dat d_int, ops_dat d_nrm,
   return all;
 }
 
-static const char *sem_rng_name(int mode) {
-  return (mode == RNG_OPS) ? "ops_fill_random_uniform_particle (-ops-rng)"
-                           : "counter-based hash of the eddy index";
-}
-
 /* ================================================================== */
 
 int main(int argc, char **argv) {
@@ -459,7 +442,6 @@ int main(int argc, char **argv) {
 
   eddy_seed = 182383739;      /* oSEM_3d's seed_gbl, opensbli.cpp:135 */
   int write_h5 = 1;
-  int rng_mode = RNG_HASH;
   int selftest = 0;
 
   /* The eddy-box grid is not a physical grid -- nothing is solved on it. It
@@ -477,8 +459,6 @@ int main(int argc, char **argv) {
       nex = atoi(argv[++i]); ney = atoi(argv[++i]); nez = atoi(argv[++i]);
     } else if (strcmp(argv[i], "-noh5") == 0) {
       write_h5 = 0;
-    } else if (strcmp(argv[i], "-ops-rng") == 0) {
-      rng_mode = RNG_OPS;
     } else if (strcmp(argv[i], "-rng-selftest") == 0) {
       selftest = 1;
     } else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) {
@@ -494,9 +474,10 @@ int main(int argc, char **argv) {
   }
 
   /* A translator-generated kernel file sees ops_decl_const variables and nothing
-     else from these headers. KerInstantiateEddies reads u0, dt, radius, the six
-     box bounds and eddy_seed; the rest are registered for the kernels that come
-     later, exactly as ../oSEM_3d registers them. */
+     else from these headers. KerInstantiateEddies reads u0, dt, radius and the
+     six box bounds; the rest are registered for the kernels that come later,
+     exactly as ../oSEM_3d registers them. eddy_seed is NOT among them -- it is
+     consumed host-side by ops_particle_randomgen_init, not by any kernel. */
   ops_decl_const("u0", 1, "double", &u0);
   ops_decl_const("dt", 1, "double", &dt);
   ops_decl_const("delta", 1, "double", &delta);
@@ -509,7 +490,6 @@ int main(int argc, char **argv) {
   ops_decl_const("eddy_z_min", 1, "double", &eddy_z_min);
   ops_decl_const("eddy_z_max", 1, "double", &eddy_z_max);
   ops_decl_const("eddies", 1, "int", &eddies);
-  ops_decl_const("eddy_seed", 1, "int", &eddy_seed);
 
   /* ---- 1. Block and the eddy-box coordinate dat -------------------- *
    *
@@ -597,11 +577,8 @@ int main(int argc, char **argv) {
                                         "double", "eddy_increment");
   ops_dat p_eps = ops_decl_particle_dat(eddy_parts, 3, base, null_int,
                                         "int", "eddy_eps");
-  /* Not in oSEM_3d, and unread here. p_ctr is the eddy's next RNG counter, so
-     the stream migrates with the eddy; p_id is the global eddy index, which is
-     how runs at different rank counts are compared eddy by eddy. */
-  ops_dat p_ctr = ops_decl_particle_dat(eddy_parts, 1, base, null_int,
-                                        "int", "eddy_rng_ctr");
+  /* Not in oSEM_3d, and unread here: the global eddy index, which is how runs at
+     different rank counts are compared eddy by eddy. */
   ops_dat p_id  = ops_decl_particle_dat(eddy_parts, 1, base, null_int,
                                         "int", "eddy_id");
   /* Scratch: KerMarkUnownedEddies' verdict, read once by the removal below.
@@ -655,7 +632,7 @@ int main(int argc, char **argv) {
    *           value must survive migration belongs here
    * forward : the cheap per-step refresh of the existing ghost layer
    * Counts computed, never hand-typed. */
-  ops_dat dat_border[]  = {p_pos, p_r, p_inc, p_eps, p_ctr, p_id, p_rng};
+  ops_dat dat_border[]  = {p_pos, p_r, p_inc, p_eps, p_id, p_rng};
   ops_dat dat_forward[] = {p_pos, p_r, p_eps};
 
   const int nborder  = sizeof(dat_border)  / sizeof(dat_border[0]);
@@ -712,55 +689,30 @@ int main(int argc, char **argv) {
   /* THE instantiation. One kernel, run by OPS over the eddies, writing every
      field ../oSEM_3d/opensbliblock00_kernels.h:39-48 writes. ops_arg_idp() hands
      it the eddy index. */
-  if (rng_mode == RNG_OPS) {
+  /* Fill the random dat, then read it from the kernel -- ../oSEM_3d's structure,
+     and the only one available: no OPS random generator can be called from
+     inside a kernel (ops_lib_core.h:1391-1397 are all whole-dat host fills).
 
-    /* Fill a dat, then read it from the kernel -- ../oSEM_3d's structure. Two
-       calls, in order, so a single run evidences the whole argument for the
-       library change.
+     ops_fill_random_uniform() cannot do this fill. It throws on a particle dat,
+     from the ops_arg_dat it builds for ops_set_halo_dirtybit3
+     (ops_lib_core.cpp:2618, guard at :1229-1233), and its stream is rank-seeded.
+     ops_fill_random_uniform_particle() (ops_particle_rng.h) is that function
+     without the halo tail; taking the generator as an argument is what lets
+     options = 0 give every rank the same stream, which is what this app needs
+     since every rank instantiates the whole list and then culls. */
+  std::mt19937 gen;
+  ops_particle_randomgen_init((unsigned int)eddy_seed, 0, gen);
+  ops_fill_random_uniform_particle(p_rng, gen);
 
-       FIRST, what OPS offers today. Expected to throw: ops_fill_random_uniform
-       ends with ops_set_halo_dirtybit3, whose ops_arg_dat
-       (ops_lib_core.cpp:2618) rejects particle dats (:1229-1233). */
-    ops_randomgen_init((unsigned int)eddy_seed, 0);
-    try {
-      ops_fill_random_uniform(p_rng);
-      ops_printf("  ops_fill_random_uniform          : returned normally\n");
-    } catch (OPSException &e) {
-      ops_printf("  ops_fill_random_uniform          : threw -- %s\n", e.what());
-    }
-
-    /* SECOND, the replacement (ops_particle_rng.h). Same body without the halo
-       tail, and the generator is ours, so options = 0 gives every rank the same
-       stream -- which is what this app needs, since every rank instantiates the
-       whole list and then culls. This overwrites whatever the call above managed
-       to write before it threw, so the result is deterministic either way. */
-    std::mt19937 gen;
-    ops_particle_randomgen_init((unsigned int)eddy_seed, 0, gen);
-    ops_fill_random_uniform_particle(p_rng, gen);
-    ops_printf("  ops_fill_random_uniform_particle : returned normally\n");
-
-    ops_particle_par_loop(KerInstantiateEddiesOpsRng, "instantiate_eddies_opsrng",
-                          eddy_parts, 3,
-                          OPS_PARTICLE_ITERATE_LOCAL, part_range, map,
-                          ops_arg_dat_particle(p_pos, 3, "double", eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_r,   1, "double", eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_inc, 1, "double", eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_eps, 3, "int",    eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_ctr, 1, "int",    eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_id,  1, "int",    eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_rng, 6, "int",    eddy_parts, map, OPS_READ),
-                          ops_arg_idp());
-  } else {
-    ops_particle_par_loop(KerInstantiateEddies, "instantiate_eddies", eddy_parts, 3,
-                          OPS_PARTICLE_ITERATE_LOCAL, part_range, map,
-                          ops_arg_dat_particle(p_pos, 3, "double", eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_r,   1, "double", eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_inc, 1, "double", eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_eps, 3, "int",    eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_ctr, 1, "int",    eddy_parts, map, OPS_WRITE),
-                          ops_arg_dat_particle(p_id,  1, "int",    eddy_parts, map, OPS_WRITE),
-                          ops_arg_idp());
-  }
+  ops_particle_par_loop(KerInstantiateEddies, "instantiate_eddies", eddy_parts, 3,
+                        OPS_PARTICLE_ITERATE_LOCAL, part_range, map,
+                        ops_arg_dat_particle(p_pos, 3, "double", eddy_parts, map, OPS_WRITE),
+                        ops_arg_dat_particle(p_r,   1, "double", eddy_parts, map, OPS_WRITE),
+                        ops_arg_dat_particle(p_inc, 1, "double", eddy_parts, map, OPS_WRITE),
+                        ops_arg_dat_particle(p_eps, 3, "int",    eddy_parts, map, OPS_WRITE),
+                        ops_arg_dat_particle(p_id,  1, "int",    eddy_parts, map, OPS_WRITE),
+                        ops_arg_dat_particle(p_rng, 6, "int",    eddy_parts, map, OPS_READ),
+                        ops_arg_idp());
 
   /* ---- 6. Ownership ------------------------------------------------ *
    *
@@ -818,7 +770,8 @@ int main(int argc, char **argv) {
   /* ---- 7. Report --------------------------------------------------- */
 
   ops_printf("\noSEM_3d eddy initialisation as OPS particles\n");
-  ops_printf("seed  = %d, stream = %s\n", eddy_seed, sem_rng_name(rng_mode));
+  ops_printf("seed  = %d, filled by ops_fill_random_uniform_particle()\n",
+             eddy_seed);
   ops_printf("delta = %.10f, radius = %.10f\n", delta, radius);
   ops_printf("eddy box   x [% .6e, % .6e]\n", eddy_x_min, eddy_x_max);
   ops_printf("           y [% .6e, % .6e]\n", eddy_y_min, eddy_y_max);
@@ -846,10 +799,8 @@ int main(int argc, char **argv) {
     ops_dat dat_output[] = {p_pos, p_r, p_eps, p_id};
     const int noutput = sizeof(dat_output) / sizeof(dat_output[0]);
 
-    HDF5_IO_Write_eddy_box(block,
-                           rng_mode == RNG_OPS ? "osem3d_eddies_opsrng"
-                                               : "osem3d_eddies",
-                           0, d_coords, eddy_parts, dat_output, noutput, params);
+    HDF5_IO_Write_eddy_box(block, "osem3d_eddies", 0, d_coords, eddy_parts,
+                           dat_output, noutput, params);
   }
 
   ops_printf("\nEDDY INITIALISATION : %s\n", ok ? "PASS" : "FAIL");

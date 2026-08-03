@@ -31,57 +31,6 @@ void KerInitEddyGrid(ACC<double> &c, const double *g, const int *idx) {
 }
 
 /* ------------------------------------------------------------------ *
- *  The random stream
- * ------------------------------------------------------------------ *
- * Three requirements, in order of how much they constrain the choice:
- *
- *   1. RANK-COUNT INDEPENDENCE. The eddy field must not depend on how the run
- *      is decomposed, or no two runs can be compared. This rules out OPS's own
- *      generator: ops_randomgen_init_host (ops_lib_core.cpp:2570-2579) seeds
- *      with `seed + my_global_rank * 2654435761u` whenever comm size > 1.
- *
- *   2. UNIFORM COVERAGE OF THE BOX, including the near-wall region.
- *
- *   3. BALANCED, INDEPENDENT SIGNS.
- *
- * Counter-based: draw k of eddy e is a pure function of (e, k) and the base
- * seed. Nothing is carried between draws, so requirement 1 holds by
- * construction -- there is no state whose evolution could depend on which rank
- * walked it. That is also what lets this live inside a kernel at all: a stateful
- * generator would need storage the kernel has no way to carry.
- *
- * The finalizer is SplitMix32's.
- *
- * These sit in the kernel header rather than the application because the
- * translator inlines this file with the kernels that use them. LBM-PSM does the
- * same with shape_func_interpol (../LBM-PSM/particle_kernels.h).
- */
-static inline unsigned int sem_hash32(unsigned int x) {
-  x ^= x >> 16;  x *= 0x21f0aaadu;
-  x ^= x >> 15;  x *= 0xd35a2d97u;
-  x ^= x >> 15;
-  return x;
-}
-
-/* A private counter block per eddy, so adding a draw later does not renumber
-   any other eddy's stream. */
-#define DRAWS_PER_EDDY 8
-
-static inline unsigned int sem_draw(unsigned int base, int counter) {
-  return sem_hash32(base + 0x9e3779b9u * (unsigned int)counter);
-}
-
-/* [0, 1). 2^32 in the denominator, so 1.0 is unreachable -- OPS bins half-open
-   [lo,hi), and a coordinate landing exactly on a box maximum reads as outside. */
-static inline double sem_uniform(unsigned int base, int counter) {
-  return (double)sem_draw(base, counter) / 4294967296.0;
-}
-
-static inline int sem_sign(unsigned int base, int counter) {
-  return ((sem_draw(base, counter) >> 8) & 1u) ? 1 : -1;
-}
-
-/* ------------------------------------------------------------------ *
  *  instantiate_eddies
  * ------------------------------------------------------------------ *
  * The particle counterpart of ../oSEM_3d/opensbliblock00_kernels.h:39-48, which
@@ -92,60 +41,21 @@ static inline int sem_sign(unsigned int base, int counter) {
  *
  * The geometry comes from the ops_decl_const names, exactly as it does there.
  *
- * WHERE THE RANDOMNESS COMES FROM. oSEM_3d fills two int ops_dats with
- * ops_fill_random_uniform and has the kernel read them; that is a stateful
- * generator run outside the kernel, and it is where its defects live (see the
- * README). Here the kernel hashes its own eddy index instead, which needs no
- * dat and no state, and gives the same eddy the same draw on every rank.
+ * WHERE THE RANDOMNESS COMES FROM. The same place as ../oSEM_3d's: a dat filled
+ * before the loop and read here. There is no OPS random generator a kernel can
+ * call -- the whole public API (ops_lib_core.h:1391-1397) fills a whole ops_dat
+ * from the host -- so fill-then-read is the only structure available.
  *
- * idp[0] IS THE GLOBAL EDDY INDEX, not merely a local slot: this loop runs
- * before the ownership cull, when every rank holds the whole list in order. id
- * records it so that it survives the cull and every later migration.
- */
-void KerInstantiateEddies(ACCP<double> &pos, ACCP<double> &r,
-                          ACCP<double> &inc, ACCP<int> &eps,
-                          ACCP<int> &ctr, ACCP<int> &id,
-                          const int *idp) {
-
-  const unsigned int base = (unsigned int)eddy_seed;
-  const int c0 = DRAWS_PER_EDDY * idp[0];
-
-  pos(0) = eddy_x_min + (eddy_x_max - eddy_x_min) * sem_uniform(base, c0 + 0);
-  pos(1) = eddy_y_min + (eddy_y_max - eddy_y_min) * sem_uniform(base, c0 + 1);
-  pos(2) = eddy_z_min + (eddy_z_max - eddy_z_min) * sem_uniform(base, c0 + 2);
-
-  eps(0) = sem_sign(base, c0 + 3);
-  eps(1) = sem_sign(base, c0 + 4);
-  eps(2) = sem_sign(base, c0 + 5);
-
-  r(0)   = radius;
-  inc(0) = u0 * dt;
-
-  /* The eddy's next unused counter, so the stream is a property of the eddy and
-     migrates with it. A respawn, when there is one, should keep hashing
-     counters from here rather than iterating a state. */
-  ctr(0) = c0 + DRAWS_PER_EDDY;
-  id(0)  = idp[0];
-}
-
-/* ------------------------------------------------------------------ *
- *  instantiate_eddies, reading a filled dat  (-ops-rng)
- * ------------------------------------------------------------------ *
- * The same instantiation, taking its randomness from a dat filled before the
- * loop instead of hashing the eddy index -- which is the structure ../oSEM_3d
- * uses (opensbli.cpp:305-311 fills eddy_x_rng and eddy_bulk_rng,
- * opensbliblock00_kernels.h:39-48 reads them).
- *
- * The fill is ops_fill_random_uniform_particle() from ops_particle_rng.h, the
- * particle counterpart of ops_fill_random_uniform() that OPS is missing. This
- * kernel exists to prove that function works end to end: filled by OPS-style
- * bulk call, consumed through ops_arg_dat_particle in an ops_particle_par_loop.
+ * The fill is ops_fill_random_uniform_particle() from ops_particle_rng.h, which
+ * is the particle counterpart of ops_fill_random_uniform() that OPS is missing:
+ * the latter throws on a particle dat, and its stream is rank-seeded. See the
+ * README.
  *
  * THE ARITHMETIC BELOW IS ../oSEM_3d's, UNCHANGED -- same +2147483648.0, same
- * /4294967295.0, same (rng < 0) ? -1 : 1, on an int dat exactly as there. That
- * is deliberate, and it makes this a controlled experiment: if the same kernel
- * on a CORRECTLY distributed int stream produces a correct eddy field, then the
- * kernel was never at fault and the whole of finding 1 belongs to
+ * /4294967295.0, same (rng < 0) ? -1 : 1, on an int dat exactly as there. Keeping
+ * it identical is what makes this app a controlled comparison: the same kernel on
+ * a CORRECTLY distributed int stream produces a correct eddy field, so the kernel
+ * was never at fault and the whole of finding 1 belongs to
  * ops_fill_random_uniform drawing int dats from (0, INT_MAX) instead of the full
  * signed range. Only the fill differs between the two apps.
  *
@@ -153,12 +63,15 @@ void KerInstantiateEddies(ACCP<double> &pos, ACCP<double> &r,
  * (2147483647 + 2147483648.0)/4294967295.0 is exactly 1.0, so this maps to a
  * CLOSED [0,1] and can place an eddy precisely on a box face, which a half-open
  * bin reads as outside. Probability 2^-32 per draw, about 2e-7 over the 801
- * position draws here. It is why the hash path divides by 2^32 instead.
+ * position draws here. Left as-is so the arithmetic stays ../oSEM_3d's.
+ *
+ * idp[0] IS THE GLOBAL EDDY INDEX, not merely a local slot: this loop runs
+ * before the ownership cull, when every rank holds the whole list in order. id
+ * records it so that it survives the cull and every later migration.
  */
-void KerInstantiateEddiesOpsRng(ACCP<double> &pos, ACCP<double> &r,
-                                ACCP<double> &inc, ACCP<int> &eps,
-                                ACCP<int> &ctr, ACCP<int> &id,
-                                const ACCP<int> &rng, const int *idp) {
+void KerInstantiateEddies(ACCP<double> &pos, ACCP<double> &r,
+                          ACCP<double> &inc, ACCP<int> &eps, ACCP<int> &id,
+                          const ACCP<int> &rng, const int *idp) {
 
   pos(0) = eddy_x_min + (rng(0) + 2147483648.0) / (4294967295.0) * (eddy_x_max - eddy_x_min);
   pos(1) = eddy_y_min + (rng(1) + 2147483648.0) / (4294967295.0) * (eddy_y_max - eddy_y_min);
@@ -170,11 +83,6 @@ void KerInstantiateEddiesOpsRng(ACCP<double> &pos, ACCP<double> &r,
 
   r(0)   = radius;
   inc(0) = u0 * dt;
-
-  /* No counter to carry. The hash path records where an eddy's stream has got
-     to so a respawn can continue it; a bulk fill has no per-eddy position in
-     the stream to record. */
-  ctr(0) = 0;
   id(0)  = idp[0];
 }
 
