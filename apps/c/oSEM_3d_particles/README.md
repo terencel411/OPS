@@ -1,11 +1,15 @@
-# oSEM_3d eddy initialisation, as OPS particles
+# oSEM_3d eddy initialisation and convection, as OPS particles
 
-The `instantiate_eddies` kernel of [`../oSEM_3d`](../oSEM_3d), with each eddy an
-**OPS particle** instead of a row in an `ops_dat` on the fluid block.
+The `instantiate_eddies` and `convect_eddies` kernels of
+[`../oSEM_3d`](../oSEM_3d), with each eddy an **OPS particle** instead of a row
+in an `ops_dat` on the fluid block.
 
-**Scope: initialisation only.** Instantiate the eddies in the domain, check the
-field is what it should be, write it out and look at it. Convection, recycling,
-the fluctuation field and the coupling to the inlet BC all come later.
+**Scope: the eddy field only.** Instantiate the eddies, convect them, check the
+field is what it should be, write it out and look at it. The fluctuation field
+and the coupling to the inlet BC come later.
+
+Each `oSEM_3d` kernel is one kernel run by one loop here too. `convect_eddies` is
+`instantiate_eddies` behind an `if`, and porting it stays that size.
 
 ## Why particles
 
@@ -25,11 +29,15 @@ As particles, an eddy is owned by the rank whose subdomain it occupies.
 | | dev_seq | seq | np=1 | np=2 | np=4 | np=8 |
 |---|---|---|---|---|---|---|
 | initialisation | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
+| convection, 400 steps | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
+| trajectory vs closed form | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
 | `-rng-selftest` | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
 
-All four targets build. 267 eddies, **bit-identical at every rank count**: the
-HDF5 output from `mpirun -np 8`, sorted by `eddy_id`, compares bit-equal to the
-serial output in position, sign and id.
+All four targets build. 267 eddies, **bit-identical at every rank count**: all
+seventeen HDF5 files of a 400-step run, sorted by `eddy_id`, compare bit-equal to
+the serial output in position, sign and id, on `dev_mpi` and `mpi` at np = 2, 4
+and 8. Held over 4000 steps (21 flushes of the box), where np = 1 and np = 4
+report identical statistics to the last digit.
 
 ## Build and run
 
@@ -40,9 +48,97 @@ make oSEM_3d_particles_seq                                      # via translator
 make oSEM_3d_particles_mpi
 
 python3 plot_osem3d_h5.py      # -> frames/*.png
+python3 make_xdmf.py           # -> osem3d_eddies.xmf, for ParaView
 ```
 
-Options: `-ngrid NX NY NZ`, `-seed N`, `-rng-selftest`, `-noh5`.
+Options: `-ngrid NX NY NZ`, `-seed N`, `-nsteps N` (default 400), `-nout M`
+(default 25), `-rng-selftest`, `-noh5`.
+
+## Convection
+
+`convect_eddies` (`../oSEM_3d/opensbliblock00_kernels.h:50-59`) advances `x` and,
+for an eddy that has passed the outlet face, puts it back at the inlet with a
+fresh `y`, `z` and signs — the re-injection lines being `instantiate_eddies`'
+lines unchanged. `KerConvectEddies` keeps that shape, and the time loop is the
+two calls `oSEM_3d` makes (`opensbli.cpp:399-411`): refill the random dat, run
+the loop.
+
+Nothing else happens per step. No eddy is created or destroyed, so the count is
+conserved without being managed; no eddy moves between ranks, so nothing has to
+migrate. The kernel changes an eddy's coordinates, not who holds it.
+
+**One thing to know.** `oSEM_3d` reads its random dat at the eddy's own index,
+which works because its eddy list is one array per rank in a fixed order. Here
+each rank holds a different subset in a different order, so a slot-indexed dat
+would hand rank 0's slot 3 and rank 1's slot 3 the *same* numbers — two eddies
+re-injected to the identical spot with identical signs, and every rank's
+respawns correlated with every other's. The pool is therefore indexed by
+`eddy_id` and passed as one `ops_arg_gbl`. That is what keeps the field
+independent of the rank count.
+
+### How we know the eddies are actually being convected
+
+Not from `report_eddy_field()`. It tests the eddy **list** — count, containment,
+uniformity, sign balance — and the list starts uniform, so it stays uniform
+whatever convection does. Freeze every eddy by replacing `pos(0) + inc(0)` with
+`pos(0)` and it still reports **PASS** on all four targets, with the field
+bit-identical to the initial one. Bit-equality across rank counts does not help
+either: it proves determinism, not motion. Only containment says anything —
+without re-injection eddies would pile up past `eddy_x_max` and it would fail.
+
+`check_convection()` tests the **trajectory**, against a closed form rather than
+against a second copy of the kernel. For `x += inc; if (x > x_max) x = x_min`
+from a start `x0`:
+
+```
+k1 = floor((x_max - x0)/inc) + 1        steps to the first re-injection
+P  = floor((x_max - x_min)/inc) + 1     steps between re-injections after
+
+n <  k1 :  x(n) = x0 + n*inc            and y, z, eps are UNTOUCHED
+n >= k1 :  x(n) = x_min + ((n-k1) mod P) * inc
+```
+
+The second line catches a stalled or mis-scaled advance; the first catches
+convection corrupting an eddy it should only have slid along `x`, which a
+position check alone misses. It runs every step, not only at output steps.
+
+Measured: `max |x - exact| = 8.4e-15` at 400 steps and **the same at 4000** — the
+error does not accumulate, because every re-injection resets `x` to exactly
+`x_min`, so it can only build over one 188-step pass.
+
+The per-step line reports how many eddies are **not yet recycled**: those that
+have never passed the outlet face and so are still on the leg they were
+instantiated on. They are the ones also being held to their instantiation `y`,
+`z` and signs, so the number says how much of the stricter half of the check is
+still live. It decays from 267 to 0 over the first 188 steps because eddies start
+spread along `x` and reach the outlet at staggered times.
+
+The `k1` slack has never actually been taken. `k1` is tried first and ties are
+kept, so an alternative wins only when it is strictly better; ordering the
+candidates the other way round reports every not-yet-recycled eddy as slack,
+because before the first re-injection all three predict the same `x`.
+
+Mutation-tested, since a check nobody has seen fail is not evidence:
+
+| deliberate break | result |
+|---|---|
+| eddies frozen, `x += 0` | **caught** |
+| advance doubled, `x += 2*inc` | **caught** |
+| advance off by one part in 10⁶ | **caught** |
+| re-injected at `x_max` instead of `x_min` | **caught** at the first 2 re-injections |
+| `y` nudged by 1e-9 every step | **caught** |
+| a sign flipped every step | **caught** |
+| a single eddy (`id 0`) frozen, the rest correct | **caught** |
+
+All seven previously passed every other check in the app.
+
+**What it costs.** A re-injected eddy keeps the rank that owned it even though
+its new `y`, `z` may lie in another rank's subdomain, so the rank-to-position
+correspondence decays over a flush and the bins built at startup go stale with
+it. Nothing here reads either — the checks and the output are over the whole
+list — and `Kernel030` needs the whole list on every rank anyway
+(`opensbli.cpp:554-569` passes it seven `ops_arg_gbl` arrays). If a later stage
+needs ownership to track position, that is the point to add a re-cull.
 
 ## What the app does
 
@@ -495,7 +591,7 @@ an initialisation question — and they will need settling before the coupling.
 |---|---|
 | `sem3d.cpp` | declarations, the loop sequence, the checks |
 | `sem3d_constants.h` | Geometry and eddy population, from `../oSEM_3d` |
-| `eddy_kernels.h` | `KerInstantiateEddies`, `KerMarkUnownedEddies`, `KerInitEddyGrid` |
+| `eddy_kernels.h` | `KerInstantiateEddies`, `KerConvectEddies`, `KerMarkUnownedEddies`, `KerInitEddyGrid` |
 | `ops_particle_rng.h` | `ops_fill_random_uniform_particle` — **for the OPS library, not this app** |
 | `sem3d_stats.h` | chi-square and sign-statistics helpers |
 | `sem3d_io.h` | Particle HDF5 writer |

@@ -87,6 +87,47 @@ void KerInstantiateEddies(ACCP<double> &pos, ACCP<double> &r,
 }
 
 /* ------------------------------------------------------------------ *
+ *  convect_eddies
+ * ------------------------------------------------------------------ *
+ * ../oSEM_3d/opensbliblock00_kernels.h:50-59, and the same thing here: advance
+ * x by one step's worth, and if the eddy has left the box put it back at the
+ * inlet with a fresh y, z and signs. The re-injection lines below are
+ * KerInstantiateEddies' lines unchanged -- which is the point, since
+ * convect_eddies IS instantiate_eddies behind an `if`.
+ *
+ * x is not re-drawn, it is pinned to eddy_x_min, exactly as there. The radius
+ * and the increment do not change, so they are not rewritten.
+ *
+ * THE DRAW IS INDEXED BY eddy_id, NOT BY SLOT. ../oSEM_3d can read the random
+ * dat at the eddy's own index because its eddy list is one array per rank in a
+ * fixed order. Here each rank holds a different subset in a different order, so
+ * a slot-indexed dat would hand rank 0's slot 3 and rank 1's slot 3 the SAME
+ * numbers -- two eddies re-injected to the identical spot with identical signs,
+ * and every rank's respawns correlated with every other's. Indexing the pool by
+ * the eddy's global id gives every eddy its own draw and keeps the field
+ * independent of the rank count. `rng` is therefore the whole pool, passed as an
+ * ops_arg_gbl, rather than a per-particle dat.
+ */
+void KerConvectEddies(ACCP<double> &pos, const ACCP<double> &inc,
+                      ACCP<int> &eps, const ACCP<int> &id, const int *rng) {
+
+  pos(0) = pos(0) + inc(0);
+
+  if (pos(0) > eddy_x_max) {
+
+    const int *g = rng + 6 * id(0);      /* g[0] unused: x is not re-drawn */
+
+    pos(0) = eddy_x_min;
+    pos(1) = eddy_y_min + (g[1] + 2147483648.0) / (4294967295.0) * (eddy_y_max - eddy_y_min);
+    pos(2) = eddy_z_min + (g[2] + 2147483648.0) / (4294967295.0) * (eddy_z_max - eddy_z_min);
+
+    eps(0) = (g[3] < 0) ? -1 : 1;
+    eps(1) = (g[4] < 0) ? -1 : 1;
+    eps(2) = (g[5] < 0) ? -1 : 1;
+  }
+}
+
+/* ------------------------------------------------------------------ *
  *  The ownership cull
  * ------------------------------------------------------------------ *
  * Writes 1 for an eddy this rank does not own, 0 otherwise.

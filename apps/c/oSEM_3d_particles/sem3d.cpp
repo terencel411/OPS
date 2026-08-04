@@ -3,15 +3,19 @@
  *  oSEM_3d eddy initialisation, as OPS particles
  * ==================================================================== *
  *
- *  SCOPE: the instantiate_eddies kernel, and nothing else.
+ *  SCOPE: the instantiate_eddies and convect_eddies kernels, and nothing else.
  *
- *  ../oSEM_3d/opensbliblock00_kernels.h:39-48 instantiates its eddies into ten
- *  ops_dats of shape {eddies,1,1} declared on the FLUID block. This app does the
- *  same instantiation with each eddy as an OPS particle instead, then reports
- *  what was produced and writes it out to be looked at.
+ *  ../oSEM_3d/opensbliblock00_kernels.h:39-59 instantiates its eddies into ten
+ *  ops_dats of shape {eddies,1,1} declared on the FLUID block, then convects
+ *  them along x every step and re-injects whatever leaves. This app does the
+ *  same with each eddy as an OPS particle instead, then reports what was
+ *  produced and writes it out to be looked at.
  *
- *  Not here, deliberately: convection, recycling, the fluctuation field, the
- *  Reynolds stresses, the coupling to the inlet BC.
+ *  Each is one kernel run by one loop, as it is there -- convect_eddies is
+ *  instantiate_eddies behind an `if`, and stays that way here.
+ *
+ *  Not here, deliberately: the fluctuation field, the Reynolds stresses, the
+ *  coupling to the inlet BC.
  *
  *  WHY PARTICLES AT ALL. In ../oSEM_3d the eddy dats live on the fluid block, so
  *  MPI decomposes them by the fluid partitioning -- an eddy list sliced along x
@@ -24,11 +28,14 @@
  *  Build and run:
  *      make oSEM_3d_particles_dev_seq && ./oSEM_3d_particles_dev_seq
  *      make oSEM_3d_particles_dev_mpi && mpirun -np 4 ./oSEM_3d_particles_dev_mpi
- *      python3 plot_osem3d_h5.py
+ *      python3 plot_osem3d_h5.py     # frames/*.png
+ *      python3 make_xdmf.py          # osem3d_eddies.xmf, for ParaView
  *
  *  Options:
  *      -ngrid NX NY NZ   eddy-box grid resolution
  *      -seed N           base seed
+ *      -nsteps N         convection steps (default 400 = 2.1 box flushes)
+ *      -nout M           write every M steps (default 25)
  *      -rng-selftest     test ops_particle_rng.h and exit
  *      -noh5             skip the HDF5 output
  */
@@ -55,6 +62,144 @@
 #include "sem3d_stats.h"
 #include "sem3d_io.h"
 #include "ops_particle_rng.h"
+
+/* ================================================================== *
+ *  Are the eddies actually being convected?
+ * ================================================================== *
+ *
+ * report_eddy_field() below cannot answer this and should not be asked to. It
+ * tests the eddy LIST -- count, containment, uniformity, sign balance -- and the
+ * list starts uniform, so it stays uniform whatever convection does or does not
+ * do. Freeze every eddy by replacing `pos(0) + inc(0)` with `pos(0)` and it
+ * still reports PASS on all four targets, with the field bit-identical to the
+ * initial one. Only containment says anything at all: without re-injection the
+ * eddies would pile up past eddy_x_max and it would fail.
+ *
+ * So this checks the TRAJECTORY, against a closed form rather than against a
+ * second copy of the kernel. Given a starting position x0 and n steps of
+ * `x += inc; if (x > x_max) x = x_min`:
+ *
+ *   k1 = floor((x_max - x0)/inc) + 1        steps to the first re-injection
+ *   P  = floor((x_max - x_min)/inc) + 1     steps between re-injections after
+ *
+ *   n <  k1 :  x(n) = x0 + n*inc            and y, z, eps are UNTOUCHED
+ *   n >= k1 :  x(n) = x_min + ((n-k1) mod P) * inc
+ *
+ * The second line is what catches a stalled or mis-scaled advance; the first is
+ * what catches convection corrupting an eddy it should only have slid along x,
+ * which is the failure a position check alone misses (../particle_tutorial_1_
+ * drift_3d/drift3d.cpp:284-288 makes the same point about y and z).
+ *
+ * The eddies are snapshotted at step 0 and compared slot by slot, which is sound
+ * because nothing is created, destroyed or migrated after startup: slot p is the
+ * same eddy for the whole run.
+ *
+ * ONE STEP OF SLACK ON k1. The kernel accumulates x one increment at a time
+ * while the closed form multiplies, so the two disagree by ~n*eps and an eddy
+ * landing within that of the face can cross a step either side of where the
+ * formula says. The three candidates k1-1, k1, k1+1 are tried and the best
+ * match taken; how often the slack was needed is reported, and it should be
+ * rare (0 of 267 at 400 steps).
+ */
+struct eddy_snapshot {
+  std::vector<double> pos;
+  std::vector<int>    eps;
+};
+
+void snapshot_eddies(ops_particle particle, ops_dat pos, ops_dat peps,
+                     eddy_snapshot &s) {
+  const size_t n = particle->no_particles;
+  s.pos.assign((const double *)pos->data,  (const double *)pos->data  + 3 * n);
+  s.eps.assign((const int *)peps->data,    (const int *)peps->data    + 3 * n);
+}
+
+int check_convection(ops_particle particle, ops_dat pos, ops_dat peps,
+                     const eddy_snapshot &s, int nstep, int verbose) {
+
+  const int    n   = (int)particle->no_particles;
+  const double inc = u0 * dt;
+  const int    P   = (int)floor((eddy_x_max - eddy_x_min) / inc) + 1;
+
+  const double *d_pos = (const double *)pos->data;
+  const int    *d_eps = (const int *)peps->data;
+
+  /* Accumulating inc nstep times loses precision, so scale with nstep as
+     drift3d does rather than demanding exactness. */
+  const double tol = 1e-12 * (nstep + 1);
+
+  double worst = 0.0;
+  int bad_x = 0, bad_carry = 0, slack = 0, still_original = 0;
+
+  for (int p = 0; p < n; p++) {
+    const double x0 = s.pos[3 * p];
+    const int    k1 = (int)floor((eddy_x_max - x0) / inc) + 1;
+
+    /* k1 is tried FIRST and ties are kept, so an alternative wins only when it
+       is strictly better. Ordering this the other way round counts every eddy
+       still on its first pass as "slack", because before the first re-injection
+       all three candidates predict the same x. */
+    int    best_k = k1;
+    double best   = fabs(d_pos[3 * p] - ((nstep < k1)
+                                         ? x0 + nstep * inc
+                                         : eddy_x_min + ((nstep - k1) % P) * inc));
+
+    for (int k = k1 - 1; k <= k1 + 1; k += 2) {
+      const double xe = (nstep < k) ? x0 + nstep * inc
+                                    : eddy_x_min + ((nstep - k) % P) * inc;
+      const double e = fabs(d_pos[3 * p] - xe);
+      if (e < best) { best = e; best_k = k; }
+    }
+
+    if (best > worst) worst = best;
+    if (best > tol) bad_x++;
+    if (best_k != k1) slack++;
+
+    /* Never re-injected yet: convection must not have touched anything but x. */
+    if (nstep < best_k) {
+      still_original++;
+      if (d_pos[3 * p + 1] != s.pos[3 * p + 1] ||
+          d_pos[3 * p + 2] != s.pos[3 * p + 2] ||
+          d_eps[3 * p + 0] != s.eps[3 * p + 0] ||
+          d_eps[3 * p + 1] != s.eps[3 * p + 1] ||
+          d_eps[3 * p + 2] != s.eps[3 * p + 2])
+        bad_carry++;
+    }
+  }
+
+  int ntot = n;
+#ifdef OPS_MPI
+  /* Same pattern as report_eddy_field(): a diagnostic, reduced with MPI
+     directly. Nothing in the convection path itself does this. */
+  int g[5]; double gw;
+  int l[5] = {n, bad_x, bad_carry, slack, still_original};
+  MPI_Allreduce(l, g, 5, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(&worst, &gw, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+  ntot = g[0]; bad_x = g[1]; bad_carry = g[2]; slack = g[3];
+  still_original = g[4]; worst = gw;
+#endif
+
+  const int ok = (bad_x == 0) && (bad_carry == 0);
+
+  if (verbose || !ok) {
+    /* "not yet recycled" = has never passed the outlet face, so it is still on
+       the leg it was instantiated on. Those are the eddies whose y, z and signs
+       are also being held to their instantiation values just above. */
+    ops_printf("  convection  step %5d : max |x - exact| = %.3e (tol %.1e)"
+               "   %d/%d not yet recycled\n",
+               nstep, worst, tol, still_original, ntot);
+    if (slack)
+      ops_printf("              %d eddy(s) crossed the face a step off the "
+                 "closed form (round-off)\n", slack);
+    if (bad_x)
+      ops_printf("  FAIL: %d of %d eddies are not on their trajectory\n",
+                 bad_x, ntot);
+    if (bad_carry)
+      ops_printf("  FAIL: %d of %d eddies that have not been re-injected had "
+                 "y, z or a sign changed\n", bad_carry, ntot);
+  }
+
+  return ok;
+}
 
 /* ================================================================== *
  *  Did the instantiation produce what it should have?
@@ -443,6 +588,8 @@ int main(int argc, char **argv) {
   eddy_seed = 182383739;      /* oSEM_3d's seed_gbl, opensbli.cpp:135 */
   int write_h5 = 1;
   int selftest = 0;
+  int nsteps   = 400;   /* 2.1 flushes: (x_max-x_min)/(u0*dt) = 188 steps each */
+  int nout     = 25;
 
   /* The eddy-box grid is not a physical grid -- nothing is solved on it. It
      defines the bounding box and the bins, so the only sensible scale is the
@@ -459,6 +606,10 @@ int main(int argc, char **argv) {
       nex = atoi(argv[++i]); ney = atoi(argv[++i]); nez = atoi(argv[++i]);
     } else if (strcmp(argv[i], "-noh5") == 0) {
       write_h5 = 0;
+    } else if (strcmp(argv[i], "-nsteps") == 0 && i + 1 < argc) {
+      nsteps = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "-nout") == 0 && i + 1 < argc) {
+      nout = atoi(argv[++i]);
     } else if (strcmp(argv[i], "-rng-selftest") == 0) {
       selftest = 1;
     } else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) {
@@ -786,24 +937,76 @@ int main(int argc, char **argv) {
 
   /* ---- 8. Output --------------------------------------------------- */
 
-  if (write_h5) {
-    sem3d_io_params params;
-    params.eddies = eddies;
-    params.nex = nex;  params.ney = ney;  params.nez = nez;
-    params.delta = delta;  params.radius = radius;
-    params.dt = dt;  params.u0 = u0;  params.span_z = span_z;
-    params.domain[0] = eddy_x_min;  params.domain[1] = eddy_x_max;
-    params.domain[2] = eddy_y_min;  params.domain[3] = eddy_y_max;
-    params.domain[4] = eddy_z_min;  params.domain[5] = eddy_z_max;
+  sem3d_io_params params;
+  params.eddies = eddies;
+  params.nex = nex;  params.ney = ney;  params.nez = nez;
+  params.delta = delta;  params.radius = radius;
+  params.dt = dt;  params.u0 = u0;  params.span_z = span_z;
+  params.domain[0] = eddy_x_min;  params.domain[1] = eddy_x_max;
+  params.domain[2] = eddy_y_min;  params.domain[3] = eddy_y_max;
+  params.domain[4] = eddy_z_min;  params.domain[5] = eddy_z_max;
 
-    ops_dat dat_output[] = {p_pos, p_r, p_eps, p_id};
-    const int noutput = sizeof(dat_output) / sizeof(dat_output[0]);
+  ops_dat dat_output[] = {p_pos, p_r, p_eps, p_id};
+  const int noutput = sizeof(dat_output) / sizeof(dat_output[0]);
 
+  if (write_h5)
     HDF5_IO_Write_eddy_box(block, "osem3d_eddies", 0, d_coords, eddy_parts,
                            dat_output, noutput, params);
+
+  /* ---- 9. Convection ----------------------------------------------- *
+   *
+   * ../oSEM_3d's per-timestep eddy work, opensbli.cpp:399-411: refill the random
+   * dat, then one ops_par_loop over convect_eddies. The same two lines here.
+   *
+   * Nothing else happens per step. No eddy is created or destroyed, so the count
+   * is conserved without being managed, and no eddy moves between ranks, so
+   * nothing has to migrate: the kernel changes an eddy's coordinates, not who
+   * holds it.
+   *
+   * WHAT THAT COSTS. A re-injected eddy keeps the rank that owned it even though
+   * its new y and z may lie in another rank's subdomain, so the rank-to-position
+   * correspondence decays over a flush of the box, and the bins built at startup
+   * go stale with it. Nothing here reads either -- the checks and the output are
+   * over the whole list -- and coupling Kernel030 needs the whole list on every
+   * rank anyway (opensbli.cpp:554-569 passes it seven ops_arg_gbl arrays). If a
+   * later stage does need ownership to track position, that is the point to add
+   * a re-cull, and it belongs there rather than here.
+   */
+
+  eddy_snapshot snap;
+  snapshot_eddies(eddy_parts, p_pos, p_eps, snap);
+
+  for (int step = 1; step <= nsteps; step++) {
+
+    ops_fill_random_uniform_particle(p_rng, gen);
+
+    ops_particle_par_loop(KerConvectEddies, "convect_eddies", eddy_parts, 3,
+                          OPS_PARTICLE_ITERATE_LOCAL, part_range, map,
+                          ops_arg_dat_particle(p_pos, 3, "double", eddy_parts, map, OPS_RW),
+                          ops_arg_dat_particle(p_inc, 1, "double", eddy_parts, map, OPS_READ),
+                          ops_arg_dat_particle(p_eps, 3, "int",    eddy_parts, map, OPS_RW),
+                          ops_arg_dat_particle(p_id,  1, "int",    eddy_parts, map, OPS_READ),
+                          ops_arg_gbl((int *)p_rng->data, 6 * eddies, "int", OPS_READ));
+
+    /* Every step, not just output steps: a trajectory that went wrong once and
+       recovered still went wrong. */
+    ok = check_convection(eddy_parts, p_pos, p_eps, snap, step,
+                          step % nout == 0 || step == nsteps) && ok;
+
+    if (step % nout == 0 || step == nsteps) {
+      if (write_h5)
+        HDF5_IO_Write_eddy_box(block, "osem3d_eddies", step, d_coords,
+                               eddy_parts, dat_output, noutput, params);
+    }
   }
 
-  ops_printf("\nEDDY INITIALISATION : %s\n", ok ? "PASS" : "FAIL");
+  if (nsteps > 0) {
+    ops_printf("\n--- after %d steps (%.2f flushes of the box) ---",
+               nsteps, nsteps * u0 * dt / (eddy_x_max - eddy_x_min));
+    ok = report_eddy_field(eddy_parts, p_pos, p_eps) && ok;
+  }
+
+  ops_printf("\nEDDY FIELD : %s\n", ok ? "PASS" : "FAIL");
 
   ops_exit();
   return ok ? 0 : 1;
