@@ -36,6 +36,9 @@
  *      -seed N           base seed
  *      -nsteps N         convection steps (default 400 = 2.1 box flushes)
  *      -nout M           write every M steps (default 25)
+ *      -u0 V             convection speed (default 1). Raising it shortens the
+ *                        188-step traverse -- at -u0 100 it is 2 steps, so a
+ *                        400-step run re-injects 53400 times instead of 565
  *      -rng-selftest     test ops_particle_rng.h and exit
  *      -noh5             skip the HDF5 output
  */
@@ -102,8 +105,10 @@
  * rare (0 of 267 at 400 steps).
  */
 struct eddy_snapshot {
-  std::vector<double> pos;
+  std::vector<double> pos;      /* at step 0, for the trajectory */
   std::vector<int>    eps;
+  std::vector<double> prev_pos; /* at the previous step, for the re-injection */
+  std::vector<int>    prev_eps;
 };
 
 void snapshot_eddies(ops_particle particle, ops_dat pos, ops_dat peps,
@@ -111,10 +116,22 @@ void snapshot_eddies(ops_particle particle, ops_dat pos, ops_dat peps,
   const size_t n = particle->no_particles;
   s.pos.assign((const double *)pos->data,  (const double *)pos->data  + 3 * n);
   s.eps.assign((const int *)peps->data,    (const int *)peps->data    + 3 * n);
+  s.prev_pos = s.pos;
+  s.prev_eps = s.eps;
 }
 
+/* Totals carried across the run. The last three are what test the CONTENT of a
+ * re-injection rather than its timing -- see check_convection(). */
+struct convection_tally {
+  long long recycled    = 0;   /* re-injection events seen                    */
+  long long y_unmoved   = 0;   /* ... that left y where it was -- expect 0    */
+  long long sign_draws  = 0;   /* sign components re-drawn                    */
+  long long sign_same   = 0;   /* ... that came out unchanged -- expect half  */
+};
+
 int check_convection(ops_particle particle, ops_dat pos, ops_dat peps,
-                     const eddy_snapshot &s, int nstep, int verbose) {
+                     eddy_snapshot &s, int nstep, int verbose,
+                     convection_tally &tally) {
 
   const int    n   = (int)particle->no_particles;
   const double inc = u0 * dt;
@@ -128,9 +145,33 @@ int check_convection(ops_particle particle, ops_dat pos, ops_dat peps,
   const double tol = 1e-12 * (nstep + 1);
 
   double worst = 0.0;
-  int bad_x = 0, bad_carry = 0, slack = 0, still_original = 0;
+  int bad_x = 0, bad_carry = 0, slack = 0, still_original = 0, reinjected = 0;
+  int y_unmoved = 0, sign_draws = 0, sign_same = 0;
 
   for (int p = 0; p < n; p++) {
+
+    /* Re-injected THIS step, counted directly rather than inferred: eddy_x_min
+       is only ever produced by the assignment in the kernel, and an accumulated
+       x0 + k*inc landing on it exactly is a 2^-52 accident. This is the one
+       measurement here that does not go through the closed form, so it is what
+       independently says re-injection is happening at the right rate.
+
+       WHAT A RE-INJECTION MUST ALSO DO, not just when it must happen. The
+       timing checks above are blind to a re-injection that moves the eddy but
+       forgets to refresh what it carries: sign BALANCE stays 50/50 whether the
+       signs are re-drawn or frozen at their instantiation values, because they
+       started balanced. So compare against the previous step -- y must move
+       (a repeat is a 2^-32 accident) and each sign must come out different
+       about half the time. Frozen signs give 100% unchanged, which is
+       unmissable over thousands of re-injections. */
+    if (d_pos[3 * p] == eddy_x_min) {
+      reinjected++;
+      if (d_pos[3 * p + 1] == s.prev_pos[3 * p + 1]) y_unmoved++;
+      for (int d = 0; d < 3; d++) {
+        sign_draws++;
+        if (d_eps[3 * p + d] == s.prev_eps[3 * p + d]) sign_same++;
+      }
+    }
     const double x0 = s.pos[3 * p];
     const int    k1 = (int)floor((eddy_x_max - x0) / inc) + 1;
 
@@ -170,13 +211,24 @@ int check_convection(ops_particle particle, ops_dat pos, ops_dat peps,
 #ifdef OPS_MPI
   /* Same pattern as report_eddy_field(): a diagnostic, reduced with MPI
      directly. Nothing in the convection path itself does this. */
-  int g[5]; double gw;
-  int l[5] = {n, bad_x, bad_carry, slack, still_original};
-  MPI_Allreduce(l, g, 5, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  int g[9]; double gw;
+  int l[9] = {n, bad_x, bad_carry, slack, still_original, reinjected,
+              y_unmoved, sign_draws, sign_same};
+  MPI_Allreduce(l, g, 9, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(&worst, &gw, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
   ntot = g[0]; bad_x = g[1]; bad_carry = g[2]; slack = g[3];
-  still_original = g[4]; worst = gw;
+  still_original = g[4]; reinjected = g[5];
+  y_unmoved = g[6]; sign_draws = g[7]; sign_same = g[8]; worst = gw;
 #endif
+
+  tally.recycled   += reinjected;
+  tally.y_unmoved  += y_unmoved;
+  tally.sign_draws += sign_draws;
+  tally.sign_same  += sign_same;
+
+  /* Roll the previous-step copy forward for the next call. */
+  s.prev_pos.assign(d_pos, d_pos + 3 * n);
+  s.prev_eps.assign(d_eps, d_eps + 3 * n);
 
   const int ok = (bad_x == 0) && (bad_carry == 0);
 
@@ -185,8 +237,8 @@ int check_convection(ops_particle particle, ops_dat pos, ops_dat peps,
        the leg it was instantiated on. Those are the eddies whose y, z and signs
        are also being held to their instantiation values just above. */
     ops_printf("  convection  step %5d : max |x - exact| = %.3e (tol %.1e)"
-               "   %d/%d not yet recycled\n",
-               nstep, worst, tol, still_original, ntot);
+               "   %d/%d not yet recycled, %d re-injected this step\n",
+               nstep, worst, tol, still_original, ntot, reinjected);
     if (slack)
       ops_printf("              %d eddy(s) crossed the face a step off the "
                  "closed form (round-off)\n", slack);
@@ -219,7 +271,8 @@ int check_convection(ops_particle particle, ops_dat pos, ops_dat peps,
  * different rank counts -- a diagnostic whose verdict depends on the
  * decomposition is worse than no diagnostic.
  */
-int report_eddy_field(ops_particle particle, ops_dat pos, ops_dat peps) {
+int report_eddy_field(ops_particle particle, ops_dat pos, ops_dat peps,
+                      int x_quantised = 0) {
 
   const int n = (int)particle->no_particles;
   const double *d_pos = (const double *)pos->data;
@@ -307,12 +360,19 @@ int report_eddy_field(ops_particle particle, ops_dat pos, ops_dat peps) {
 #endif
       int df; double pv;
       const double chi2 = sem_chi2_uniform(cnt, ntot, &df, &pv);
-      const char *verdict = (pv < p_fail)       ? "<-- CLUSTERED"
+
+      /* x steps by a fixed increment, so at a coarse increment it can only
+         land on a few values and this test measures the step size rather than
+         the eddy field. Caller decides; y and z are re-drawn, never stepped. */
+      const int skip = (d == 0) && x_quantised;
+
+      const char *verdict = skip                ? "(x is stepped, not drawn -- not counted)"
+                          : (pv < p_fail)       ? "<-- CLUSTERED"
                           : (pv > 1.0 - p_fail) ? "<-- TOO REGULAR (lattice?)"
                                                 : "";
       ops_printf("  uniform %s   chi2 = %8.2f  df = %3d   p = %.4f  %s\n",
                  nm[d], chi2, df, pv, verdict);
-      ok = ok && (pv > p_fail) && (pv < 1.0 - p_fail);
+      if (!skip) ok = ok && (pv > p_fail) && (pv < 1.0 - p_fail);
     }
 
     /* 2-D in (y, z): the test for lattice structure. A lattice has perfectly
@@ -610,6 +670,13 @@ int main(int argc, char **argv) {
       nsteps = atoi(argv[++i]);
     } else if (strcmp(argv[i], "-nout") == 0 && i + 1 < argc) {
       nout = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "-u0") == 0 && i + 1 < argc) {
+      /* The convection speed, and so the per-step increment u0*dt. Raising it
+         shortens the traverse -- at the default it takes 188 steps and
+         re-injection is a rare event, at -u0 100 it takes 2 and every eddy is
+         re-injected constantly, which is how the re-injection branch gets
+         exercised properly in a short run. */
+      u0 = atof(argv[++i]);
     } else if (strcmp(argv[i], "-rng-selftest") == 0) {
       selftest = 1;
     } else if (strcmp(argv[i], "-seed") == 0 && i + 1 < argc) {
@@ -831,11 +898,25 @@ int main(int argc, char **argv) {
   if (eddies > (int)eddy_parts->Nmax)     /* Nmax is OPS_MAX_PART = 1000, and
                                              realloc rejects a shrink */
     ops_particle_realloc_data(eddy_parts, eddies);
+
+  /* THIS LINE IS ../oSEM_3d's eddy_iter_range. There it bounds the eddy loops
+     with {0, eddies, 0, 1, 0, 1} (opensbli.cpp:312), an index range walking a
+     {eddies,1,1} strip of the fluid block (defdec_data_set.h:693) so the kernel
+     fires once per eddy. A particle loop has no index range: it takes its count
+     from the particle set, so `eddies` enters here instead. Same statement --
+     run the kernel 267 times, once per eddy -- and it decomposes the same way,
+     their range sliced by the fluid partitioning, ours by particle ownership,
+     each summing to 267 across ranks. */
   eddy_parts->no_particles = eddies;
 
-  /* Only consulted for OPS_PARTICLE_ITERATE_RANDOM, but always required. */
-  double part_range[] = {eddy_x_min, eddy_x_max, eddy_y_min, eddy_y_max,
-                         eddy_z_min, eddy_z_max};
+  /* NOT THE LOOP BOUND, despite sitting where ../oSEM_3d's range sits. This is
+     the physical eddy box, and ops_particle_par_loop reads it only for
+     OPS_PARTICLE_ITERATE_RANDOM; under OPS_PARTICLE_ITERATE_LOCAL, which is
+     what every loop here uses, the count is particle->no_particles and this
+     argument is never touched (ops_particle_seq.h:858-880). It is passed
+     because the signature requires it. */
+  double eddy_box_region[] = {eddy_x_min, eddy_x_max, eddy_y_min, eddy_y_max,
+                              eddy_z_min, eddy_z_max};
 
   /* THE instantiation. One kernel, run by OPS over the eddies, writing every
      field ../oSEM_3d/opensbliblock00_kernels.h:39-48 writes. ops_arg_idp() hands
@@ -856,7 +937,7 @@ int main(int argc, char **argv) {
   ops_fill_random_uniform_particle(p_rng, gen);
 
   ops_particle_par_loop(KerInstantiateEddies, "instantiate_eddies", eddy_parts, 3,
-                        OPS_PARTICLE_ITERATE_LOCAL, part_range, map,
+                        OPS_PARTICLE_ITERATE_LOCAL, eddy_box_region, map,
                         ops_arg_dat_particle(p_pos, 3, "double", eddy_parts, map, OPS_WRITE),
                         ops_arg_dat_particle(p_r,   1, "double", eddy_parts, map, OPS_WRITE),
                         ops_arg_dat_particle(p_inc, 1, "double", eddy_parts, map, OPS_WRITE),
@@ -891,7 +972,7 @@ int main(int argc, char **argv) {
   box->getLocalMaxMin(box_lo, box_hi);
 
   ops_particle_par_loop(KerMarkUnownedEddies, "mark_unowned_eddies", eddy_parts, 3,
-                        OPS_PARTICLE_ITERATE_LOCAL, part_range, map,
+                        OPS_PARTICLE_ITERATE_LOCAL, eddy_box_region, map,
                         ops_arg_dat_particle(p_del, 1, "int",    eddy_parts, map, OPS_WRITE),
                         ops_arg_dat_particle(p_pos, 3, "double", eddy_parts, map, OPS_READ),
                         ops_arg_gbl(box_lo, 3, "double", OPS_READ),
@@ -976,12 +1057,14 @@ int main(int argc, char **argv) {
   eddy_snapshot snap;
   snapshot_eddies(eddy_parts, p_pos, p_eps, snap);
 
+  convection_tally tally;
+
   for (int step = 1; step <= nsteps; step++) {
 
     ops_fill_random_uniform_particle(p_rng, gen);
 
     ops_particle_par_loop(KerConvectEddies, "convect_eddies", eddy_parts, 3,
-                          OPS_PARTICLE_ITERATE_LOCAL, part_range, map,
+                          OPS_PARTICLE_ITERATE_LOCAL, eddy_box_region, map,
                           ops_arg_dat_particle(p_pos, 3, "double", eddy_parts, map, OPS_RW),
                           ops_arg_dat_particle(p_inc, 1, "double", eddy_parts, map, OPS_READ),
                           ops_arg_dat_particle(p_eps, 3, "int",    eddy_parts, map, OPS_RW),
@@ -991,7 +1074,7 @@ int main(int argc, char **argv) {
     /* Every step, not just output steps: a trajectory that went wrong once and
        recovered still went wrong. */
     ok = check_convection(eddy_parts, p_pos, p_eps, snap, step,
-                          step % nout == 0 || step == nsteps) && ok;
+                          step % nout == 0 || step == nsteps, tally) && ok;
 
     if (step % nout == 0 || step == nsteps) {
       if (write_h5)
@@ -1001,9 +1084,48 @@ int main(int argc, char **argv) {
   }
 
   if (nsteps > 0) {
-    ops_printf("\n--- after %d steps (%.2f flushes of the box) ---",
-               nsteps, nsteps * u0 * dt / (eddy_x_max - eddy_x_min));
-    ok = report_eddy_field(eddy_parts, p_pos, p_eps) && ok;
+    /* HOW OFTEN SHOULD AN EDDY BE RE-INJECTED. Once every P steps, where P is
+       the whole number of steps needed to cross the box -- NOT the continuum
+       L/inc. The distinction is invisible at the default increment (P = 188 vs
+       187.2) and dominant once the increment is coarse: at -u0 50 the continuum
+       says one crossing per 3.74 steps while the eddy actually takes 4, a 7%
+       error that no tolerance worth having would absorb.
+       An eddy can be one crossing ahead or behind depending on where in the box
+       it started, which bounds the tolerance at `eddies`. */
+    const double inc = u0 * dt;
+    const double L   = eddy_x_max - eddy_x_min;
+    const int    P   = (int)floor(L / inc) + 1;
+
+    ops_printf("\n--- after %d steps (%.2f flushes of the box, %d steps each) ---\n",
+               nsteps, nsteps * inc / L, P);
+
+    const long long expect = (long long)eddies * nsteps / P;
+    const long long off    = llabs(tally.recycled - expect);
+    ops_printf("  re-injected %lld times, expected %lld +/- %d  %s\n",
+               tally.recycled, expect, eddies, off <= eddies ? "" : "<-- OFF");
+    ok = ok && (off <= eddies);
+
+    /* Did each of those re-injections actually refresh the eddy? */
+    if (tally.recycled > 0) {
+      ops_printf("  ... of which %lld left y where it was  %s\n",
+                 tally.y_unmoved, tally.y_unmoved == 0 ? "" : "<-- OFF");
+      ok = ok && (tally.y_unmoved == 0);
+
+      const double frac  = (double)tally.sign_same / (double)tally.sign_draws;
+      const double sigma = 0.5 / sqrt((double)tally.sign_draws);
+      ops_printf("  ... signs unchanged in %.2f%% of %lld re-draws "
+                 "[50.00 +/- %.2f%%, %+.1f sigma]  %s\n",
+                 100.0 * frac, tally.sign_draws, 100.0 * sigma,
+                 (frac - 0.5) / sigma,
+                 fabs(frac - 0.5) < 4.0 * sigma ? "" : "<-- OFF");
+      ok = ok && (fabs(frac - 0.5) < 4.0 * sigma);
+    }
+
+    /* Above about one bin per crossing step, x can only take P distinct values
+       and its uniformity test is measuring the test knob rather than the code.
+       y and z are unaffected -- they are re-drawn, not stepped. */
+    ok = report_eddy_field(eddy_parts, p_pos, p_eps,
+                           P < sem_nbins_for(eddies)) && ok;
   }
 
   ops_printf("\nEDDY FIELD : %s\n", ok ? "PASS" : "FAIL");
