@@ -15,13 +15,20 @@ static inline double host_x1_of_j(int j){
   return Lx1 * sinh(by * invLx1 * Delta1block0 * (double)j) / sinh(by);
 }
 
+// a*seed_gbl overflows int whenever seed_gbl > (INT_MAX-c)/a = 429496728, which
+// is ~20% of the m = 2^29 modulus range.  In int arithmetic that made half of
+// all draws negative, so the uniforms spanned (-1,1) and the eddies landed up to
+// twice outside the box.  Do the multiply in 64 bits.
 static inline double host_rng_uniform(){
-  seed_gbl = (a*seed_gbl + c) % m;
+  seed_gbl = (int)(((long long)a*seed_gbl + c) % m);
   return ((double)seed_gbl) / ((double)m);
 }
+// The low bit of this LCG is degenerate: 5*s+3 == s+1 (mod 2), so seed_gbl%2
+// strictly alternates.  With six draws per eddy that gave every eddy the
+// identical sign triple.  Take a high bit, where the generator actually mixes.
 static inline int host_rng_sign(){
-  seed_gbl = (a*seed_gbl + c) % m;
-  return ((seed_gbl % 2) == 0) ? 1 : -1;
+  seed_gbl = (int)(((long long)a*seed_gbl + c) % m);
+  return (seed_gbl >= (m >> 1)) ? 1 : -1;
 }
 
 static void host_instantiate_eddies(){
@@ -303,36 +310,52 @@ for(int i{0}; i < ny; i++){
 
 // -------------------------eddy initialisation-----------------------\
 
-seed_gbl = (a*seed_gbl + c) % m;
-ops_randomgen_init(seed_gbl, 0);
-ops_fill_random_uniform(eddy_x_rng);
-seed_gbl = (a*seed_gbl + c) % m;
-//ops_randomgen_init(seed_gbl, 0);
-ops_fill_random_uniform(eddy_bulk_rng);
 int eddy_iter_range[] = {0, eddies, 0, 1, 0, 1};
-ops_par_loop(instantiate_eddies, "instantiate_eddies", opensbliblock00, 3, eddy_iter_range,
-ops_arg_dat(eddy_x, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_y, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_z, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_r, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_increment, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_eps_x, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_eps_y, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_eps_z, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_x_rng, 1, stencil_0_00_00_00_3, "int", OPS_READ),
-ops_arg_dat(eddy_bulk_rng, 5, stencil_0_00_00_00_3, "int", OPS_READ));
+eddy_check_init(eddies);
 
-// The eddy dats are decomposed in x and are only written on the ranks owning the
-// (y=0, z=0) pencil, so the host-side eddy_*_gbl arrays that Kernel030 reads as
-// ops_arg_gbl have to be rebuilt in full on every rank.  See eddy_gather.h.
-// rho_B0 is passed only as a full-size reference dat for the block decomposition.
-eddy_gather_init(eddy_x, rho_B0, eddies);
-eddy_gather(eddy_x, eddy_y, eddy_z, eddy_r, eddy_increment,
-            eddy_eps_x, eddy_eps_y, eddy_eps_z,
-            eddy_x_gbl, eddy_y_gbl, eddy_z_gbl, eddy_r_gbl, eddy_increment_gbl,
-            eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl);
+if (eddy_mode == EDDY_MODE_HOST_BCAST) {
+  // Reference path: rank 0 fills all `eddies` entries with the plain host loop,
+  // then hands the arrays to everyone else.  Nothing is decomposed, so there is
+  // no slab to reassemble and no question about which rank holds what.
+  if (eddy_is_root()) host_instantiate_eddies();
+  eddy_bcast(eddy_x_gbl, eddy_y_gbl, eddy_z_gbl, eddy_r_gbl, eddy_increment_gbl,
+             eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl, eddies);
+} else {
+  // The eddy dats are decomposed in x and are only written on the ranks owning
+  // the (y=0, z=0) pencil, so the host-side eddy_*_gbl arrays that Kernel030
+  // reads as ops_arg_gbl have to be rebuilt in full on every rank.  rho_B0 is
+  // passed only as a full-size reference dat for the block decomposition.
+  eddy_gather_init(eddy_x, rho_B0, eddies);
+
+  seed_gbl = (a*seed_gbl + c) % m;
+  ops_randomgen_init(seed_gbl, 0);
+  ops_fill_random_uniform(eddy_x_rng);
+  seed_gbl = (a*seed_gbl + c) % m;
+  //ops_randomgen_init(seed_gbl, 0);
+  ops_fill_random_uniform(eddy_bulk_rng);
+  ops_par_loop(instantiate_eddies, "instantiate_eddies", opensbliblock00, 3, eddy_iter_range,
+  ops_arg_dat(eddy_x, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
+  ops_arg_dat(eddy_y, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
+  ops_arg_dat(eddy_z, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
+  ops_arg_dat(eddy_r, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
+  ops_arg_dat(eddy_increment, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
+  ops_arg_dat(eddy_eps_x, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
+  ops_arg_dat(eddy_eps_y, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
+  ops_arg_dat(eddy_eps_z, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
+  ops_arg_dat(eddy_x_rng, 1, stencil_0_00_00_00_3, "int", OPS_READ),
+  ops_arg_dat(eddy_bulk_rng, 5, stencil_0_00_00_00_3, "int", OPS_READ));
+
+  eddy_gather(eddy_x, eddy_y, eddy_z, eddy_r, eddy_increment,
+              eddy_eps_x, eddy_eps_y, eddy_eps_z,
+              eddy_x_gbl, eddy_y_gbl, eddy_z_gbl, eddy_r_gbl, eddy_increment_gbl,
+              eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl);
+}
+
 eddy_gather_check("instantiate_eddies", eddy_x_gbl, eddy_y_gbl, eddy_z_gbl,
                   eddy_r_gbl, eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl);
+eddy_report("instantiate_eddies", eddies, eddy_x_gbl, eddy_y_gbl, eddy_z_gbl,
+            eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl,
+            eddy_x_min, eddy_x_max, eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max);
 
 char fname[64];
 sprintf(fname, "convect_eddies_rank%d.txt", ops_get_proc());
@@ -403,33 +426,43 @@ if(fmod(iter+1, 1) == 0){
 
 //-----------------------------------------------------------------------------------
 
-seed_gbl = (a*seed_gbl + c) % m;
-//ops_randomgen_init(seed_gbl, 0);
-ops_fill_random_uniform(eddy_bulk_rng);
-ops_par_loop(convect_eddies, "convect_eddies", opensbliblock00, 3, eddy_iter_range,
-ops_arg_dat(eddy_x, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(eddy_y, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_z, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_r, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_increment, 1, stencil_0_00_00_00_3, "double", OPS_READ),
-ops_arg_dat(eddy_eps_x, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_eps_y, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_eps_z, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_bulk_rng, 5, stencil_0_00_00_00_3, "int", OPS_READ));
+if (eddy_mode == EDDY_MODE_HOST_BCAST) {
+  // Reference path: rank 0 advances its own copy of the whole eddy field, then
+  // broadcasts it.  Every rank leaves this block holding the same `eddies`
+  // entries, which is what Kernel030's ops_arg_gbl reads need.
+  if (eddy_is_root()) host_convect_eddies();
+  eddy_bcast(eddy_x_gbl, eddy_y_gbl, eddy_z_gbl, eddy_r_gbl, eddy_increment_gbl,
+             eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl, eddies);
+} else {
+  seed_gbl = (a*seed_gbl + c) % m;
+  //ops_randomgen_init(seed_gbl, 0);
+  ops_fill_random_uniform(eddy_bulk_rng);
+  ops_par_loop(convect_eddies, "convect_eddies", opensbliblock00, 3, eddy_iter_range,
+  ops_arg_dat(eddy_x, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+  ops_arg_dat(eddy_y, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
+  ops_arg_dat(eddy_z, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
+  ops_arg_dat(eddy_r, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
+  ops_arg_dat(eddy_increment, 1, stencil_0_00_00_00_3, "double", OPS_READ),
+  ops_arg_dat(eddy_eps_x, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
+  ops_arg_dat(eddy_eps_y, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
+  ops_arg_dat(eddy_eps_z, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
+  ops_arg_dat(eddy_bulk_rng, 5, stencil_0_00_00_00_3, "int", OPS_READ));
 
-// Rebuild the full eddy arrays on every rank before Kernel030 consumes them as
-// ops_arg_gbl.  Must happen after every convect_eddies: the kernel only ran on
-// the ranks owning the (y=0, z=0) pencil, and each of those holds one x-slab.
-eddy_gather(eddy_x, eddy_y, eddy_z, eddy_r, eddy_increment,
-            eddy_eps_x, eddy_eps_y, eddy_eps_z,
-            eddy_x_gbl, eddy_y_gbl, eddy_z_gbl, eddy_r_gbl, eddy_increment_gbl,
-            eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl);
+  // Rebuild the full eddy arrays on every rank before Kernel030 consumes them as
+  // ops_arg_gbl.  Must happen after every convect_eddies: the kernel only ran on
+  // the ranks owning the (y=0, z=0) pencil, and each of those holds one x-slab.
+  eddy_gather(eddy_x, eddy_y, eddy_z, eddy_r, eddy_increment,
+              eddy_eps_x, eddy_eps_y, eddy_eps_z,
+              eddy_x_gbl, eddy_y_gbl, eddy_z_gbl, eddy_r_gbl, eddy_increment_gbl,
+              eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl);
+}
 
 // Set eddy_gather_verify = 1 (eddy_gather.h) to assert every iteration that all
 // ranks hold bit-identical arrays.  Collective, so it stays outside any rank test.
 if (eddy_gather_verify)
   eddy_gather_check("convect_eddies", eddy_x_gbl, eddy_y_gbl, eddy_z_gbl,
                     eddy_r_gbl, eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl);
+
 
 fprintf(eddy_f, "--- (iter %d) first 5 ---\n", iter);
 for (int j = 0; j < 5; j++) {
