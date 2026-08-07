@@ -318,7 +318,7 @@ static void eddy_gather_check(const char *where, double *g_x, double *g_y,
 #define EDDY_MODE_KERNEL_GATHER 0  // OPS par_loops + MPI_Allgatherv (the committed path)
 #define EDDY_MODE_HOST_BCAST    1  // rank 0 host loops + MPI_Bcast (reference)
 
-static int eddy_mode = EDDY_MODE_HOST_BCAST;
+static int eddy_mode = EDDY_MODE_KERNEL_GATHER;
 
 // The rank that computes the eddy field in EDDY_MODE_HOST_BCAST.
 static int eddy_is_root() {

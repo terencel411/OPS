@@ -36,13 +36,23 @@ void interp_RST(const ACC<double>& x1_B0, ACC<double>& a11, ACC<double>& a21, AC
   }
 }
 
+// ops_fill_random_uniform on an "int" dat draws from
+// std::uniform_int_distribution<int>(0, INT_MAX) (ops_lib_core.cpp:2605), so the
+// values are in [0, 2147483647] and are NEVER negative.  These kernels were
+// written for the full signed range:
+//   - (v + 2147483648)/4294967295 then only spans [0.5, 1), which put x, y and z
+//     each in the top half of their range and packed every eddy into 1/8 of the
+//     seeding box;
+//   - (v < 0) made every eps identically +1.
+// Map from the range OPS actually produces instead: divide by INT_MAX, and split
+// the sign at the midpoint.
 void instantiate_eddies(ACC<double>& eddy_x, ACC<double>& eddy_y, ACC<double>& eddy_z, ACC<double>& eddy_r, ACC<double>& eddy_increment, ACC<int>& eddy_eps_x, ACC<int>& eddy_eps_y, ACC<int>& eddy_eps_z, const ACC<int>& eddy_x_rng, const ACC<int>& eddy_bulk_rng){
-  eddy_x(0,0,0) = eddy_x_min + (eddy_x_rng(0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_x_max - eddy_x_min);
-  eddy_y(0,0,0) = eddy_y_min + (eddy_bulk_rng(0,0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_y_max - eddy_y_min);
-  eddy_z(0,0,0) = eddy_z_min + (eddy_bulk_rng(1,0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_z_max - eddy_z_min);
-  eddy_eps_x(0,0,0) = (eddy_bulk_rng(2,0,0,0) < 0) ? -1 : 1;
-  eddy_eps_y(0,0,0) = (eddy_bulk_rng(3,0,0,0) < 0) ? -1 : 1;
-  eddy_eps_z(0,0,0) = (eddy_bulk_rng(4,0,0,0) < 0) ? -1 : 1;
+  eddy_x(0,0,0) = eddy_x_min + (eddy_x_rng(0,0,0)) / (2147483647.0) * (eddy_x_max - eddy_x_min);
+  eddy_y(0,0,0) = eddy_y_min + (eddy_bulk_rng(0,0,0,0)) / (2147483647.0) * (eddy_y_max - eddy_y_min);
+  eddy_z(0,0,0) = eddy_z_min + (eddy_bulk_rng(1,0,0,0)) / (2147483647.0) * (eddy_z_max - eddy_z_min);
+  eddy_eps_x(0,0,0) = (eddy_bulk_rng(2,0,0,0) < 1073741824) ? -1 : 1;
+  eddy_eps_y(0,0,0) = (eddy_bulk_rng(3,0,0,0) < 1073741824) ? -1 : 1;
+  eddy_eps_z(0,0,0) = (eddy_bulk_rng(4,0,0,0) < 1073741824) ? -1 : 1;
   eddy_r(0,0,0) = radius;
   eddy_increment(0,0,0) = 1.0 * dt;
 }
@@ -52,11 +62,11 @@ void convect_eddies(ACC<double>& eddy_x, ACC<double>& eddy_y, ACC<double>& eddy_
   
   if(eddy_x(0,0,0) > eddy_x_max){
     eddy_x(0,0,0) = eddy_x_min;
-    eddy_y(0,0,0) = eddy_y_min + (eddy_bulk_rng(0,0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_y_max - eddy_y_min);
-    eddy_z(0,0,0) = eddy_z_min + (eddy_bulk_rng(1,0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_z_max - eddy_z_min);
-    eddy_eps_x(0,0,0) = (eddy_bulk_rng(2,0,0,0) < 0) ? -1 : 1;
-    eddy_eps_y(0,0,0) = (eddy_bulk_rng(3,0,0,0) < 0) ? -1 : 1;
-    eddy_eps_z(0,0,0) = (eddy_bulk_rng(4,0,0,0) < 0) ? -1 : 1;
+    eddy_y(0,0,0) = eddy_y_min + (eddy_bulk_rng(0,0,0,0)) / (2147483647.0) * (eddy_y_max - eddy_y_min);
+    eddy_z(0,0,0) = eddy_z_min + (eddy_bulk_rng(1,0,0,0)) / (2147483647.0) * (eddy_z_max - eddy_z_min);
+    eddy_eps_x(0,0,0) = (eddy_bulk_rng(2,0,0,0) < 1073741824) ? -1 : 1;
+    eddy_eps_y(0,0,0) = (eddy_bulk_rng(3,0,0,0) < 1073741824) ? -1 : 1;
+    eddy_eps_z(0,0,0) = (eddy_bulk_rng(4,0,0,0) < 1073741824) ? -1 : 1;
   }
 }
 

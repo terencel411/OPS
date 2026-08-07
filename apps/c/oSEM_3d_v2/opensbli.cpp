@@ -327,10 +327,10 @@ if (eddy_mode == EDDY_MODE_HOST_BCAST) {
   // passed only as a full-size reference dat for the block decomposition.
   eddy_gather_init(eddy_x, rho_B0, eddies);
 
-  seed_gbl = (a*seed_gbl + c) % m;
+  seed_gbl = (int)(((long long)a*seed_gbl + c) % m);  // 64-bit: a*seed_gbl overflows int above 429496728
   ops_randomgen_init(seed_gbl, 0);
   ops_fill_random_uniform(eddy_x_rng);
-  seed_gbl = (a*seed_gbl + c) % m;
+  seed_gbl = (int)(((long long)a*seed_gbl + c) % m);  // 64-bit: a*seed_gbl overflows int above 429496728
   //ops_randomgen_init(seed_gbl, 0);
   ops_fill_random_uniform(eddy_bulk_rng);
   ops_par_loop(instantiate_eddies, "instantiate_eddies", opensbliblock00, 3, eddy_iter_range,
@@ -434,7 +434,7 @@ if (eddy_mode == EDDY_MODE_HOST_BCAST) {
   eddy_bcast(eddy_x_gbl, eddy_y_gbl, eddy_z_gbl, eddy_r_gbl, eddy_increment_gbl,
              eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl, eddies);
 } else {
-  seed_gbl = (a*seed_gbl + c) % m;
+  seed_gbl = (int)(((long long)a*seed_gbl + c) % m);  // 64-bit: a*seed_gbl overflows int above 429496728
   //ops_randomgen_init(seed_gbl, 0);
   ops_fill_random_uniform(eddy_bulk_rng);
   ops_par_loop(convect_eddies, "convect_eddies", opensbliblock00, 3, eddy_iter_range,
