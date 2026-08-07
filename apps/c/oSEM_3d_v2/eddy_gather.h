@@ -200,6 +200,34 @@ static void eddy_gather_init(ops_dat eddy_ref, ops_dat block_ref, int n_eddies) 
   if (!eg_fetch_d || !eg_fetch_i) eg_fail("out of memory");
 }
 
+// Push a globally-indexed per-eddy array into an eddy rng dat: the mirror of the
+// fetch in eddy_gather().  `global` holds ncomp values for every one of the
+// eddies and must already be identical on all ranks; each rank writes only the
+// slab it stores.  Collective, like the fetch - all ranks must call it.
+//
+// Use the *slab* form, not ops_dat_set_data.  The two disagree about the index
+// origin: ops_dat_set_data builds its range from sd->gbl_d_m (halo-inclusive,
+// ops_mpi_rt_support.cpp:2197), so with halo_m = {-1,0,0} on these dats it lands
+// the buffer one cell early and every eddy comes out shifted by one.  The slab
+// form indexes as range[2d] + i - (sd->d_im[d] + dat->d_m[d]) (set_loop_slab,
+// ops_util.cpp:427), which is the same origin ops_dat_fetch_data uses, so a
+// local range starting at 0 is exactly the first owned eddy.
+static void eddy_set_rng(ops_dat dat, const int *global, int ncomp) {
+  int local_range[6] = {0, (eg_local_n > 0 ? eg_local_n : 0), 0, 1, 0, 1};
+  if (eg_local_n <= 0) {
+    // Nothing stored here.  Still call in: the slab loop is a no-op for a
+    // zero-width range, but ops_execute() inside it is collective.
+    int dummy = 0;
+    ops_dat_set_data_slab_memspace(dat, 0, (char *)&dummy, local_range, OPS_HOST);
+    return;
+  }
+  int *buf = (int *)malloc(ncomp * eg_local_n * sizeof(int));
+  if (!buf) eg_fail("out of memory staging an rng dat");
+  memcpy(buf, global + ncomp * eg_local_disp, ncomp * eg_local_n * sizeof(int));
+  ops_dat_set_data_slab_memspace(dat, 0, (char *)buf, local_range, OPS_HOST);
+  free(buf);
+}
+
 // Fetch the eddy dats and leave the complete, identical arrays on every rank.
 // All ranks must call this: ops_dat_fetch_data triggers OPS' lazy execution and
 // may broadcast a low-dimensional pencil, both of which are collective.
