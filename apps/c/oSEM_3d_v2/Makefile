@@ -13,7 +13,7 @@ include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
 
 
-HEADERS = opensbliblock00_kernels.h defdec_data_set.h eddy_gather.h
+HEADERS = opensbliblock00_kernels.h defdec_data_set.h eddy_gather.h eddy_random_full.h
 
 OTHER_FILES = 
 OPS_GENERATED = opensbli_ops.cpp 

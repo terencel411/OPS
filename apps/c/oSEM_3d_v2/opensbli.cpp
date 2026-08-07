@@ -10,6 +10,7 @@
 #include "opensbliblock00_kernels.h"
 #include "io.h"
 #include "eddy_gather.h"
+#include "eddy_random_full.h"
 
 static inline double host_x1_of_j(int j){
   return Lx1 * sinh(by * invLx1 * Delta1block0 * (double)j) / sinh(by);
@@ -31,51 +32,6 @@ static inline int host_rng_sign(){
   return (seed_gbl >= (m >> 1)) ? 1 : -1;
 }
 
-// --- LCG state feed for the kernel path -------------------------------------
-// instantiate_eddies / convect_eddies decode their randomness from the
-// eddy_x_rng and eddy_bulk_rng dats.  Filling those with the raw LCG state
-// instead of ops_fill_random_uniform makes the kernels reproduce the host
-// functions exactly: the kernels divide by m and split the sign at m/2, which
-// is precisely what host_rng_uniform() and host_rng_sign() do with the same
-// state.  Every rank runs the staging loops below on identical inputs, so the
-// staged arrays agree everywhere without any communication.
-static int *eddy_xrng_stage = NULL;   // 1 state per eddy   (x)
-static int *eddy_bulk_stage = NULL;   // 5 states per eddy  (y, z, eps_x, eps_y, eps_z)
-
-static inline int host_rng_raw(){
-  seed_gbl = (int)(((long long)a*seed_gbl + c) % m);
-  return seed_gbl;
-}
-
-// Same six draws per eddy, in the same order, as host_instantiate_eddies().
-static void host_stage_instantiate(){
-  for (int i = 0; i < eddies; i++){
-    eddy_xrng_stage[i]       = host_rng_raw();  // x
-    eddy_bulk_stage[5*i + 0] = host_rng_raw();  // y
-    eddy_bulk_stage[5*i + 1] = host_rng_raw();  // z
-    eddy_bulk_stage[5*i + 2] = host_rng_raw();  // eps_x
-    eddy_bulk_stage[5*i + 3] = host_rng_raw();  // eps_y
-    eddy_bulk_stage[5*i + 4] = host_rng_raw();  // eps_z
-  }
-}
-
-// host_convect_eddies() draws only for the eddies that wrap, in index order, so
-// where the stream ends up depends on the data.  eddy_x_gbl is identical on
-// every rank after eddy_gather(), and the test below is the same expression the
-// kernel evaluates on the same operands, so every rank consumes the same draws
-// and stays in step with what convect_eddies is about to do.
-static void host_stage_convect(){
-  for (int i = 0; i < eddies; i++){
-    if (eddy_x_gbl[i] + eddy_increment_gbl[i] > eddy_x_max){
-      eddy_bulk_stage[5*i + 0] = host_rng_raw();  // y
-      eddy_bulk_stage[5*i + 1] = host_rng_raw();  // z
-      eddy_bulk_stage[5*i + 2] = host_rng_raw();  // eps_x
-      eddy_bulk_stage[5*i + 3] = host_rng_raw();  // eps_y
-      eddy_bulk_stage[5*i + 4] = host_rng_raw();  // eps_z
-    }
-  }
-}
-// ----------------------------------------------------------------------------
 
 static void host_instantiate_eddies(){
   for (int i = 0; i < eddies; i++){
@@ -373,15 +329,11 @@ if (eddy_mode == EDDY_MODE_HOST_BCAST) {
   // passed only as a full-size reference dat for the block decomposition.
   eddy_gather_init(eddy_x, rho_B0, eddies);
 
-  // Feed the kernels the host LCG stream rather than ops_fill_random_uniform, so
-  // they reproduce host_instantiate_eddies exactly.  No seed advance in front of
-  // this: the host path starts drawing from seed_gbl as initialised, and so must
-  // this one.
-  eddy_xrng_stage = (int*)malloc(eddies * sizeof(int));
-  eddy_bulk_stage = (int*)malloc(5 * eddies * sizeof(int));
-  host_stage_instantiate();
-  eddy_set_rng(eddy_x_rng,    eddy_xrng_stage, 1);
-  eddy_set_rng(eddy_bulk_rng, eddy_bulk_stage, 5);
+  // Full signed range, which is what the kernels' decoding assumes.  Not
+  // ops_fill_random_uniform: that draws over [0, INT_MAX] only.
+  eddy_randomgen_init_full((unsigned int)seed_gbl);
+  eddy_fill_random_full(eddy_x_rng,    1);
+  eddy_fill_random_full(eddy_bulk_rng, 5);
 
   ops_par_loop(instantiate_eddies, "instantiate_eddies", opensbliblock00, 3, eddy_iter_range,
   ops_arg_dat(eddy_x, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
@@ -484,11 +436,9 @@ if (eddy_mode == EDDY_MODE_HOST_BCAST) {
   eddy_bcast(eddy_x_gbl, eddy_y_gbl, eddy_z_gbl, eddy_r_gbl, eddy_increment_gbl,
              eddy_eps_x_gbl, eddy_eps_y_gbl, eddy_eps_z_gbl, eddies);
 } else {
-  // Restage from the same LCG.  host_stage_convect draws only for the eddies
-  // that are about to wrap, which is what host_convect_eddies does, so the two
-  // paths stay on the same stream position iteration after iteration.
-  host_stage_convect();
-  eddy_set_rng(eddy_bulk_rng, eddy_bulk_stage, 5);
+  // Fresh draws every iteration; convect_eddies only reads them for the eddies
+  // that wrap, so the surplus is simply unused.
+  eddy_fill_random_full(eddy_bulk_rng, 5);
 
   ops_par_loop(convect_eddies, "convect_eddies", opensbliblock00, 3, eddy_iter_range,
   ops_arg_dat(eddy_x, 1, stencil_0_00_00_00_3, "double", OPS_RW),
@@ -896,8 +846,7 @@ HDF5_IO_Write_1_opensbliblock00(opensbliblock00, rho_mean_B0, rhou0_mean_B0, rho
 
 fclose(eddy_f);
 eddy_gather_free();
-free(eddy_xrng_stage);
-free(eddy_bulk_stage);
+eddy_random_full_free();
 
 ops_exit();
 //Main program end 

@@ -36,24 +36,23 @@ void interp_RST(const ACC<double>& x1_B0, ACC<double>& a11, ACC<double>& a21, AC
   }
 }
 
-// eddy_x_rng and eddy_bulk_rng carry the raw state of the host LCG
-// (seed = (a*seed + c) % m, with m = 2^29 = 536870912), staged from the host by
-// host_stage_instantiate / host_stage_convect in opensbli.cpp.  Decoding it as
-// state/m and splitting the sign at m/2 = 268435456 is exactly what
-// host_rng_uniform() and host_rng_sign() do, so these kernels reproduce the host
-// eddy field bit for bit.
+// eddy_x_rng and eddy_bulk_rng are filled by eddy_fill_random_full()
+// (eddy_random_full.h), which draws over the whole signed int range.  That is
+// what makes the decoding below exact: v + 2147483648 spans [0, 4294967295], so
+// the quotient covers [0, 1], and P(v < 0) is exactly 1/2 so the signs are
+// unbiased.
 //
 // Do NOT feed these dats from ops_fill_random_uniform: on an "int" dat it draws
-// from uniform_int_distribution<int>(0, INT_MAX) (ops_lib_core.cpp:2605), which
-// is never negative and has a different modulus, so both the divisor and the
-// sign threshold here would be wrong.
+// from uniform_int_distribution<int>(0, INT_MAX) (ops_lib_core.cpp:2605), never
+// negative, which collapses the quotient to [0.5, 1) - every eddy in the top
+// half of x, y and z at once - and makes every eps identically +1.
 void instantiate_eddies(ACC<double>& eddy_x, ACC<double>& eddy_y, ACC<double>& eddy_z, ACC<double>& eddy_r, ACC<double>& eddy_increment, ACC<int>& eddy_eps_x, ACC<int>& eddy_eps_y, ACC<int>& eddy_eps_z, const ACC<int>& eddy_x_rng, const ACC<int>& eddy_bulk_rng){
-  eddy_x(0,0,0) = eddy_x_min + (eddy_x_rng(0,0,0)) / (536870912.0) * (eddy_x_max - eddy_x_min);
-  eddy_y(0,0,0) = eddy_y_min + (eddy_bulk_rng(0,0,0,0)) / (536870912.0) * (eddy_y_max - eddy_y_min);
-  eddy_z(0,0,0) = eddy_z_min + (eddy_bulk_rng(1,0,0,0)) / (536870912.0) * (eddy_z_max - eddy_z_min);
-  eddy_eps_x(0,0,0) = (eddy_bulk_rng(2,0,0,0) < 268435456) ? -1 : 1;
-  eddy_eps_y(0,0,0) = (eddy_bulk_rng(3,0,0,0) < 268435456) ? -1 : 1;
-  eddy_eps_z(0,0,0) = (eddy_bulk_rng(4,0,0,0) < 268435456) ? -1 : 1;
+  eddy_x(0,0,0) = eddy_x_min + (eddy_x_rng(0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_x_max - eddy_x_min);
+  eddy_y(0,0,0) = eddy_y_min + (eddy_bulk_rng(0,0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_y_max - eddy_y_min);
+  eddy_z(0,0,0) = eddy_z_min + (eddy_bulk_rng(1,0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_z_max - eddy_z_min);
+  eddy_eps_x(0,0,0) = (eddy_bulk_rng(2,0,0,0) < 0) ? -1 : 1;
+  eddy_eps_y(0,0,0) = (eddy_bulk_rng(3,0,0,0) < 0) ? -1 : 1;
+  eddy_eps_z(0,0,0) = (eddy_bulk_rng(4,0,0,0) < 0) ? -1 : 1;
   eddy_r(0,0,0) = radius;
   eddy_increment(0,0,0) = 1.0 * dt;
 }
@@ -63,11 +62,11 @@ void convect_eddies(ACC<double>& eddy_x, ACC<double>& eddy_y, ACC<double>& eddy_
   
   if(eddy_x(0,0,0) > eddy_x_max){
     eddy_x(0,0,0) = eddy_x_min;
-    eddy_y(0,0,0) = eddy_y_min + (eddy_bulk_rng(0,0,0,0)) / (536870912.0) * (eddy_y_max - eddy_y_min);
-    eddy_z(0,0,0) = eddy_z_min + (eddy_bulk_rng(1,0,0,0)) / (536870912.0) * (eddy_z_max - eddy_z_min);
-    eddy_eps_x(0,0,0) = (eddy_bulk_rng(2,0,0,0) < 268435456) ? -1 : 1;
-    eddy_eps_y(0,0,0) = (eddy_bulk_rng(3,0,0,0) < 268435456) ? -1 : 1;
-    eddy_eps_z(0,0,0) = (eddy_bulk_rng(4,0,0,0) < 268435456) ? -1 : 1;
+    eddy_y(0,0,0) = eddy_y_min + (eddy_bulk_rng(0,0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_y_max - eddy_y_min);
+    eddy_z(0,0,0) = eddy_z_min + (eddy_bulk_rng(1,0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_z_max - eddy_z_min);
+    eddy_eps_x(0,0,0) = (eddy_bulk_rng(2,0,0,0) < 0) ? -1 : 1;
+    eddy_eps_y(0,0,0) = (eddy_bulk_rng(3,0,0,0) < 0) ? -1 : 1;
+    eddy_eps_z(0,0,0) = (eddy_bulk_rng(4,0,0,0) < 0) ? -1 : 1;
   }
 }
 
