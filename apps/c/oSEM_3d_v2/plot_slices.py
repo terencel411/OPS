@@ -98,8 +98,16 @@ def load_planes(dset, axis, indices, budget_bytes=1 << 30):
             yield i, np.take(dset, i, axis=axis)
 
 
-def plane_coords(g, block_dim, idx, halo, keep_halo):
-    """(horizontal, vertical) 1-D coordinate vectors for the slice plane."""
+def plane_coords(g, block_dim, idx, halo, keep_halo, coords="physical"):
+    """(horizontal, vertical) 1-D coordinate vectors for the slice plane.
+
+    coords="physical" uses the curvilinear x*_B0 arrays, so the sinh
+    stretching in y is honoured and the picture is to scale.
+    coords="index" uses grid indices instead, which is what ParaView shows
+    when the file is loaded without the coordinate arrays attached to the
+    geometry.  The boundary layer looks about four times thicker there
+    because the mesh is clustered at the wall.
+    """
     h_dim, v_dim = IN_PLANE[block_dim]
     trim = slice(None) if keep_halo else slice(halo, -halo or None)
     sl = [0, 0, 0]
@@ -108,7 +116,12 @@ def plane_coords(g, block_dim, idx, halo, keep_halo):
     for d in (h_dim, v_dim):
         s = list(sl)
         s[BLOCK_AXIS[d]] = trim
-        out.append(np.asarray(g[COORD[d]][tuple(s)]))
+        c = np.asarray(g[COORD[d]][tuple(s)])
+        if coords == "index":
+            n = c.size
+            start = 0 if keep_halo else halo
+            c = np.arange(start, start + n, dtype=float) - halo
+        out.append(c)
     return out
 
 
@@ -154,6 +167,10 @@ def main(argv=None):
     p.add_argument("--index-space", choices=("file", "grid"), default="file",
                    help="'file': index into the stored array including halo, 0..759. "
                         "'grid': index into the physical grid, 0..749 (default: file)")
+    p.add_argument("--coords", choices=("physical", "index"), default="physical",
+                   help="plot axes: real x*_B0 coordinates (default) or grid "
+                        "indices.  Use 'index' to match a ParaView view that "
+                        "ignores the curvilinear coordinates")
     p.add_argument("--keep-halo", action="store_true",
                    help="also draw the halo cells in the slice plane")
     p.add_argument("--velocity", action="store_true",
@@ -275,13 +292,16 @@ def main(argv=None):
 
         os.makedirs(args.outdir, exist_ok=True)
         h_dim, v_dim = IN_PLANE[args.axis]
-        label = {d: f"{AXIS_NAME[d]}" for d in (h_dim, v_dim)}
+        idx_name = {0: "i", 1: "j", 2: "k"}
+        label = {d: (idx_name[d] if args.coords == "index" else AXIS_NAME[d])
+                 for d in (h_dim, v_dim)}
         stem = os.path.splitext(os.path.basename(args.file))[0]
         kind = "u" if args.velocity else ""
         written = []
 
         for i in idx:
-            hc, vc = plane_coords(g, args.axis, i, args.halo, args.keep_halo)
+            hc, vc = plane_coords(g, args.axis, i, args.halo, args.keep_halo,
+                                  args.coords)
             pos = float(g[COORD[args.axis]][tuple(
                 i if k == axis else 0 for k in range(3))])
             grid_i = i - args.halo
@@ -321,10 +341,16 @@ def main(argv=None):
                     fig.colorbar(mesh, ax=ax, shrink=0.9)
                 fig.suptitle(head)
 
-                tag = grp[0] if args.separate else "all"
-                out = os.path.join(
-                    args.outdir,
-                    f"{stem}_{AXIS_NAME[args.axis]}{grid_i:04d}_{kind}{tag}.png")
+                # opensbli_output_<slice_index>.png.  --separate writes one file
+                # per variable, so the variable name is appended there to keep
+                # the names unique.
+                # numbered with the index the user asked for, i.e. in whichever
+                # space --index-space selected
+                sidx = grid_i if args.index_space == "grid" else i
+                fname = f"{stem}_{sidx}.png"
+                if args.separate:
+                    fname = f"{stem}_{sidx}_{kind}{grp[0]}.png"
+                out = os.path.join(args.outdir, fname)
                 fig.savefig(out, dpi=args.dpi)
                 plt.close(fig)
                 written.append(out)
