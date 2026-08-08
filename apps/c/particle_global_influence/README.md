@@ -88,13 +88,57 @@ ordinary `ops_par_loop`s (where OPS's halo exchange does all the communication),
 and interpolate back with `ops_par_particle_grid_loop`. That is the
 particle-mesh route: `O(N)`, no collective, and approximate.
 
+## Visualisation
+
+One self-contained HDF5 file per output step, then a plotting script:
+
+```
+./influence_dev_seq                  # writes 50 x influence_output_??????.h5
+python3 plot_influence_h5.py         # -> frames/*.png and frames/influence.gif
+python3 plot_influence_h5.py --quiver --no-gif
+```
+
+The left panel is the cloud coloured by influence (marker area = strength); the
+right panel tracks min/mean/max phi over the run. The colour scale is fixed
+across frames on purpose — a per-frame autoscale would hide the very change you
+are trying to see.
+
+**The writer is also MPI-free, for the same reason the physics is.** The
+particle API has no HDF5 path, so apps roll their own;
+`particle_tutorial_1_drift/drift_io.h` does it with `MPI_Allgatherv` over the
+per-rank slices. Here the gather has already happened, so `influence_io.h` just
+writes the reduction buffers. Two consequences worth having:
+
+- the arrays are ordered by **global id**, not by rank, so row `i` is gid `i` in
+  every frame and particle tracks are trivial to follow
+- the files are **byte-identical at any rank count** (verified: 1071 datasets
+  across 51 files, serial vs. np=8, zero differences). A rank-ordered
+  `Allgatherv` cannot give you that.
+
+`h_phi` is a second gather, because phi does not exist until C2 has run and so
+cannot ride in the C1 buffer. `influence_io.h` also shows an OPS-only
+collective barrier (`ops_sync_barrier`), used to separate "every rank deletes
+stale files" from "one rank starts creating new ones".
+
+### Why the initial condition has a swirl
+
+Kernel A gives each particle `v = omega * (-(y-cy), (x-cx))`. Without it — with
+every particle sharing one velocity — the cloud translates **rigidly**, every
+inter-particle distance is constant, and phi is frozen for the entire run. There
+would be nothing to watch. The swirl (with no centripetal force to balance it)
+rotates and spreads the cloud, so phi genuinely evolves: it falls from ~2429 to
+~1097 over the run as the cloud dilutes, with the dense core staying brightest.
+The motion is still a closed-form recurrence, so the exact check is unaffected.
+
 ## Files
 
 | File | Contents |
 |---|---|
 | `influence.cpp` | driver: declarations, seeding, time loop, verification |
-| `particle_kernels.h` | kernels A, B, C1, C2 and the check kernel |
+| `particle_kernels.h` | kernels A, B, C1, C2, the phi gather and the check kernel |
 | `grid_kernels.h` | coordinate-grid fill only |
+| `influence_io.h` | per-step HDF5 frames, written from the gather buffers |
+| `plot_influence_h5.py` | frames + animated GIF from the .h5 files |
 
 ## Build and run
 
@@ -102,9 +146,11 @@ particle-mesh route: `O(N)`, no collective, and approximate.
 source /home/terence411/proj5/installations/configure_env_vars.sh
 make influence_dev_seq        # serial, no translator
 make influence_dev_mpi        # MPI, no translator
+make influence_mpi            # MPI, via the OPS translator
 
 ./influence_dev_seq
 mpirun -np 4 ./influence_dev_mpi
+python3 plot_influence_h5.py
 ```
 
 The run is self-checking: the influence is recomputed on the host from the

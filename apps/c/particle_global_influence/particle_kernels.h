@@ -1,13 +1,14 @@
 /*
  * particle_kernels.h  --  all-to-all particle influence
  *
- * Kernel A : KerInitState      -- initialise velocity / influence
- * Kernel B : KerAdvance        -- constant acceleration, forward Euler
- * Kernel C1: KerPublishState   -- scatter this rank's particles into the
- *                                 global reduction buffer
- * Kernel C2: KerInfluence      -- read the (now global) buffer and sum the
- *                                 contribution of EVERY particle
- * Check    : KerCheckInfluence -- compare against a host reference
+ * Kernel A : KerInitState        -- initial velocity (a swirl) and influence
+ * Kernel B : KerAdvance          -- constant acceleration, forward Euler
+ * Kernel C1: KerPublishState     -- scatter this rank's particles into the
+ *                                   global reduction buffer
+ * Kernel C2: KerInfluence        -- read the (now global) buffer and sum the
+ *                                   contribution of EVERY particle
+ * Output   : KerPublishInfluence -- gather phi the same way, for HDF5 output
+ * Check    : KerCheckInfluence   -- compare against a host reference
  *
  * C1 and C2 are the whole trick. See influence.cpp section 12.
  */
@@ -17,20 +18,45 @@
 
 #include <cmath>
 
-/* Components gathered per particle in the global buffer: x, y, strength.
-   Shared between the kernels and the driver so the layout is stated once. */
-#define NCOMP 3
+/* ------------------------------------------------------------------ *
+ * Layout of the global gather buffer
+ * ------------------------------------------------------------------ *
+ * NCOMP doubles per particle, indexed by GLOBAL id:
+ *
+ *     all[NCOMP*gid + C_X] ... all[NCOMP*gid + C_M]
+ *
+ * The interaction law only needs position and strength; velocity rides
+ * along because the gather is also what feeds HDF5 output (the particle
+ * API has no HDF5 path of its own), and quiver arrows want it. Put
+ * whatever your interaction needs here -- that is the point.
+ */
+#define NCOMP 5
+#define C_X 0
+#define C_Y 1
+#define C_VX 2
+#define C_VY 3
+#define C_M 4
 
 /* ------------------------------------------------------------------ *
  * Kernel A -- initial state
  * ------------------------------------------------------------------ *
  * Positions come from seeding (they have to: the particle count is set
- * there), everything else is initialised here, in a kernel, exactly as
- * you would in a real application.
+ * there), everything else is initialised here, in a kernel.
+ *
+ * The initial velocity is a rigid-body swirl about the domain centre,
+ *
+ *     v = omega * ( -(y - cy),  (x - cx) )
+ *
+ * with no centripetal force to hold it, so the blob rotates AND spreads
+ * outward as it drifts. That matters for more than looks: under a rigid
+ * translation every inter-particle distance is constant, so the influence
+ * would be frozen for the whole run and there would be nothing to watch.
+ * A deforming cloud makes phi genuinely time-dependent.
  */
-void KerInitState(ACCP<double> &up, ACCP<double> &phi) {
-  up(0) = 0.0;
-  up(1) = 0.0;
+void KerInitState(ACCP<double> &up, ACCP<double> &phi, const ACCP<double> &xp,
+                  const double *omega, const double *centre) {
+  up(0) = -(*omega) * (xp(1) - centre[1]);
+  up(1) = (*omega) * (xp(0) - centre[0]);
   phi(0) = 0.0;
 }
 
@@ -69,12 +95,15 @@ void KerAdvance(ACCP<double> &xp, ACCP<double> &up, const double *a,
  *     same particle in twice and every position would come out doubled.
  *   - gid must be globally unique and dense in [0, NPART).
  */
-void KerPublishState(const ACCP<double> &xp, const ACCP<double> &mp,
-                     const ACCP<int> &gid, double *all) {
+void KerPublishState(const ACCP<double> &xp, const ACCP<double> &up,
+                     const ACCP<double> &mp, const ACCP<int> &gid,
+                     double *all) {
   const int s = NCOMP * gid(0);
-  all[s + 0] += xp(0);
-  all[s + 1] += xp(1);
-  all[s + 2] += mp(0);
+  all[s + C_X] += xp(0);
+  all[s + C_Y] += xp(1);
+  all[s + C_VX] += up(0);
+  all[s + C_VY] += up(1);
+  all[s + C_M] += mp(0);
 }
 
 /* ------------------------------------------------------------------ *
@@ -105,12 +134,30 @@ void KerInfluence(ACCP<double> &phi, const ACCP<double> &xp,
   double sum = 0.0;
   for (int j = 0; j < *n; j++) {
     if (j == me) continue; /* a particle does not influence itself */
-    const double dx = x - all[NCOMP * j + 0];
-    const double dy = y - all[NCOMP * j + 1];
-    sum += all[NCOMP * j + 2] / (*eps + sqrt(dx * dx + dy * dy));
+    const double dx = x - all[NCOMP * j + C_X];
+    const double dy = y - all[NCOMP * j + C_Y];
+    sum += all[NCOMP * j + C_M] / (*eps + sqrt(dx * dx + dy * dy));
   }
 
   phi(0) = sum;
+}
+
+/* ------------------------------------------------------------------ *
+ * Gather the computed influence, for output
+ * ------------------------------------------------------------------ *
+ * The same allgather again, one component per particle. phi cannot ride
+ * in the C1 buffer because it does not exist until C2 has run.
+ *
+ * This is what lets the HDF5 writer be MPI-free: every rank ends up
+ * holding the whole population in gid order, so the collective
+ * ops_write_const_hdf5() sees identical data everywhere. As a bonus the
+ * files are then byte-identical at any rank count, which an MPI_Allgatherv
+ * of per-rank slices would not give you (that order depends on the
+ * decomposition).
+ */
+void KerPublishInfluence(const ACCP<double> &phi, const ACCP<int> &gid,
+                         double *all_phi) {
+  all_phi[gid(0)] += phi(0);
 }
 
 /* ------------------------------------------------------------------ *

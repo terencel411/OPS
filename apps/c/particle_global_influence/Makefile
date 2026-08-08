@@ -12,10 +12,12 @@
 #   make mpi       MPI,    via the OPS translator
 #
 
+USE_HDF5=1
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.common
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.mpi
+include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
-HEADERS=grid_kernels.h particle_kernels.h
+HEADERS=grid_kernels.h particle_kernels.h influence_io.h
 
 OPS_FILES=influence.cpp
 

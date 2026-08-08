@@ -104,7 +104,8 @@
 #include <ops_particle_seq.h> /* ops_particle_par_loop, particle library    */
 
 #include "grid_kernels.h"
-#include "particle_kernels.h" /* also defines NCOMP                         */
+#include "particle_kernels.h" /* also defines NCOMP and the C_* offsets     */
+#include "influence_io.h"     /* per-step HDF5 frames, MPI-free             */
 
 typedef double Real;
 
@@ -123,13 +124,17 @@ const unsigned int SEED = 12345u; /* fixes the seeding pattern            */
    no boundary condition in this app, and OPS deletes particles that leave
    the bounding box -- which would silently break the gather (a missing
    particle leaves its slot at zero, i.e. a phantom particle at the origin
-   with zero strength).                                                    */
-const Real MARGIN = 0.15;
+   with zero strength). The margin is generous because the swirl below makes
+   the cloud spread as well as drift; the run checks the count, so if you
+   change these numbers and particles escape, it says FAIL rather than
+   quietly giving a wrong answer.                                          */
+const Real MARGIN = 0.30;
 
-const Real ACCEL[2] = {0.08, 0.04}; /* constant acceleration               */
+const Real ACCEL[2] = {0.06, 0.04}; /* constant acceleration               */
+const Real OMEGA = 0.5;             /* initial swirl rate, see KerInitState */
 const Real DT = 0.002;
-const int NSTEPS = 500;   /* total displacement ~ (0.040, 0.020)          */
-const int NPRINT = 100;
+const int NSTEPS = 750;
+const int NPRINT = 15;    /* -> 50 HDF5 frames                            */
 
 const Real SOFTEN = 0.01; /* eps in the influence law                     */
 
@@ -247,6 +252,13 @@ void reference_influence(const std::vector<Real> &seed_x,
   std::vector<Real> x(2 * NPART), v(2 * NPART, 0.0);
   for (int i = 0; i < 2 * NPART; i++) x[i] = seed_x[i];
 
+  /* Same swirl KerInitState applies, about the domain centre. */
+  const Real cx = 0.5 * LENGTH, cy = 0.5 * LENGTH;
+  for (int i = 0; i < NPART; i++) {
+    v[2 * i + 0] = -OMEGA * (x[2 * i + 1] - cy);
+    v[2 * i + 1] = OMEGA * (x[2 * i + 0] - cx);
+  }
+
   for (int s = 0; s < nsteps; s++)
     for (int i = 0; i < NPART; i++)
       for (int d = 0; d < 2; d++) {
@@ -318,6 +330,14 @@ int main(int argc, char **argv) {
       ops_decl_reduction_handle(sizeof(double), "double", "worst_error");
   ops_reduction h_count =
       ops_decl_reduction_handle(sizeof(int), "int", "particles_seen");
+
+  /* h_phi gathers the computed influence for output -- the same allgather
+     again, one component per particle. h_sync is used only as a collective
+     barrier by the HDF5 writer (see influence_io.h).                      */
+  ops_reduction h_phi =
+      ops_decl_reduction_handle(NPART * sizeof(double), "double", "all_phi");
+  ops_reduction h_sync =
+      ops_decl_reduction_handle(sizeof(int), "int", "sync");
 
   /* ---------------------------------------------------------------- *
    * 4. Bounding box, particle set, particle dats
@@ -396,8 +416,9 @@ int main(int argc, char **argv) {
   ops_particle_setup_maps_with_dats(particle, dat_border, nborder);
 
   ops_printf("OPS Particles: all-to-all influence via an OPS reduction\n");
-  ops_printf("grid %dx%d, %d particles, a = (%g, %g), dt = %g, %d steps\n", NX,
-             NY, NPART, ACCEL[0], ACCEL[1], DT, NSTEPS);
+  ops_printf("grid %dx%d, %d particles, a = (%g, %g), swirl = %g, dt = %g,"
+             " %d steps\n",
+             NX, NY, NPART, ACCEL[0], ACCEL[1], OMEGA, DT, NSTEPS);
   ops_printf("gather buffer: %d x %d doubles = %zu bytes per step\n", NPART,
              NCOMP, NPART * NCOMP * sizeof(double));
 
@@ -407,11 +428,17 @@ int main(int argc, char **argv) {
 
   Real range_parts[] = {0.0, LENGTH, 0.0, LENGTH};
 
+  const Real centre[2] = {0.5 * LENGTH, 0.5 * LENGTH};
+  Real omega = OMEGA;
+
   ops_particle_par_loop(
       KerInitState, "KerInitState", particle, 2, OPS_PARTICLE_ITERATE_LOCAL,
       range_parts, map,
       ops_arg_dat_particle(p_vel, 2, "double", particle, map, OPS_WRITE),
-      ops_arg_dat_particle(p_phi, 1, "double", particle, map, OPS_WRITE));
+      ops_arg_dat_particle(p_phi, 1, "double", particle, map, OPS_WRITE),
+      ops_arg_dat_particle(p_pos, 2, "double", particle, map, OPS_READ),
+      ops_arg_gbl(&omega, 1, "double", OPS_READ),
+      ops_arg_gbl(centre, 2, "double", OPS_READ));
 
   /* ---------------------------------------------------------------- *
    * 10. Time loop
@@ -423,6 +450,26 @@ int main(int argc, char **argv) {
 
   /* Where ops_reduction_result() delivers the gathered state. */
   std::vector<Real> all_state(NPART * NCOMP);
+  std::vector<Real> all_phi(NPART);
+
+  /* Everything a plot script needs about the run, travelling with the data. */
+  influence_io_params io_params = {NX,
+                                  NY,
+                                  NPART,
+                                  (int)SEED,
+                                  NSTEPS,
+                                  NPRINT,
+                                  LENGTH,
+                                  DT,
+                                  {ACCEL[0], ACCEL[1]},
+                                  OMEGA,
+                                  SOFTEN,
+                                  {box->getGlobalMin().x + MARGIN,
+                                   box->getGlobalMax().x - MARGIN,
+                                   box->getGlobalMin().y + MARGIN,
+                                   box->getGlobalMax().y - MARGIN}};
+
+  remove_stale_output("influence_output", NSTEPS, NPRINT, h_sync);
 
   for (int step = 1; step <= NSTEPS; step++) {
 
@@ -449,6 +496,7 @@ int main(int argc, char **argv) {
         KerPublishState, "KerPublishState", particle, 2,
         OPS_PARTICLE_ITERATE_LOCAL, range_parts, map,
         ops_arg_dat_particle(p_pos, 2, "double", particle, map, OPS_READ),
+        ops_arg_dat_particle(p_vel, 2, "double", particle, map, OPS_READ),
         ops_arg_dat_particle(p_mass, 1, "double", particle, map, OPS_READ),
         ops_arg_dat_particle(p_gid, 1, "int", particle, map, OPS_READ),
         ops_arg_reduce(h_all, NPART * NCOMP, "double", OPS_INC));
@@ -469,11 +517,29 @@ int main(int argc, char **argv) {
         ops_arg_gbl(&npart_gbl, 1, "int", OPS_READ),
         ops_arg_gbl(&soften, 1, "double", OPS_READ));
 
+    /* -- Output ---------------------------------------------------- *
+     *
+     * The particle API has no HDF5 writer, so the app provides one. It needs
+     * every particle on the writing rank -- which the gather has already
+     * done. all_state is current; phi has just been computed, so gather that
+     * too and the frame is complete, with no MPI in the writer.
+     */
+
     if (step % NPRINT == 0) {
-      std::string fname = "particles_step_" + std::to_string(step) + ".txt";
-      ops_particle_print_dats_to_txtfile(particle, dat_output, noutput,
-                                         fname.c_str());
-      ops_printf("step %5d / %d\n", step, NSTEPS);
+
+      ops_particle_par_loop(
+          KerPublishInfluence, "KerPublishInfluence", particle, 2,
+          OPS_PARTICLE_ITERATE_LOCAL, range_parts, map,
+          ops_arg_dat_particle(p_phi, 1, "double", particle, map, OPS_READ),
+          ops_arg_dat_particle(p_gid, 1, "int", particle, map, OPS_READ),
+          ops_arg_reduce(h_phi, NPART, "double", OPS_INC));
+
+      ops_reduction_result(h_phi, all_phi.data());
+
+      write_influence_step(block, x_grid, all_state, all_phi, io_params, step);
+
+      if (step % (10 * NPRINT) == 0)
+        ops_printf("step %5d / %d\n", step, NSTEPS);
     }
   }
 
@@ -505,8 +571,8 @@ int main(int argc, char **argv) {
   ops_printf("\ngathered state, first 3 particles (x, y, strength):\n");
   for (int i = 0; i < 3; i++)
     ops_printf("  gid %3d : %12.9f %12.9f %6.3f   phi = %12.6f\n", i,
-               all_state[NCOMP * i + 0], all_state[NCOMP * i + 1],
-               all_state[NCOMP * i + 2], phi_ref[i]);
+               all_state[NCOMP * i + C_X], all_state[NCOMP * i + C_Y],
+               all_state[NCOMP * i + C_M], phi_ref[i]);
 
   const Real tol = 1e-10;
   int ok = (worst < tol) && (found == NPART);
@@ -518,8 +584,15 @@ int main(int argc, char **argv) {
   ops_printf("RESULT              : %s\n", ok ? "PASS" : "FAIL");
   ops_printf("---------------------------------------------\n");
 
+  write_influence_final(block, x_grid, all_state, all_phi, io_params, NSTEPS);
+
   ops_particle_print_dats_to_txtfile(particle, dat_output, noutput,
                                      "particles_final.txt");
+
+  ops_printf("\nwrote %d HDF5 frames: influence_output_??????.h5"
+             " (+ influence_output.h5)\n",
+             NSTEPS / NPRINT);
+  ops_printf("plot with:  python3 plot_influence_h5.py\n");
 
   ops_exit();
   return ok ? 0 : 1;
