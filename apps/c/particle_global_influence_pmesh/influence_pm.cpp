@@ -701,6 +701,63 @@ int main(int argc, char **argv) {
     compare("- 3-shape self");
 
     ops_printf("particles compared: %d of %d\n", cnt, NPART);
+
+    /* ---- error budget: where does the residual live? ---- */
+    {
+      ops_reduction h_sh = ops_decl_reduction_handle(
+          3 * NNBIN * sizeof(double), "double", "err_by_shape");
+      std::vector<Real> sh(3 * NNBIN, 0.0);
+      ops_particle_par_loop(
+          KerErrorByShape, "KerErrorByShape", particle, 2,
+          OPS_PARTICLE_ITERATE_LOCAL, range_parts, map,
+          ops_arg_dat_particle(p_phim, 1, "double", particle, map, OPS_READ),
+          ops_arg_dat_particle(p_phid, 1, "double", particle, map, OPS_READ),
+          ops_arg_dat_particle(p_mass, 1, "double", particle, map, OPS_READ),
+          ops_arg_dat_particle(p_pos, 2, "double", particle, map, OPS_READ),
+          ops_arg_gbl(&hh, 1, "double", OPS_READ),
+          ops_arg_reduce(h_sh, 3 * NNBIN, "double", OPS_INC));
+      ops_reduction_result(h_sh, sh.data());
+      ops_printf("\nresidual/m vs CIC shape factor A (self-energy test):\n");
+      ops_printf("     A        count     mean(d/m)    rms(d/m)\n");
+      for (int b = 0; b < NNBIN; b++) {
+        if (sh[3 * b + 2] < 0.5) continue;
+        const Real c = sh[3 * b + 2];
+        ops_printf("  %.3f-%.3f %7.0f   %+10.4f   %10.4f\n",
+                   0.25 + 0.75 * b / NNBIN, 0.25 + 0.75 * (b + 1) / NNBIN, c,
+                   sh[3 * b] / c, sqrt(sh[3 * b + 1] / c));
+      }
+
+      ops_reduction h_nn = ops_decl_reduction_handle(
+          2 * NNBIN * sizeof(double), "double", "err_by_nn");
+      std::vector<Real> nn(2 * NNBIN, 0.0);
+
+      gather_state();
+      ops_particle_par_loop(
+          KerErrorByNN, "KerErrorByNN", particle, 2, OPS_PARTICLE_ITERATE_LOCAL,
+          range_parts, map,
+          ops_arg_dat_particle(p_phim, 1, "double", particle, map, OPS_READ),
+          ops_arg_dat_particle(p_phid, 1, "double", particle, map, OPS_READ),
+          ops_arg_dat_particle(p_pos, 2, "double", particle, map, OPS_READ),
+          ops_arg_dat_particle(p_gid, 1, "int", particle, map, OPS_READ),
+          ops_arg_gbl(all_state.data(), NPART * NCOMP, "double", OPS_READ),
+          ops_arg_gbl(&npart_gbl, 1, "int", OPS_READ),
+          ops_arg_gbl(&hh, 1, "double", OPS_READ),
+          ops_arg_reduce(h_nn, 2 * NNBIN, "double", OPS_INC));
+      ops_reduction_result(h_nn, nn.data());
+
+      ops_printf("\nerror vs nearest-neighbour distance"
+                 " (rms |dphi| per bin, rms(phi) = %.3e):\n", sqrt(r2 / cnt));
+      ops_printf("  r_nn/h      count    rms|dphi|   share of total err^2\n");
+      Real tot = 0.0;
+      for (int b = 0; b < NNBIN; b++) tot += nn[2 * b];
+      for (int b = 0; b < NNBIN; b++) {
+        if (nn[2 * b + 1] < 0.5) continue;
+        ops_printf("  %.3f-%.3f %7.0f   %10.3e   %6.1f %%\n", b / 8.0,
+                   (b + 1) / 8.0, nn[2 * b + 1],
+                   sqrt(nn[2 * b] / nn[2 * b + 1]),
+                   100.0 * nn[2 * b] / (tot > 0 ? tot : 1.0));
+      }
+    }
   }
 
   if (DO_CHECK && DO_DIRECT) {

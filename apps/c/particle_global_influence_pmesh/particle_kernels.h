@@ -219,6 +219,67 @@ void KerCompare(const ACCP<double> &phim, const ACCP<double> &phid,
   *count += 1;
 }
 
+/* ---- error budget diagnostic --------------------------------------
+ *
+ * Bins |phi_mesh - phi_direct| by each particle's NEAREST-NEIGHBOUR distance,
+ * measured in mesh cells. The question it answers: is the residual mesh error
+ * concentrated in close pairs -- the separations a mesh of spacing h cannot
+ * resolve -- or is it spread evenly?
+ *
+ * If it concentrates, a near-field correction (P3M) is the right fix and will
+ * work. If it is flat, something else dominates and P3M would be optimising
+ * the wrong term. Worth 20 lines before committing to the build.
+ *
+ * acc is a dim-2*NNBIN reduction: [2b] sum of d^2 in bin b, [2b+1] count.
+ */
+#define NNBIN 8
+
+void KerErrorByNN(const ACCP<double> &phim, const ACCP<double> &phid,
+                  const ACCP<double> &xp, const ACCP<int> &gid,
+                  const double *all, const int *n, const double *h,
+                  double *acc) {
+
+  const int me = gid(0);
+  const double x = xp(0), y = xp(1);
+
+  double r2min = 1e30;
+  for (int j = 0; j < *n; j++) {
+    if (j == me) continue;
+    const double dx = x - all[NCOMP * j + C_X];
+    const double dy = y - all[NCOMP * j + C_Y];
+    const double r2 = dx * dx + dy * dy;
+    if (r2 < r2min) r2min = r2;
+  }
+
+  int b = (int)(8.0 * sqrt(r2min) / (*h));  /* bins of h/8 */
+  if (b >= NNBIN) b = NNBIN - 1;
+
+  const double d = phim(0) - phid(0);
+  acc[2 * b] += d * d;
+  acc[2 * b + 1] += 1.0;
+}
+
+/* Second diagnostic: bin (phi_mesh - phi_direct)/m by the CIC shape factor A,
+ * i.e. by where the particle sits inside its cell (A = 0.25 at the centre,
+ * 1 at a node). If the residual is unmodelled SELF-ENERGY it must be a
+ * function of A alone -- that is what the self term is. If it is unrelated to
+ * A, the self term is not what is left. */
+void KerErrorByShape(const ACCP<double> &phim, const ACCP<double> &phid,
+                     const ACCP<double> &mp, const ACCP<double> &xp,
+                     const double *h, double *acc) {
+  double A, B, C;
+  cic_shape_factors(xp(0), xp(1), *h, &A, &B, &C);
+
+  int b = (int)((A - 0.25) / 0.75 * NNBIN);
+  if (b < 0) b = 0;
+  if (b >= NNBIN) b = NNBIN - 1;
+
+  const double dm = (phim(0) - phid(0)) / mp(0);
+  acc[3 * b] += dm;          /* mean   */
+  acc[3 * b + 1] += dm * dm; /* rms    */
+  acc[3 * b + 2] += 1.0;     /* count  */
+}
+
 /* Gather phi by global id -- used for the optional exact check. */
 void KerPublishScalar(const ACCP<double> &f, const ACCP<int> &gid,
                       double *all_f) {
