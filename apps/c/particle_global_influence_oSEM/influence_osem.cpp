@@ -76,6 +76,7 @@
  *   -ny N -nz N  inlet plane resolution                   default 100 x 150
  *   -nprint N    report interval                          default 200
  *   -nout N      write an HDF5 frame every N steps        default 0 (off)
+ *   -rst tbl|iso boundary-layer profile or isotropic       default tbl
  *
  * Build:  make influence_osem_dev_seq / _dev_mpi
  * Run:    ./influence_osem_dev_seq
@@ -94,6 +95,7 @@
 #include <ops_particle_seq.h>
 
 #include "osem_constants.h"
+#include "TBL_data.h"   /* tabulated boundary-layer Reynolds stresses */
 #include "osem_common.h"
 #include "particle_kernels.h"
 #include "grid_kernels.h"
@@ -112,6 +114,7 @@ static void parse_args(int argc, char **argv) {
     else if (!strcmp(argv[i], "-nz") && i + 1 < argc) nz = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-nprint") && i + 1 < argc) nprint = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-nout") && i + 1 < argc) nout = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "-rst") && i + 1 < argc) use_tbl = strcmp(argv[++i], "iso") != 0;
     else if (!strcmp(argv[i], "-rng") && i + 1 < argc) {
       const char *m = argv[++i];
       rng_method = !strcmp(m, "minstd") ? OPS_PRNG_MINSTD
@@ -165,6 +168,17 @@ static void seed_eddies(ops_particle particle, ops_dat pos, ops_dat gid,
   particle->no_particles = n;
 }
 
+/* Host copy of the kernel's interpolation, for the profile check below. Kept
+   deliberately separate rather than shared: if the two ever disagree, the test
+   has caught something real. */
+static Real tbl_at(const double *tab, Real y) {
+  int idx = ntbl - 2;
+  for (int i = 1; i < ntbl - 1; i++)
+    if ((y - y_inp[i]) < 0) { idx = i - 1; break; }
+  const Real w = (y - y_inp[idx]) / (y_inp[idx + 1] - y_inp[idx]);
+  return tab[idx] + w * (tab[idx + 1] - tab[idx]);
+}
+
 static void update_maps(ops_particle particle, ops_dat *db, int nb,
                         ops_dat *df, int nf) {
   int decide = ops_particle_update_map_lists_actual_hybrid(particle);
@@ -208,6 +222,10 @@ int main(int argc, char **argv) {
      at the same rank invariance, and measured clean on the correlation that
      matters -- see ops_particle_random.h. Override with -rng. */
   rng_method = OPS_PRNG_MINSTD;
+  ntbl = 260;      /* rows in TBL_data.h */
+  use_tbl = 1;     /* boundary-layer profile by default; -rst iso for the
+                      uniform one, whose all-equal-rms invariant is a useful
+                      cross-check */
 
   /* Command line overrides the defaults above, before anything is derived
      from them. */
@@ -281,6 +299,8 @@ int main(int argc, char **argv) {
   ops_reduction h_stat =
       ops_decl_reduction_handle(4 * sizeof(double), "double", "fluct_stats");
   ops_reduction h_sync = ops_decl_reduction_handle(sizeof(int), "int", "sync");
+  ops_reduction h_prof = ops_decl_reduction_handle(
+      3 * (ny + 1) * sizeof(double), "double", "profile");
 
   /* ---- 4. the particle set --------------------------------------- */
 
@@ -334,6 +354,7 @@ int main(int argc, char **argv) {
   ops_decl_const("eddies", 1, "int", &eddies);
   ops_decl_const("ny", 1, "int", &ny);
   ops_decl_const("nz", 1, "int", &nz);
+  ops_decl_const("ntbl", 1, "int", &ntbl);
 
   ops_partition("");
 
@@ -342,7 +363,26 @@ int main(int argc, char **argv) {
   ops_par_loop(KerInitGrid, "KerInitGrid", block, 2, grid_range,
                ops_arg_dat(crd, 2, S2D_00, "double", OPS_WRITE), ops_arg_idx());
 
-  ops_par_loop(KerInitRST, "KerInitRST", block, 2, grid_range,
+  /* The Reynolds stresses. Two variants, exactly as oSEM has them: a uniform
+     isotropic tensor, or a tabulated boundary-layer profile interpolated in y.
+     The tables are bulk data rather than scalar parameters, so they go in as
+     ops_arg_gbl -- which is how oSEM passes them too. */
+  if (use_tbl)
+    ops_par_loop(KerInitRST_TBL, "KerInitRST_TBL", block, 2, grid_range,
+                 ops_arg_dat(a11, 1, S2D_00, "double", OPS_WRITE),
+                 ops_arg_dat(a21, 1, S2D_00, "double", OPS_WRITE),
+                 ops_arg_dat(a22, 1, S2D_00, "double", OPS_WRITE),
+                 ops_arg_dat(a31, 1, S2D_00, "double", OPS_WRITE),
+                 ops_arg_dat(a32, 1, S2D_00, "double", OPS_WRITE),
+                 ops_arg_dat(a33, 1, S2D_00, "double", OPS_WRITE),
+                 ops_arg_dat(crd, 2, S2D_00, "double", OPS_READ),
+                 ops_arg_gbl(y_inp, 260, "double", OPS_READ),
+                 ops_arg_gbl(uu_inp, 260, "double", OPS_READ),
+                 ops_arg_gbl(uv_inp, 260, "double", OPS_READ),
+                 ops_arg_gbl(vv_inp, 260, "double", OPS_READ),
+                 ops_arg_gbl(ww_inp, 260, "double", OPS_READ));
+  else
+    ops_par_loop(KerInitRST, "KerInitRST", block, 2, grid_range,
                ops_arg_dat(a11, 1, S2D_00, "double", OPS_WRITE),
                ops_arg_dat(a21, 1, S2D_00, "double", OPS_WRITE),
                ops_arg_dat(a22, 1, S2D_00, "double", OPS_WRITE),
@@ -400,7 +440,18 @@ int main(int argc, char **argv) {
                        u0ti,
                        x_plane,
                        {eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max},
-                       {0.0, 0.0, 0.0}};
+                       {0.0, 0.0, 0.0},
+                       use_tbl};
+
+  /* The target profile is fixed for the run, so build it once. */
+  std::vector<Real> prof(3 * (ny + 1), 0.0), targ(3 * (ny + 1), 0.0);
+  if (use_tbl)
+    for (int i = 0; i <= ny; i++) {
+      const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) * (Real)i / (Real)ny;
+      targ[3 * i + 0] = sqrt(tbl_at(uu_inp, y));
+      targ[3 * i + 1] = sqrt(tbl_at(vv_inp, y));
+      targ[3 * i + 2] = sqrt(tbl_at(ww_inp, y));
+    }
   if (nout > 0) {
     remove_stale_output("osem_output", niter, nout, h_sync);
     ops_printf("writing %d HDF5 frames (osem_output_??????.h5)\n", niter / nout);
@@ -500,7 +551,20 @@ int main(int argc, char **argv) {
       io.rms[1] = sqrt(fs[1] / nn2);
       io.rms[2] = sqrt(fs[2] / nn2);
 
-      write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, io, it);
+      if (use_tbl) {
+        ops_par_loop(KerFluctProfile, "KerFluctProfile", block, 2, grid_range,
+                     ops_arg_dat(uprime, 1, S2D_00, "double", OPS_READ),
+                     ops_arg_dat(vprime, 1, S2D_00, "double", OPS_READ),
+                     ops_arg_dat(wprime, 1, S2D_00, "double", OPS_READ),
+                     ops_arg_idx(),
+                     ops_arg_reduce(h_prof, 3 * (ny + 1), "double", OPS_INC));
+        ops_reduction_result(h_prof, prof.data());
+        const Real nrow = (Real)(nz + 1);
+        for (size_t k = 0; k < prof.size(); k++) prof[k] = sqrt(prof[k] / nrow);
+      }
+
+      write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, prof,
+                      targ, io, it);
     }
 
     if (it % nprint == 0) ops_printf("step %5d / %d\n", it, niter);
@@ -563,6 +627,51 @@ int main(int argc, char **argv) {
   }
 
   const Real n = (st[3] > 0.0) ? st[3] : 1.0;
+  /* ---- profile check ---------------------------------------------- *
+   * With the TBL profile the three rms values are supposed to DIFFER, so the
+   * isotropic invariant is gone. The test instead is whether the computed
+   * rms(y) follows the tabulated target: rms(u') should track sqrt(R11),
+   * rms(v') sqrt(R22), rms(w') sqrt(R33), since the raw sums are unit
+   * variance by construction (shape_norm). This exercises the interpolation,
+   * the Cholesky and the eddy summation together.
+   */
+  if (use_tbl) {
+    std::vector<Real> pf(3 * (ny + 1), 0.0);
+
+    ops_par_loop(KerFluctProfile, "KerFluctProfile", block, 2, grid_range,
+                 ops_arg_dat(uprime, 1, S2D_00, "double", OPS_READ),
+                 ops_arg_dat(vprime, 1, S2D_00, "double", OPS_READ),
+                 ops_arg_dat(wprime, 1, S2D_00, "double", OPS_READ),
+                 ops_arg_idx(),
+                 ops_arg_reduce(h_prof, 3 * (ny + 1), "double", OPS_INC));
+    ops_reduction_result(h_prof, pf.data());
+
+    const Real nrow = (Real)(nz + 1);
+    ops_printf("\n--- rms profile vs tabulated target ------------------\n");
+    ops_printf("   y        rms u'   target    rms v'   target    rms w'   target\n");
+
+    Real se = 0.0, st = 0.0;
+    int nused = 0;
+    for (int i = 0; i <= ny; i++) {
+      const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) * (Real)i / (Real)ny;
+      const Real got[3] = {sqrt(pf[3 * i + 0] / nrow),
+                           sqrt(pf[3 * i + 1] / nrow),
+                           sqrt(pf[3 * i + 2] / nrow)};
+      const Real want[3] = {sqrt(tbl_at(uu_inp, y)), sqrt(tbl_at(vv_inp, y)),
+                            sqrt(tbl_at(ww_inp, y))};
+      for (int c = 0; c < 3; c++) {
+        se += (got[c] - want[c]) * (got[c] - want[c]);
+        st += want[c] * want[c];
+      }
+      nused++;
+      if (i % 20 == 0)
+        ops_printf("  %.5f  %7.2f %8.2f   %7.2f %8.2f   %7.2f %8.2f\n", y,
+                   got[0], want[0], got[1], want[1], got[2], want[2]);
+    }
+    ops_printf("\nprofile agreement over %d rows: %.1f %% rms deviation\n",
+               nused, 100.0 * sqrt(se / st));
+  }
+
   ops_printf("\n--- final inlet plane --------------------------------\n");
   ops_printf("rms u' = %.4f   v' = %.4f   w' = %.4f   (u0*TI = %.4f)\n",
              sqrt(st[0] / n), sqrt(st[1] / n), sqrt(st[2] / n), u0ti);

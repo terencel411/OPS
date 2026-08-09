@@ -29,6 +29,7 @@ struct osem_io_params {
   double XPLANE;
   double box[4];    /* eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max */
   double rms[3];    /* u', v', w' at this frame                       */
+  int use_tbl;      /* 1 = tabulated boundary-layer RST, 0 = isotropic  */
 };
 
 /* Collective barrier built out of OPS: ops_reduction_result ends in an
@@ -58,6 +59,8 @@ inline void remove_stale_output(const char *prefix, int niter, int nprint,
 inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
                             ops_dat &vprime, ops_dat &wprime,
                             const std::vector<double> &all,
+                            const std::vector<double> &prof,
+                            const std::vector<double> &targ,
                             const osem_io_params &p, int step) {
 
   char file[128];
@@ -95,6 +98,14 @@ inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
   ops_write_const_hdf5("x_plane", 1, "double", (char *)&p.XPLANE, file);
   ops_write_const_hdf5("box", 4, "double", (char *)p.box, file);
   ops_write_const_hdf5("rms", 3, "double", (char *)p.rms, file);
+  ops_write_const_hdf5("use_tbl", 1, "int", (char *)&p.use_tbl, file);
+  /* Per-row rms and the tabulated target it should follow. With the TBL
+     profile a plane-averaged rms has nothing meaningful to be compared
+     against -- the target is a PROFILE -- so the frames carry both. */
+  ops_write_const_hdf5("rms_profile", 3 * (p.NY + 1), "double",
+                       (char *)prof.data(), file);
+  ops_write_const_hdf5("rms_target", 3 * (p.NY + 1), "double",
+                       (char *)targ.data(), file);
 
   ops_write_const_hdf5("eddy_x", N, "double", (char *)ex.data(), file);
   ops_write_const_hdf5("eddy_y", N, "double", (char *)ey.data(), file);

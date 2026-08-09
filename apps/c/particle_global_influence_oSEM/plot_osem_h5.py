@@ -73,6 +73,9 @@ def read_frame(path):
             "xplane": float(f["x_plane"][0]),
             "box": f["box"][:],
             "rms": f["rms"][:],
+            "use_tbl": int(f["use_tbl"][0]),
+            "prof": f["rms_profile"][:].reshape(-1, 3),
+            "targ": f["rms_target"][:].reshape(-1, 3),
             "neddy": int(f["neddy"][0]),
             "ny": NY,
             "nz": NZ,
@@ -129,8 +132,41 @@ def plot_frame(path, frame, clim, history, outdir):
         ax.set_ylim(ymin, ymax)
     axes[2].set_xlabel("z")
 
-    # ---- rms history --------------------------------------------------
+    # ---- bottom panel --------------------------------------------------
     axr = axes[3]
+
+    if meta["use_tbl"]:
+        # With a tabulated profile the target is a FUNCTION OF y, so a single
+        # u0*TI line is meaningless -- the plane-averaged rms has nothing to be
+        # compared against. Show the profile against the target instead.
+        nyv = meta["prof"].shape[0] - 1
+        yv = ymin + (ymax - ymin) * np.arange(nyv + 1) / float(nyv)
+        for k, (lab, col) in enumerate((("u'", "tab:blue"), ("v'", "tab:green"),
+                                        ("w'", "tab:red"))):
+            axr.plot(yv, meta["prof"][:, k], color=col, linewidth=1.7,
+                     label="rms " + lab)
+            axr.plot(yv, meta["targ"][:, k], color=col, linewidth=1.1,
+                     linestyle="--", alpha=0.75,
+                     label=("tabulated target" if k == 0 else None))
+        axr.set_xlabel("y")
+        axr.set_ylabel("rms")
+        axr.set_xlim(ymin, ymax)
+        axr.set_ylim(bottom=0.0)
+        axr.set_title("wall-normal profile: computed (solid) vs tabulated "
+                      "Reynolds stresses (dashed)", fontsize=11)
+        axr.legend(loc="upper right", frameon=False, fontsize=9, ncol=4)
+        axr.grid(alpha=0.25)
+        fig.suptitle("oSEM with OPS particles -- step %d / %d,  t = %.3e s"
+                     % (meta["step"], meta["niter"], meta["time"]),
+                     fontsize=12, y=0.995)
+        fig.tight_layout(rect=[0, 0, 1, 0.975])
+        os.makedirs(outdir, exist_ok=True)
+        png = os.path.join(outdir,
+                           os.path.basename(path).replace(".h5", ".png"))
+        fig.savefig(png, dpi=95)
+        plt.close(fig)
+        return png
+
     t, r = history
     for k, (label, colour) in enumerate((("u'", "tab:blue"),
                                          ("v'", "tab:green"),
