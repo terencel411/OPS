@@ -93,6 +93,7 @@
 #include <ops_seq_v2.h>
 #include <ops_particle_seq.h>
 
+#include "osem_constants.h"
 #include "osem_common.h"
 #include "particle_kernels.h"
 #include "grid_kernels.h"
@@ -101,32 +102,19 @@
 
 typedef double Real;
 
-/* ---- oSEM's parameters, unchanged ---------------------------------- */
-
-static const Real U0 = 823.6;
-static const Real DT = 0.00000002;
-static const Real DELTA = 0.007;
-static const Real TI = 0.01;
-/* oSEM's seed_gbl. Changing it changes the whole realisation. */
-static const unsigned int SEED = 2893328493u;
-
-static int NY = 100;
-static int NZ = 150;
-static int NITER = 2000;
-static int NPRINT = 200;
-static int NOUT = 0;   /* HDF5 frame interval; 0 = off */
-static int RNG = OPS_PRNG_MT19937;   /* -rng mt19937|minstd|shared */
+/* Every constant and run option is declared in osem_constants.h and given its
+   value at the top of main -- nothing is defined at file scope. */
 
 static void parse_args(int argc, char **argv) {
   for (int i = 1; i < argc; i++) {
-    if (!strcmp(argv[i], "-niter") && i + 1 < argc) NITER = atoi(argv[++i]);
-    else if (!strcmp(argv[i], "-ny") && i + 1 < argc) NY = atoi(argv[++i]);
-    else if (!strcmp(argv[i], "-nz") && i + 1 < argc) NZ = atoi(argv[++i]);
-    else if (!strcmp(argv[i], "-nprint") && i + 1 < argc) NPRINT = atoi(argv[++i]);
-    else if (!strcmp(argv[i], "-nout") && i + 1 < argc) NOUT = atoi(argv[++i]);
+    if (!strcmp(argv[i], "-niter") && i + 1 < argc) niter = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "-ny") && i + 1 < argc) ny = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "-nz") && i + 1 < argc) nz = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "-nprint") && i + 1 < argc) nprint = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "-nout") && i + 1 < argc) nout = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-rng") && i + 1 < argc) {
       const char *m = argv[++i];
-      RNG = !strcmp(m, "minstd") ? OPS_PRNG_MINSTD
+      rng_method = !strcmp(m, "minstd") ? OPS_PRNG_MINSTD
                                  : (!strcmp(m, "shared") ? OPS_PRNG_SHARED
                                                          : OPS_PRNG_MT19937);
     }
@@ -146,7 +134,7 @@ static void parse_args(int argc, char **argv) {
  * property of the eddy rather than of where it happens to live.
  */
 static void seed_eddies(ops_particle particle, ops_dat pos, ops_dat gid,
-                        int neddy, const Real *prm) {
+                        int neddy) {
 
   BoundingBox<Real> *box = (BoundingBox<Real> *)particle->box_block;
   const Real lo[2] = {box->getLocalMin().x, box->getLocalMin().y};
@@ -161,10 +149,10 @@ static void seed_eddies(ops_particle particle, ops_dat pos, ops_dat gid,
   for (int i = 0; i < neddy; i++) {
     /* Same counter-based generator the fill uses, so the initial positions are
        drawn from the identical stream: counter 0, components 0 and 1. */
-    const Real y = prm[P_EYMIN] + (prm[P_EYMAX] - prm[P_EYMIN]) *
-                                      ops_prandom_uniform(SEED, i, 0u, 0);
-    const Real z = prm[P_EZMIN] + (prm[P_EZMAX] - prm[P_EZMIN]) *
-                                      ops_prandom_uniform(SEED, i, 0u, 1);
+    const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) *
+                                      ops_prandom_uniform(seed_gbl, i, 0u, 0);
+    const Real z = eddy_z_min + (eddy_z_max - eddy_z_min) *
+                                      ops_prandom_uniform(seed_gbl, i, 0u, 1);
 
     if (y < lo[0] || y >= hi[0] || z < lo[1] || z >= hi[1]) continue;
 
@@ -191,49 +179,77 @@ static void update_maps(ops_particle particle, ops_dat *db, int nb,
 int main(int argc, char **argv) {
 
   ops_init(argc, argv, 1);
-  parse_args(argc, argv);
 
   /* ---- 1. geometry, exactly oSEM's ------------------------------- */
 
-  const Real r_max = 0.41 * DELTA;
-  const Real x_min = -r_max, x_max = r_max, x_plane = 0.0;
-  const Real y_min = 0.0, y_max = 0.009;
-  const Real z_min = 0.0, z_max = 0.05;
-  const Real eddy_y_min = y_min, eddy_y_max = y_max + r_max;
-  const Real eddy_z_min = z_min - r_max, eddy_z_max = z_max + r_max;
-  const Real rep_radius = 0.2 * DELTA;
+  /* ---- 1. constants ---------------------------------------------- *
+   * Values are assigned here, not at file scope, so the whole configuration
+   * of a run reads top-to-bottom in one place -- oSEM's arrangement. The
+   * variables themselves are declared in osem_constants.h and registered with
+   * ops_decl_const further down.
+   */
 
-  const Real vol = fabs((x_max - x_min) * (y_max - y_min + 2 * r_max) *
-                        (z_max - z_min + 2 * r_max));
-  const int NEDDY = (int)trunc(vol / pow(rep_radius, 3));
+  u0 = 823.6;
+  dt = 0.00000002;
+  delta = 0.007;
+  ti = 0.01;
 
-  Real prm[NPARAM];
-  prm[P_XMIN] = x_min;
-  prm[P_XMAX] = x_max;
-  prm[P_XPLANE] = x_plane;
-  prm[P_EYMIN] = eddy_y_min;
-  prm[P_EYMAX] = eddy_y_max;
-  prm[P_EZMIN] = eddy_z_min;
-  prm[P_EZMAX] = eddy_z_max;
-  prm[P_RADIUS] = rep_radius;
-  prm[P_INCREMENT] = U0 * DT;
-  prm[P_SHAPENORM] = 1.0 / 1.5829045;
-  prm[P_U0TI] = U0 * TI;
-  /* One flow-through takes (x_max - x_min) / (u0*dt) steps. Size the transverse
-     drift so an eddy can cross the box in about that time -- fast enough to
-     decorrelate, and still well under one cell per step (0.29 cells in y,
-     0.43 in z at the default resolution), which is what keeps migration local. */
-  {
-    const Real nflow = (x_max - x_min) / (U0 * DT);
-    prm[P_VTY] = (eddy_y_max - eddy_y_min) / nflow;
-    prm[P_VTZ] = (eddy_z_max - eddy_z_min) / nflow;
-  }
+  y_min = 0.0;   y_max = 0.009;
+  z_min = 0.0;   z_max = 0.05;
+
+  ny = 100;
+  nz = 150;
+
+  seed_gbl = 2893328493u;   /* oSEM's seed_gbl */
+  niter = 2000;
+  nprint = 200;
+  nout = 0;
+  /* minstd_rand per particle: 130x faster than mt19937 (0.08 vs 10.99 ms/step)
+     at the same rank invariance, and measured clean on the correlation that
+     matters -- see ops_particle_random.h. Override with -rng. */
+  rng_method = OPS_PRNG_MINSTD;
+
+  /* Command line overrides the defaults above, before anything is derived
+     from them. */
+  parse_args(argc, argv);
+
+  /* Derived geometry. r_max is the eddy search radius: it sets the streamwise
+     extent of the eddy box and the padding on the plane, because an eddy
+     further away than that contributes exactly nothing. */
+  r_max = 0.41 * delta;
+
+  x_min = -r_max;
+  x_max = r_max;
+  x_plane = 0.0;
+
+  eddy_y_min = y_min;
+  eddy_y_max = y_max + r_max;
+  eddy_z_min = z_min - r_max;
+  eddy_z_max = z_max + r_max;
+
+  eddy_radius = 0.2 * delta;
+  increment = u0 * dt;
+  shape_norm = 1.0 / 1.5829045;
+  u0ti = u0 * ti;
+
+  /* One eddy per cube of side eddy_radius, over the box volume. */
+  vol = fabs((x_max - x_min) * (y_max - y_min + 2 * r_max) *
+             (z_max - z_min + 2 * r_max));
+  eddies = (int)trunc(vol / pow(eddy_radius, 3));
+
+  /* One flow-through takes (x_max - x_min) / increment steps. Size the
+     transverse drift so an eddy can cross the box in about that time -- fast
+     enough to decorrelate, still well under one cell per step, which is what
+     keeps migration local. */
+  const Real nflow = (x_max - x_min) / increment;
+  vt_y = (eddy_y_max - eddy_y_min) / nflow;
+  vt_z = (eddy_z_max - eddy_z_min) / nflow;
 
   /* ---- 2. block, grid dats, stencils ----------------------------- */
 
   ops_block block = ops_decl_block(2, "osem_block");
 
-  int size[] = {NY + 1, NZ + 1};
+  int size[] = {ny + 1, nz + 1};
   int base[] = {0, 0};
   int d_m[] = {-1, -1};
   int d_p[] = {1, 1};
@@ -259,7 +275,7 @@ int main(int argc, char **argv) {
   /* ---- 3. reductions --------------------------------------------- */
 
   ops_reduction h_all = ops_decl_reduction_handle(
-      NEDDY * NCOMP * sizeof(double), "double", "all_eddies");
+      eddies * NCOMP * sizeof(double), "double", "all_eddies");
   ops_reduction h_cnt =
       ops_decl_reduction_handle(sizeof(int), "int", "eddy_count");
   ops_reduction h_stat =
@@ -296,18 +312,35 @@ int main(int argc, char **argv) {
 
   /* ---- 5. partition, coordinates, particle setup ----------------- */
 
+  /* Register the constants. Must precede ops_partition, and it is what makes
+     them visible to translator-generated and device code rather than only to
+     this translation unit. */
+  ops_decl_const("u0", 1, "double", &u0);
+  ops_decl_const("dt", 1, "double", &dt);
+  ops_decl_const("delta", 1, "double", &delta);
+  ops_decl_const("u0ti", 1, "double", &u0ti);
+  ops_decl_const("x_min", 1, "double", &x_min);
+  ops_decl_const("x_max", 1, "double", &x_max);
+  ops_decl_const("x_plane", 1, "double", &x_plane);
+  ops_decl_const("eddy_y_min", 1, "double", &eddy_y_min);
+  ops_decl_const("eddy_y_max", 1, "double", &eddy_y_max);
+  ops_decl_const("eddy_z_min", 1, "double", &eddy_z_min);
+  ops_decl_const("eddy_z_max", 1, "double", &eddy_z_max);
+  ops_decl_const("eddy_radius", 1, "double", &eddy_radius);
+  ops_decl_const("increment", 1, "double", &increment);
+  ops_decl_const("shape_norm", 1, "double", &shape_norm);
+  ops_decl_const("vt_y", 1, "double", &vt_y);
+  ops_decl_const("vt_z", 1, "double", &vt_z);
+  ops_decl_const("eddies", 1, "int", &eddies);
+  ops_decl_const("ny", 1, "int", &ny);
+  ops_decl_const("nz", 1, "int", &nz);
+
   ops_partition("");
 
-  const Real org[2] = {eddy_y_min, eddy_z_min};
-  const Real span[2] = {eddy_y_max - eddy_y_min, eddy_z_max - eddy_z_min};
-  const int nn[2] = {NY, NZ};
-  int grid_range[] = {0, NY + 1, 0, NZ + 1};
+  int grid_range[] = {0, ny + 1, 0, nz + 1};
 
   ops_par_loop(KerInitGrid, "KerInitGrid", block, 2, grid_range,
-               ops_arg_dat(crd, 2, S2D_00, "double", OPS_WRITE),
-               ops_arg_gbl(org, 2, "double", OPS_READ),
-               ops_arg_gbl(span, 2, "double", OPS_READ),
-               ops_arg_gbl(nn, 2, "int", OPS_READ), ops_arg_idx());
+               ops_arg_dat(crd, 2, S2D_00, "double", OPS_WRITE), ops_arg_idx());
 
   ops_par_loop(KerInitRST, "KerInitRST", block, 2, grid_range,
                ops_arg_dat(a11, 1, S2D_00, "double", OPS_WRITE),
@@ -315,31 +348,29 @@ int main(int argc, char **argv) {
                ops_arg_dat(a22, 1, S2D_00, "double", OPS_WRITE),
                ops_arg_dat(a31, 1, S2D_00, "double", OPS_WRITE),
                ops_arg_dat(a32, 1, S2D_00, "double", OPS_WRITE),
-               ops_arg_dat(a33, 1, S2D_00, "double", OPS_WRITE),
-               ops_arg_gbl(prm, NPARAM, "double", OPS_READ));
+               ops_arg_dat(a33, 1, S2D_00, "double", OPS_WRITE));
 
   ops_particle_setup_partition();
-  seed_eddies(particle, p_pos, p_gid, NEDDY, prm);
+  seed_eddies(particle, p_pos, p_gid, eddies);
   ops_particle_setup_maps_with_dats(particle, dat_border, nborder);
 
   Real range_parts[] = {eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max};
-  int neddy_gbl = NEDDY;
 
   ops_printf("\n=== oSEM with OPS particles (2-D inlet) ===\n");
-  ops_printf("inlet %d x %d nodes over [%.4f, %.4f] x [%.4f, %.4f]\n", NY + 1,
-             NZ + 1, eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max);
-  ops_printf("eddies %d   radius %.5f   u0*dt %.3e   %d steps\n", NEDDY,
-             rep_radius, prm[P_INCREMENT], NITER);
-  ops_printf("gather buffer %d x %d doubles = %zu bytes/step\n", NEDDY, NCOMP,
-             NEDDY * NCOMP * sizeof(double));
+  ops_printf("inlet %d x %d nodes over [%.4f, %.4f] x [%.4f, %.4f]\n", ny + 1,
+             nz + 1, eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max);
+  ops_printf("eddies %d   radius %.5f   u0*dt %.3e   %d steps\n", eddies,
+             eddy_radius, increment, niter);
+  ops_printf("gather buffer %d x %d doubles = %zu bytes/step\n", eddies, NCOMP,
+             eddies * NCOMP * sizeof(double));
 
   /* ---- 6. initialise the eddies ---------------------------------- */
 
-  ops_prandom_shared_init(SEED);
-  ops_printf("rng: %s\n", RNG == OPS_PRNG_MINSTD ? "minstd_rand per particle"
-             : (RNG == OPS_PRNG_SHARED ? "shared engine, storage order"
+  ops_prandom_shared_init(seed_gbl);
+  ops_printf("rng: %s\n", rng_method == OPS_PRNG_MINSTD ? "minstd_rand per particle"
+             : (rng_method == OPS_PRNG_SHARED ? "shared engine, storage order"
                                        : "mt19937 per particle"));
-  ops_fill_random_uniform_particle(particle, p_rnd, p_gid, SEED, 1u, RNG);
+  ops_fill_random_uniform_particle(particle, p_rnd, p_gid, seed_gbl, 1u, rng_method);
 
   ops_particle_par_loop(
       KerInitEddy, "KerInitEddy", particle, 2, OPS_PARTICLE_ITERATE_LOCAL,
@@ -348,10 +379,9 @@ int main(int argc, char **argv) {
       ops_arg_dat_particle(p_r, 1, "double", particle, map, OPS_WRITE),
       ops_arg_dat_particle(p_eps, 3, "double", particle, map, OPS_WRITE),
       ops_arg_dat_particle(p_vt, 2, "double", particle, map, OPS_WRITE),
-      ops_arg_dat_particle(p_rnd, 6, "double", particle, map, OPS_READ),
-      ops_arg_gbl(prm, NPARAM, "double", OPS_READ));
+      ops_arg_dat_particle(p_rnd, 6, "double", particle, map, OPS_READ));
 
-  std::vector<Real> all_eddies(NEDDY * NCOMP);
+  std::vector<Real> all_eddies(eddies * NCOMP);
 
   /* ---- 7. time loop ---------------------------------------------- */
 
@@ -361,24 +391,24 @@ int main(int argc, char **argv) {
 
   /* Output is off by default: the timings quoted in the README were measured
      without it, and a frame write is not part of any of the three kernels. */
-  osem_io_params io = {NY,
-                       NZ,
-                       NEDDY,
-                       NITER,
-                       NOUT,
-                       DT,
-                       prm[P_U0TI],
+  osem_io_params io = {ny,
+                       nz,
+                       eddies,
+                       niter,
+                       nout,
+                       dt,
+                       u0ti,
                        x_plane,
                        {eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max},
                        {0.0, 0.0, 0.0}};
-  if (NOUT > 0) {
-    remove_stale_output("osem_output", NITER, NOUT, h_sync);
-    ops_printf("writing %d HDF5 frames (osem_output_??????.h5)\n", NITER / NOUT);
+  if (nout > 0) {
+    remove_stale_output("osem_output", niter, nout, h_sync);
+    ops_printf("writing %d HDF5 frames (osem_output_??????.h5)\n", niter / nout);
   } else {
     ops_printf("hint: add -nout 10 to write frames for plot_osem_h5.py\n");
   }
 
-  for (int it = 1; it <= NITER; it++) {
+  for (int it = 1; it <= niter; it++) {
 
     /* -- convect: purely per-eddy, exactly like the advance kernel -- */
     /* Refresh the randoms, exactly as oSEM does before convect_eddies. Keyed
@@ -386,8 +416,8 @@ int main(int argc, char **argv) {
        happens to own it. Timed separately from the convect loop below -- they
        are different costs and must not be conflated. */
     ops_timers(&c0, &w0);
-    ops_fill_random_uniform_particle(particle, p_rnd, p_gid, SEED,
-                                     (unsigned int)it + 1u, RNG);
+    ops_fill_random_uniform_particle(particle, p_rnd, p_gid, seed_gbl,
+                                     (unsigned int)it + 1u, rng_method);
     ops_timers(&c1, &w1);
     t_rng += w1 - w0;
 
@@ -401,8 +431,7 @@ int main(int argc, char **argv) {
         ops_arg_dat_particle(p_r, 1, "double", particle, map, OPS_RW),
         ops_arg_dat_particle(p_eps, 3, "double", particle, map, OPS_RW),
         ops_arg_dat_particle(p_vt, 2, "double", particle, map, OPS_RW),
-        ops_arg_dat_particle(p_rnd, 6, "double", particle, map, OPS_READ),
-        ops_arg_gbl(prm, NPARAM, "double", OPS_READ));
+        ops_arg_dat_particle(p_rnd, 6, "double", particle, map, OPS_READ));
 
     update_maps(particle, dat_border, nborder, dat_forward, nforward);
     ops_timers(&c1, &w1);
@@ -418,7 +447,7 @@ int main(int argc, char **argv) {
         ops_arg_dat_particle(p_r, 1, "double", particle, map, OPS_READ),
         ops_arg_dat_particle(p_eps, 3, "double", particle, map, OPS_READ),
         ops_arg_dat_particle(p_gid, 1, "int", particle, map, OPS_READ),
-        ops_arg_reduce(h_all, NEDDY * NCOMP, "double", OPS_INC));
+        ops_arg_reduce(h_all, eddies * NCOMP, "double", OPS_INC));
     ops_reduction_result(h_all, all_eddies.data());
     ops_timers(&c1, &w1);
     t_gather += w1 - w0;
@@ -431,10 +460,10 @@ int main(int argc, char **argv) {
         ops_arg_dat_particle(p_gid, 1, "int", particle, map, OPS_READ),
         ops_arg_reduce(h_cnt, 1, "int", OPS_INC));
     ops_reduction_result(h_cnt, &count);
-    if (count != NEDDY && lost_at < 0) {
+    if (count != eddies && lost_at < 0) {
       lost_at = it;
       ops_printf("\n*** eddy population changed at step %d: %d of %d ***\n", it,
-                 count, NEDDY);
+                 count, eddies);
       ops_printf("*** the recycle teleport is outside what OPS particle"
                  " migration can express -- see the README ***\n\n");
     }
@@ -452,15 +481,13 @@ int main(int argc, char **argv) {
                  ops_arg_dat(a31, 1, S2D_00, "double", OPS_READ),
                  ops_arg_dat(a32, 1, S2D_00, "double", OPS_READ),
                  ops_arg_dat(a33, 1, S2D_00, "double", OPS_READ),
-                 ops_arg_gbl(all_eddies.data(), NEDDY * NCOMP, "double",
-                             OPS_READ),
-                 ops_arg_gbl(&neddy_gbl, 1, "int", OPS_READ),
-                 ops_arg_gbl(prm, NPARAM, "double", OPS_READ));
+                 ops_arg_gbl(all_eddies.data(), eddies * NCOMP, "double",
+                             OPS_READ));
     ops_timers(&c1, &w1);
     t_fluct += w1 - w0;
 
     /* -- output (not timed) ---------------------------------------- */
-    if (NOUT > 0 && it % NOUT == 0) {
+    if (nout > 0 && it % nout == 0) {
       Real fs[4] = {0, 0, 0, 0};
       ops_par_loop(KerFluctStats, "KerFluctStats", block, 2, grid_range,
                    ops_arg_dat(uprime, 1, S2D_00, "double", OPS_READ),
@@ -476,7 +503,7 @@ int main(int argc, char **argv) {
       write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, io, it);
     }
 
-    if (it % NPRINT == 0) ops_printf("step %5d / %d\n", it, NITER);
+    if (it % nprint == 0) ops_printf("step %5d / %d\n", it, niter);
   }
 
   /* ---- 8. report -------------------------------------------------- */
@@ -494,23 +521,23 @@ int main(int argc, char **argv) {
      the eps draws are the first suspect. */
   {
     double m[3] = {0, 0, 0};
-    for (int i = 0; i < NEDDY; i++)
+    for (int i = 0; i < eddies; i++)
       for (int k = 0; k < 3; k++) m[k] += all_eddies[NCOMP * i + E_SX + k];
     /* Pairwise sign correlation. The bug that skewed an earlier version was a
        correlation, not a bias, so the means alone are not a sufficient check. */
     double c01 = 0, c02 = 0, c12 = 0;
-    for (int i = 0; i < NEDDY; i++) {
+    for (int i = 0; i < eddies; i++) {
       const double a0 = all_eddies[NCOMP * i + E_SX];
       const double a1 = all_eddies[NCOMP * i + E_SY];
       const double a2 = all_eddies[NCOMP * i + E_SZ];
       c01 += a0 * a1; c02 += a0 * a2; c12 += a1 * a2;
     }
     ops_printf("\nmean eps (x,y,z) over %d eddies: %+.4f %+.4f %+.4f"
-               "   (0 = balanced)\n", NEDDY, m[0] / NEDDY, m[1] / NEDDY,
-               m[2] / NEDDY);
+               "   (0 = balanced)\n", eddies, m[0] / eddies, m[1] / eddies,
+               m[2] / eddies);
     ops_printf("eps correlations xy/xz/yz: %+.4f %+.4f %+.4f"
-               "   (0 = independent)\n", c01 / NEDDY, c02 / NEDDY,
-               c12 / NEDDY);
+               "   (0 = independent)\n", c01 / eddies, c02 / eddies,
+               c12 / eddies);
 
     /* THE ONE THAT MATTERS: does an eddy's SIGN correlate with its POSITION?
        That is the failure mode that skewed an earlier version -- compute_fluct
@@ -518,32 +545,32 @@ int main(int argc, char **argv) {
        The sign-vs-sign correlations above do not test it. */
     {
       double mx = 0.0;
-      for (int i = 0; i < NEDDY; i++) mx += all_eddies[NCOMP * i + E_X];
-      mx /= NEDDY;
+      for (int i = 0; i < eddies; i++) mx += all_eddies[NCOMP * i + E_X];
+      mx /= eddies;
       double sx = 0.0, px = 0.0, py = 0.0, pz = 0.0;
-      for (int i = 0; i < NEDDY; i++) {
+      for (int i = 0; i < eddies; i++) {
         const double xc = all_eddies[NCOMP * i + E_X] - mx;
         sx += xc * xc;
         px += xc * all_eddies[NCOMP * i + E_SX];
         py += xc * all_eddies[NCOMP * i + E_SY];
         pz += xc * all_eddies[NCOMP * i + E_SZ];
       }
-      sx = sqrt(sx / NEDDY);
+      sx = sqrt(sx / eddies);
       ops_printf("corr(x, eps_x/y/z):        %+.4f %+.4f %+.4f"
                  "   (|.|>0.06 is suspicious at N=%d)\n",
-                 px / NEDDY / sx, py / NEDDY / sx, pz / NEDDY / sx, NEDDY);
+                 px / eddies / sx, py / eddies / sx, pz / eddies / sx, eddies);
     }
   }
 
   const Real n = (st[3] > 0.0) ? st[3] : 1.0;
   ops_printf("\n--- final inlet plane --------------------------------\n");
   ops_printf("rms u' = %.4f   v' = %.4f   w' = %.4f   (u0*TI = %.4f)\n",
-             sqrt(st[0] / n), sqrt(st[1] / n), sqrt(st[2] / n), prm[P_U0TI]);
+             sqrt(st[0] / n), sqrt(st[1] / n), sqrt(st[2] / n), u0ti);
   ops_printf("eddy population: %s\n",
              lost_at < 0 ? "conserved for the whole run"
                          : "CHANGED -- see the message above");
 
-  const double ms = 1000.0 / (double)NITER;
+  const double ms = 1000.0 / (double)niter;
   ops_printf("\n--- cost per timestep (ms, wall) ---------------------\n");
   ops_printf("rng fill            %9.3f\n", t_rng * ms);
   ops_printf("convect + migrate   %9.3f\n", t_convect * ms);

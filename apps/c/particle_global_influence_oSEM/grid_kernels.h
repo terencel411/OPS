@@ -16,24 +16,22 @@
 #ifndef _GRID_KERNELS_H_
 #define _GRID_KERNELS_H_
 
-void KerInitGrid(ACC<double> &crd, const double *org, const double *span,
-                 const int *n, const int *idx) {
-  crd(0, 0, 0) = org[0] + span[0] * (double)idx[0] / (double)n[0];
-  crd(1, 0, 0) = org[1] + span[1] * (double)idx[1] / (double)n[1];
+void KerInitGrid(ACC<double> &crd, const int *idx) {
+  crd(0, 0, 0) = eddy_y_min + (eddy_y_max - eddy_y_min) * (double)idx[0] / (double)ny;
+  crd(1, 0, 0) = eddy_z_min + (eddy_z_max - eddy_z_min) * (double)idx[1] / (double)nz;
 }
 
 /* The Cholesky factor of the Reynolds stress tensor. oSEM also carries a
    boundary-layer profile variant (instantiate_RST_TBL) driven by a tabulated
    dataset; this is the isotropic one, which keeps the app self-contained. */
 void KerInitRST(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
-                ACC<double> &a31, ACC<double> &a32, ACC<double> &a33,
-                const double *prm) {
-  a11(0, 0) = prm[P_U0TI];
+                ACC<double> &a31, ACC<double> &a32, ACC<double> &a33) {
+  a11(0, 0) = u0ti;
   a21(0, 0) = 0.0;
-  a22(0, 0) = prm[P_U0TI];
+  a22(0, 0) = u0ti;
   a31(0, 0) = 0.0;
   a32(0, 0) = 0.0;
-  a33(0, 0) = prm[P_U0TI];
+  a33(0, 0) = u0ti;
 }
 
 /* ------------------------------------------------------------------ *
@@ -56,14 +54,14 @@ void KerComputeFluct(ACC<double> &uprime, ACC<double> &vprime,
                      const ACC<double> &a11, const ACC<double> &a21,
                      const ACC<double> &a22, const ACC<double> &a31,
                      const ACC<double> &a32, const ACC<double> &a33,
-                     const double *all, const int *neddy, const double *prm) {
+                     const double *all) {
 
   const double y = crd(0, 0, 0);
   const double z = crd(1, 0, 0);
 
   double u = 0.0, v = 0.0, w = 0.0;
 
-  for (int i = 0; i < *neddy; i++) {
+  for (int i = 0; i < eddies; i++) {
     const double ex = all[NCOMP * i + E_X];
     const double ey = all[NCOMP * i + E_Y];
     const double ez = all[NCOMP * i + E_Z];
@@ -74,11 +72,11 @@ void KerComputeFluct(ACC<double> &uprime, ACC<double> &vprime,
     const double rsq = ex * ex + dy * dy + dz * dz;
 
     if (rsq < er * er) {
-      const double dx = ex - prm[P_XPLANE];
+      const double dx = ex - x_plane;
       double shape = (fabs(dx) < er)
                          ? exp(-0.5 * dx * dx / (er * er))
                          : 0.0;
-      shape *= prm[P_SHAPENORM];
+      shape *= shape_norm;
       shape *= exp(-0.5 * dy * dy / (er * er));
       shape *= exp(-0.5 * dz * dz / (er * er));
 

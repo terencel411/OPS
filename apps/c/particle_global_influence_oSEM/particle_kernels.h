@@ -38,16 +38,15 @@
  * (see ops_particle_random.h).
  */
 void KerInitEddy(ACCP<double> &px, ACCP<double> &pr, ACCP<double> &peps,
-                 ACCP<double> &pvt, const ACCP<double> &rnd,
-                 const double *prm) {
+                 ACCP<double> &pvt, const ACCP<double> &rnd) {
 
-  px(0) = prm[P_XMIN] + rnd(0) * (prm[P_XMAX] - prm[P_XMIN]);
-  pr(0) = prm[P_RADIUS];
+  px(0) = x_min + rnd(0) * (x_max - x_min);
+  pr(0) = eddy_radius;
 
   /* Transverse velocity, drawn once and kept: this is what replaces oSEM's
      re-randomisation, so the eddy drifts to a new (y,z) instead of jumping. */
-  pvt(0) = prm[P_VTY] * (2.0 * rnd(1) - 1.0);
-  pvt(1) = prm[P_VTZ] * (2.0 * rnd(2) - 1.0);
+  pvt(0) = vt_y * (2.0 * rnd(1) - 1.0);
+  pvt(1) = vt_z * (2.0 * rnd(2) - 1.0);
 
   peps(0) = (rnd(3) < 0.5) ? -1.0 : 1.0;
   peps(1) = (rnd(4) < 0.5) ? -1.0 : 1.0;
@@ -80,26 +79,26 @@ void KerInitEddy(ACCP<double> &px, ACCP<double> &pr, ACCP<double> &peps,
  */
 void KerConvectEddies(ACCP<double> &pos, ACCP<double> &px, ACCP<double> &pr,
                       ACCP<double> &peps, ACCP<double> &pvt,
-                      const ACCP<double> &rnd, const double *prm) {
+                      const ACCP<double> &rnd) {
 
-  px(0) += prm[P_INCREMENT];
+  px(0) += increment;
 
   /* Continuous transverse drift, with reflection off the box faces. A
      reflection is a small local correction, never a jump. */
   pos(0) += pvt(0);
   pos(1) += pvt(1);
 
-  if (pos(0) < prm[P_EYMIN]) { pos(0) = 2.0 * prm[P_EYMIN] - pos(0); pvt(0) = -pvt(0); }
-  if (pos(0) > prm[P_EYMAX]) { pos(0) = 2.0 * prm[P_EYMAX] - pos(0); pvt(0) = -pvt(0); }
-  if (pos(1) < prm[P_EZMIN]) { pos(1) = 2.0 * prm[P_EZMIN] - pos(1); pvt(1) = -pvt(1); }
-  if (pos(1) > prm[P_EZMAX]) { pos(1) = 2.0 * prm[P_EZMAX] - pos(1); pvt(1) = -pvt(1); }
+  if (pos(0) < eddy_y_min) { pos(0) = 2.0 * eddy_y_min - pos(0); pvt(0) = -pvt(0); }
+  if (pos(0) > eddy_y_max) { pos(0) = 2.0 * eddy_y_max - pos(0); pvt(0) = -pvt(0); }
+  if (pos(1) < eddy_z_min) { pos(1) = 2.0 * eddy_z_min - pos(1); pvt(1) = -pvt(1); }
+  if (pos(1) > eddy_z_max) { pos(1) = 2.0 * eddy_z_max - pos(1); pvt(1) = -pvt(1); }
 
-  if (px(0) > prm[P_XMAX]) {
-    px(0) = prm[P_XMIN];
+  if (px(0) > x_max) {
+    px(0) = x_min;
     peps(0) = (rnd(3) < 0.5) ? -1.0 : 1.0;
     peps(1) = (rnd(4) < 0.5) ? -1.0 : 1.0;
     peps(2) = (rnd(5) < 0.5) ? -1.0 : 1.0;
-    pr(0) = prm[P_RADIUS];
+    pr(0) = eddy_radius;
   }
 }
 

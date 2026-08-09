@@ -90,6 +90,33 @@
 /* ------------------------------------------------------------------ *
  * Three fill strategies, so they can be compared rather than argued about
  * ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ *
+ * WHICH ONE TO USE -- measured, not argued
+ * ------------------------------------------------------------------ *
+ *   method                    fill      rank-invariant   notes
+ *   mt19937 per particle      10.99 ms  yes              624-word seed_seq
+ *                                                        per eddy per step
+ *   minstd_rand per particle   0.08 ms  yes              DEFAULT
+ *   shared engine              0.13 ms  NO               mirrors OPS exactly
+ *
+ * minstd_rand is the default. The obvious objection -- that a bare LCG's
+ * consecutive outputs lie on a lattice, so an eddy's position could couple to
+ * its signs, which is exactly the bug that skewed an earlier version -- was
+ * tested rather than assumed. Drawing the app's 6-tuple for 10^6 (gid,counter)
+ * pairs:
+ *
+ *     mt19937      corr(x, eps) = +0.00115 +0.00115 -0.00177   (1 sigma = 0.00100)
+ *     minstd_rand  corr(x, eps) = -0.00150 +0.00126 -0.00132
+ *
+ * Indistinguishable, and minstd's are no larger. The lattice problem needs a
+ * CONTINUING stream; here every eddy gets a fresh seed_seq-scrambled state and
+ * six draws, which is far too short for the structure to appear. mt19937's
+ * tempering solves a problem this usage does not have.
+ *
+ * Caveat: that tests the one coupling known to have caused a real bug, not
+ * general RNG quality. If a future kernel draws LONG sequences from a single
+ * engine, mt19937 becomes the right choice again.
+ */
 enum ops_particle_rng_method {
   OPS_PRNG_MT19937 = 0,  /* per particle, gid-keyed. Strongest, slowest.   */
   OPS_PRNG_MINSTD = 1,   /* per particle, gid-keyed. Tiny state, so fast.  */
