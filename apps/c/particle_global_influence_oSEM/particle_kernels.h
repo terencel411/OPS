@@ -21,71 +21,66 @@
 /* ------------------------------------------------------------------ *
  * Initialisation  <- instantiate_eddies
  * ------------------------------------------------------------------ *
- * Positions (y,z) are seeded on the host, because the particle count has to
- * be set there. Everything else is drawn here from the eddy's own LCG, in the
- * same order oSEM draws it: x, then the three signs.
+ * Positions (y,z) are seeded on the host, because the particle count has to be
+ * set there. Everything else is drawn here.
+ *
+ * The randoms arrive PRE-FILLED in a dat, exactly as in oSEM: the driver calls
+ * ops_fill_random_uniform_particle() before the loop, the kernel just reads.
+ * `rnd` carries six independent uniforms per eddy:
+ *
+ *     0        x position
+ *     1, 2     transverse velocity (y, z)
+ *     3, 4, 5  the signs eps_x, eps_y, eps_z
+ *
+ * Independent is the operative word. Every component is a separate hash of
+ * (seed, gid, counter, component), not a successive state of one stream, so
+ * the position/sign correlation that skewed the earlier version cannot recur
+ * (see ops_particle_random.h).
  */
 void KerInitEddy(ACCP<double> &px, ACCP<double> &pr, ACCP<double> &peps,
-                 ACCP<double> &pvt, ACCP<int> &rng, const double *prm) {
+                 ACCP<double> &pvt, const ACCP<double> &rnd,
+                 const double *prm) {
 
-  unsigned int s = (unsigned int)rng(0);
-
-  s = lcg_next(s);
-  px(0) = prm[P_XMIN] + lcg_unit(s) * (prm[P_XMAX] - prm[P_XMIN]);
-
+  px(0) = prm[P_XMIN] + rnd(0) * (prm[P_XMAX] - prm[P_XMIN]);
   pr(0) = prm[P_RADIUS];
 
-  /* A transverse velocity, drawn once and kept. This is what replaces the
-     re-randomisation: instead of jumping to a new (y,z) on recycle, the eddy
-     drifts there continuously. Uniform in [-1,1] times the scale. */
-  s = lcg_next(s);
-  pvt(0) = prm[P_VTY] * (2.0 * lcg_unit(s) - 1.0);
-  s = lcg_next(s);
-  pvt(1) = prm[P_VTZ] * (2.0 * lcg_unit(s) - 1.0);
+  /* Transverse velocity, drawn once and kept: this is what replaces oSEM's
+     re-randomisation, so the eddy drifts to a new (y,z) instead of jumping. */
+  pvt(0) = prm[P_VTY] * (2.0 * rnd(1) - 1.0);
+  pvt(1) = prm[P_VTZ] * (2.0 * rnd(2) - 1.0);
 
-  s = lcg_next(s);
-  peps(0) = (double)lcg_sign(s);
-  s = lcg_next(s);
-  peps(1) = (double)lcg_sign(s);
-  s = lcg_next(s);
-  peps(2) = (double)lcg_sign(s);
-
-  rng(0) = (int)s;
+  peps(0) = (rnd(3) < 0.5) ? -1.0 : 1.0;
+  peps(1) = (rnd(4) < 0.5) ? -1.0 : 1.0;
+  peps(2) = (rnd(5) < 0.5) ? -1.0 : 1.0;
 }
 
 /* ------------------------------------------------------------------ *
  * Convection  <- convect_eddies
  * ------------------------------------------------------------------ *
- * One step of streamwise convection, and a recycle when the eddy leaves the
- * downstream face: it re-enters at x_min with a fresh random (y,z), a fresh
- * set of signs and a reset radius. Body for body, this is oSEM's kernel; only
- * the accessors and the source of the randoms differ.
+ * One step of streamwise convection, plus the recycle when the eddy leaves the
+ * downstream face. Body for body this is oSEM's kernel; what differs is the
+ * accessors, the source of the randoms, and the transverse motion.
  *
- * CONTINUOUS RE-INJECTION. oSEM recycles an exiting eddy by assigning it a new
- * random (y,z). That is a jump to an arbitrary point in the plane, and OPS
- * particle migration only hands a particle to a NEIGHBOURING rank -- measured
- * here to segfault from three ranks up (README).
+ * CONTINUOUS RE-INJECTION. oSEM recycles by assigning a new random (y,z). That
+ * is a jump to an arbitrary point in the plane, and OPS particle migration only
+ * hands a particle to a NEIGHBOURING rank -- measured to fail from three ranks
+ * up (README).
  *
- * The key observation is that only ONE of the three coordinates is a problem.
- * x is not a spatial dimension of this block: it is an ordinary particle dat,
- * nothing is decomposed along it, so resetting x to x_min is free -- no
- * migration is involved at all. It is purely the (y,z) assignment that jumps.
+ * Only one of the three coordinates was ever the problem. x is not a spatial
+ * dimension of this block: it is an ordinary particle dat, nothing is
+ * decomposed along it, so resetting x to x_min involves no migration at all.
+ * It was purely the (y,z) assignment that jumped.
  *
- * So the eddy is given a transverse VELOCITY instead. It drifts across the
- * plane continuously, a fraction of a cell per step, and reflects off the eddy
- * box faces. Every step is small and local, so migration only ever sees a move
- * into an adjacent subdomain -- exactly the regime particle_global_influence
- * lives in, and it works at every rank count.
+ * So the eddy carries a transverse velocity and drifts, reflecting off the box
+ * faces -- a fraction of a cell per step, always local. The statistical
+ * refreshment survives because the part that matters is not spatial: the SIGNS
+ * are still re-drawn on every recycle, and they are what randomises u',v',w'.
  *
- * The statistical refreshment survives: the SIGNS are still re-drawn on every
- * recycle, and they are what randomises u',v',w'. The signs are not spatial, so
- * re-drawing them costs nothing. The positions decorrelate by drift instead of
- * by teleport, on a timescale set by P_VTY / P_VTZ (chosen so an eddy crosses
- * the box in roughly one flow-through time).
+ * `rnd` slots 3,4,5 hold this step's sign draws, pre-filled by the driver.
  */
 void KerConvectEddies(ACCP<double> &pos, ACCP<double> &px, ACCP<double> &pr,
-                      ACCP<double> &peps, ACCP<double> &pvt, ACCP<int> &rng,
-                      const double *prm) {
+                      ACCP<double> &peps, ACCP<double> &pvt,
+                      const ACCP<double> &rnd, const double *prm) {
 
   px(0) += prm[P_INCREMENT];
 
@@ -101,17 +96,10 @@ void KerConvectEddies(ACCP<double> &pos, ACCP<double> &px, ACCP<double> &pr,
 
   if (px(0) > prm[P_XMAX]) {
     px(0) = prm[P_XMIN];
-
-    unsigned int s = (unsigned int)rng(0);
-    s = lcg_next(s);
-    peps(0) = (double)lcg_sign(s);
-    s = lcg_next(s);
-    peps(1) = (double)lcg_sign(s);
-    s = lcg_next(s);
-    peps(2) = (double)lcg_sign(s);
-
+    peps(0) = (rnd(3) < 0.5) ? -1.0 : 1.0;
+    peps(1) = (rnd(4) < 0.5) ? -1.0 : 1.0;
+    peps(2) = (rnd(5) < 0.5) ? -1.0 : 1.0;
     pr(0) = prm[P_RADIUS];
-    rng(0) = (int)s;
   }
 }
 

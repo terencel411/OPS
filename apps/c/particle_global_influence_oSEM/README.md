@@ -12,6 +12,12 @@ make influence_osem_dev_mpi
 OMP_NUM_THREADS=1 mpirun -np 2 ./influence_osem_dev_mpi -niter 150
 ```
 
+> **New to the method?** [`UNDERSTANDING_oSEM.md`](./UNDERSTANDING_oSEM.md)
+> explains what SEM is doing from first principles — what the eddies are, why
+> their positions are 3-D when the output is a 2-D plane, how they traverse the
+> domain, and what each constant means — then sets out how this app's approach
+> differs. Start there if the code below is not self-explanatory.
+
 ## The mapping
 
 | oSEM | here | role |
@@ -143,7 +149,10 @@ in the git history.
 
 | File | Contents |
 |---|---|
-| `osem_common.h` | gather layout, parameter block, the mixed LCG |
+| `osem_common.h` | gather layout and parameter block |
+| `ops_particle_random.h` | `ops_fill_random_uniform_particle()` — the RNG fill |
 | `particle_kernels.h` | init / convect / publish / count — the eddies |
 | `grid_kernels.h` | grid, RST, `compute_fluct` — the inlet plane |
 | `influence_osem.cpp` | driver |
+| `osem_io.h` / `plot_osem_h5.py` | per-step HDF5 frames, and the plots |
+| `UNDERSTANDING_oSEM.md` | the method explained, and how this app differs |

@@ -205,7 +205,7 @@ OPS particles instead of grid dats on a second block.**
 |---|---|---|
 | eddy storage | 7 grid dats on a separate `eddy_block` | OPS particles in the inlet block |
 | eddy → `compute_fluct` | `ops_dat_fetch_data` × 7 into host arrays | array-valued `ops_reduction` allgather |
-| randoms | `ops_fill_random_uniform` into int dats, per step | per-eddy LCG state carried as a particle dat |
+| randoms | `ops_fill_random_uniform` into int dats, per step | `ops_fill_random_uniform_particle` into a particle dat, per step, keyed on global id |
 | blocks | 2 (`inlet_block`, `eddy_block`) | 1 |
 | recycle | new random (y, z) | continuous transverse drift |
 | correct under MPI | **no — np = 1 only** | yes, rank-invariant at np = 1, 2, 4, 8 |
@@ -241,25 +241,38 @@ are unrelated. The `ops_reduction` allgather returns the complete eddy list, in
 id order, on every rank, which is exactly the array shape `compute_fluct` already
 expected, so the kernel body ports across unchanged.
 
-## 3. Each eddy carries its own random stream
+## 3. Randoms are filled from a driver call, keyed on global id
 
-oSEM draws randoms into rank-indexed grid dats. Particles migrate between ranks,
-so a rank-indexed random dat would hand a migrating eddy somebody else's stream.
-Here the LCG state is a particle dat, so the stream belongs to the eddy and
-travels with it — which is one of the three things that make the run
-rank-invariant.
+`ops_particle_random.h` provides `ops_fill_random_uniform_particle()`, called
+from the driver before the kernels — the same shape of call as oSEM's
+`ops_fill_random_uniform(d_y_rng)`, so the kernels just read a dat.
+
+The difference is what it is keyed on. oSEM's fill is keyed on **storage
+position**, and a particle's local slot changes when it migrates or when the
+list is compacted — so the same eddy would draw from a different stream after
+moving. This one is keyed on the particle's **global id**, which is stable for
+the run and identical at any decomposition. That is one of the three things
+that make the run rank-invariant.
+
+It is also **counter-based**: each value is a pure hash of
+`(seed, gid, step, component)`, so there is no state dat to declare, migrate or
+put in the border list, and any step's draw is reproducible on demand.
 
 It also sidesteps a defect: `ops_fill_random_uniform` on an int dat never returns
 a negative value, so oSEM's `(rng < 0) ? −1 : 1` sign draws are **always +1**.
 
-**One trap this introduced.** Drawing an eddy's position and then its signs from
-consecutive LCG states makes `ε_x` a deterministic function of `x` — and since
-`compute_fluct` selects eddies by x, it selects a *biased* set of `ε_x`. That
-produced rms 8.85 / 4.89 / 6.41 when all three must be equal, with the signs
-individually unbiased so no test of the sign distribution would catch it. Fixed
-with an output mixer (`lcg_mix`). Worth remembering for any per-particle RNG: a
-running stream plus a position-dependent selection gives correlation that
-checking the random values alone will not find.
+**A trap an earlier version fell into.** That version advanced one LCG per eddy
+and took successive states for successive quantities, which made `ε_x` a
+deterministic function of `x` — and since `compute_fluct` selects eddies by x,
+it selected a *biased* set of `ε_x`. Result: rms 8.85 / 4.89 / 6.41 when all
+three must be equal, with the signs individually unbiased so no test of the sign
+distribution would have caught it.
+
+The counter-based fill removes the failure mode rather than patching it: each
+component is a separate hash input, so there are no successive states to
+correlate. Still worth remembering generally — **a running per-particle stream
+combined with any position-dependent selection produces correlation that
+checking the random values alone will not find.**
 
 ## 4. Continuous drift instead of a teleporting recycle
 

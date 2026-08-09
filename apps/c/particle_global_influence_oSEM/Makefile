@@ -18,7 +18,7 @@ include $(OPS_INSTALL_PATH)/../makefiles/Makefile.common
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.mpi
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
-HEADERS=grid_kernels.h particle_kernels.h osem_common.h osem_io.h
+HEADERS=grid_kernels.h particle_kernels.h osem_common.h osem_io.h ops_particle_random.h
 
 OPS_FILES=influence_osem.cpp
 

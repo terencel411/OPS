@@ -96,6 +96,7 @@
 #include "osem_common.h"
 #include "particle_kernels.h"
 #include "grid_kernels.h"
+#include "ops_particle_random.h"
 #include "osem_io.h"
 
 typedef double Real;
@@ -106,6 +107,8 @@ static const Real U0 = 823.6;
 static const Real DT = 0.00000002;
 static const Real DELTA = 0.007;
 static const Real TI = 0.01;
+/* oSEM's seed_gbl. Changing it changes the whole realisation. */
+static const unsigned int SEED = 2893328493u;
 
 static int NY = 100;
 static int NZ = 150;
@@ -136,7 +139,7 @@ static void parse_args(int argc, char **argv) {
  * property of the eddy rather than of where it happens to live.
  */
 static void seed_eddies(ops_particle particle, ops_dat pos, ops_dat gid,
-                        ops_dat rng, int neddy, const Real *prm) {
+                        int neddy, const Real *prm) {
 
   BoundingBox<Real> *box = (BoundingBox<Real> *)particle->box_block;
   const Real lo[2] = {box->getLocalMin().x, box->getLocalMin().y};
@@ -146,23 +149,21 @@ static void seed_eddies(ops_particle particle, ops_dat pos, ops_dat gid,
 
   Real *xp = (Real *)pos->data;
   int *ip = (int *)gid->data;
-  int *sp = (int *)rng->data;
 
   int n = 0;
   for (int i = 0; i < neddy; i++) {
-    /* Two draws per eddy from a stream seeded by its id. */
-    unsigned int s = lcg_next(2463534242u + 2654435761u * (unsigned int)i);
-    s = lcg_next(s);
-    const Real y = prm[P_EYMIN] + (prm[P_EYMAX] - prm[P_EYMIN]) * lcg_unit(s);
-    s = lcg_next(s);
-    const Real z = prm[P_EZMIN] + (prm[P_EZMAX] - prm[P_EZMIN]) * lcg_unit(s);
+    /* Same counter-based generator the fill uses, so the initial positions are
+       drawn from the identical stream: counter 0, components 0 and 1. */
+    const Real y = prm[P_EYMIN] + (prm[P_EYMAX] - prm[P_EYMIN]) *
+                                      ops_prandom_uniform(SEED, i, 0u, 0);
+    const Real z = prm[P_EZMIN] + (prm[P_EZMAX] - prm[P_EZMIN]) *
+                                      ops_prandom_uniform(SEED, i, 0u, 1);
 
     if (y < lo[0] || y >= hi[0] || z < lo[1] || z >= hi[1]) continue;
 
     xp[2 * n] = y;
     xp[2 * n + 1] = z;
     ip[n] = i;
-    sp[n] = (int)s;
     n++;
   }
 
@@ -271,13 +272,18 @@ int main(int argc, char **argv) {
   ops_dat p_eps = ops_decl_particle_dat(particle, 3, base, nd, "double", "eps");
   ops_dat p_vt = ops_decl_particle_dat(particle, 2, base, nd, "double", "vt");
   ops_dat p_gid = ops_decl_particle_dat(particle, 1, base, ni, "int", "gid");
-  ops_dat p_rng = ops_decl_particle_dat(particle, 1, base, ni, "int", "rng");
+  /* Six independent uniforms per eddy per step, filled by the driver before
+     the kernels -- the same pattern as oSEM's ops_fill_random_uniform. */
+  ops_dat p_rnd = ops_decl_particle_dat(particle, 6, base, nd, "double", "rnd");
 
   ops_particle_mapping map = ops_decl_mapping(
       particle, crd, S2D_9pt, OPS_WITH_VIRTUAL, OPS_UNIFORM_STAG, 1);
 
-  ops_dat dat_border[] = {p_pos, p_x, p_r, p_eps, p_vt, p_gid, p_rng};
-  ops_dat dat_forward[] = {p_pos, p_x, p_r, p_eps, p_vt, p_gid, p_rng};
+  /* p_rnd is deliberately NOT in either list: it is re-filled from scratch
+     every step, keyed on global id, so there is nothing to preserve across a
+     migration. */
+  ops_dat dat_border[] = {p_pos, p_x, p_r, p_eps, p_vt, p_gid};
+  ops_dat dat_forward[] = {p_pos, p_x, p_r, p_eps, p_vt, p_gid};
   const int nborder = sizeof(dat_border) / sizeof(dat_border[0]);
   const int nforward = sizeof(dat_forward) / sizeof(dat_forward[0]);
 
@@ -306,7 +312,7 @@ int main(int argc, char **argv) {
                ops_arg_gbl(prm, NPARAM, "double", OPS_READ));
 
   ops_particle_setup_partition();
-  seed_eddies(particle, p_pos, p_gid, p_rng, NEDDY, prm);
+  seed_eddies(particle, p_pos, p_gid, NEDDY, prm);
   ops_particle_setup_maps_with_dats(particle, dat_border, nborder);
 
   Real range_parts[] = {eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max};
@@ -322,6 +328,8 @@ int main(int argc, char **argv) {
 
   /* ---- 6. initialise the eddies ---------------------------------- */
 
+  ops_fill_random_uniform_particle(particle, p_rnd, p_gid, SEED, 1u);
+
   ops_particle_par_loop(
       KerInitEddy, "KerInitEddy", particle, 2, OPS_PARTICLE_ITERATE_LOCAL,
       range_parts, map,
@@ -329,7 +337,7 @@ int main(int argc, char **argv) {
       ops_arg_dat_particle(p_r, 1, "double", particle, map, OPS_WRITE),
       ops_arg_dat_particle(p_eps, 3, "double", particle, map, OPS_WRITE),
       ops_arg_dat_particle(p_vt, 2, "double", particle, map, OPS_WRITE),
-      ops_arg_dat_particle(p_rng, 1, "int", particle, map, OPS_RW),
+      ops_arg_dat_particle(p_rnd, 6, "double", particle, map, OPS_READ),
       ops_arg_gbl(prm, NPARAM, "double", OPS_READ));
 
   std::vector<Real> all_eddies(NEDDY * NCOMP);
@@ -363,6 +371,13 @@ int main(int argc, char **argv) {
 
     /* -- convect: purely per-eddy, exactly like the advance kernel -- */
     ops_timers(&c0, &w0);
+
+    /* Refresh the randoms, exactly as oSEM does before convect_eddies. Keyed
+       on global id and the step, so an eddy's draw is the same whichever rank
+       happens to own it. */
+    ops_fill_random_uniform_particle(particle, p_rnd, p_gid, SEED,
+                                     (unsigned int)it + 1u);
+
     ops_particle_par_loop(
         KerConvectEddies, "KerConvectEddies", particle, 2,
         OPS_PARTICLE_ITERATE_LOCAL, range_parts, map,
@@ -371,7 +386,7 @@ int main(int argc, char **argv) {
         ops_arg_dat_particle(p_r, 1, "double", particle, map, OPS_RW),
         ops_arg_dat_particle(p_eps, 3, "double", particle, map, OPS_RW),
         ops_arg_dat_particle(p_vt, 2, "double", particle, map, OPS_RW),
-        ops_arg_dat_particle(p_rng, 1, "int", particle, map, OPS_RW),
+        ops_arg_dat_particle(p_rnd, 6, "double", particle, map, OPS_READ),
         ops_arg_gbl(prm, NPARAM, "double", OPS_READ));
 
     update_maps(particle, dat_border, nborder, dat_forward, nforward);

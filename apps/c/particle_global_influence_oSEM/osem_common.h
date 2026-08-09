@@ -53,67 +53,17 @@
 #define NPARAM 13
 
 /* ------------------------------------------------------------------ *
- * Per-eddy random stream
+ * Randoms
  * ------------------------------------------------------------------ *
- * oSEM draws its randoms with ops_fill_random_uniform into int dats on the
- * eddy block, once per quantity per timestep. That is not portable here:
- * eddies are particles, they migrate between ranks, and a rank-indexed random
- * dat would hand a migrating eddy somebody else's stream.
+ * See ops_particle_random.h. The randoms are filled into a particle dat by the
+ * driver before each kernel, the same shape of call as oSEM's
+ * ops_fill_random_uniform, and keyed on the particle's GLOBAL ID so an eddy's
+ * stream belongs to the eddy rather than to whichever rank owns it.
  *
- * Instead each eddy carries its own LCG state as a particle dat. The stream
- * then belongs to the eddy, travels with it across ranks, and is identical at
- * any rank count -- which the grid-dat version cannot be.
- *
- * It also sidesteps a known defect: ops_fill_random_uniform on an int dat
- * never returns a negative value, so oSEM's `(eps_rng < 0) ? -1 : 1` sign
- * draws are ALWAYS +1, and the eddy positions only ever fill the positive
- * octant. Here the sign comes from the top bit of the LCG state, which is
- * genuinely two-valued.
- *
- * Constants are the Numerical Recipes LCG rather than oSEM's a=5, c=3,
- * m=2^29: that generator has a very short period in its low bits and would
- * make the recycled eddies visibly correlated.
+ * This file used to carry a per-eddy LCG advanced inside the kernels. That is
+ * gone: the counter-based generator needs no state at all, so there is no
+ * stream ordering to get wrong -- which is what caused the position/sign
+ * correlation documented in the README.
  */
-static inline unsigned int lcg_next(unsigned int s) {
-  return 1664525u * s + 1013904223u;
-}
-
-/* Output mixer (the murmur3-style finalizer).
- *
- * THIS IS LOAD-BEARING, not hygiene. A bare LCG state is a deterministic
- * function of the previous one, so consecutive draws are strongly related. The
- * kernels here draw an eddy's position and then its signs from consecutive
- * states, which without mixing makes eps_x a deterministic function of x -- and
- * because compute_fluct selects eddies by x (the |x| < r test), it then selects
- * a BIASED set of eps_x.
- *
- * Measured before this was added: rms u' came out 8.85-9.79 across realisations
- * while v' and w' sat at 4.8-6.7, when all three must be statistically equal
- * (a11 = a22 = a33, and each component is one sign times one shape). The signs
- * were individually unbiased -- mean eps was +0.007, -0.005, 0.000 -- so the
- * defect was purely the correlation with position, which no test of the signs
- * alone would have caught.
- *
- * oSEM does not need this because it draws each quantity from a separate
- * ops_fill_random_uniform call rather than from one running stream.
- */
-static inline unsigned int lcg_mix(unsigned int z) {
-  z ^= z >> 16;
-  z *= 0x7feb352du;
-  z ^= z >> 15;
-  z *= 0x846ca68bu;
-  z ^= z >> 16;
-  return z;
-}
-
-/* Uniform in [0,1). */
-static inline double lcg_unit(unsigned int s) {
-  return (double)lcg_mix(s) * (1.0 / 4294967296.0);
-}
-
-/* +1 or -1, from the top bit of the mixed output. */
-static inline int lcg_sign(unsigned int s) {
-  return (lcg_mix(s) & 0x80000000u) ? -1 : 1;
-}
 
 #endif /* _OSEM_COMMON_H_ */
