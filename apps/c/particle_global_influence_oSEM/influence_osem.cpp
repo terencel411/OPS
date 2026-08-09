@@ -115,6 +115,7 @@ static int NZ = 150;
 static int NITER = 2000;
 static int NPRINT = 200;
 static int NOUT = 0;   /* HDF5 frame interval; 0 = off */
+static int RNG = OPS_PRNG_MT19937;   /* -rng mt19937|minstd|shared */
 
 static void parse_args(int argc, char **argv) {
   for (int i = 1; i < argc; i++) {
@@ -123,6 +124,12 @@ static void parse_args(int argc, char **argv) {
     else if (!strcmp(argv[i], "-nz") && i + 1 < argc) NZ = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-nprint") && i + 1 < argc) NPRINT = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-nout") && i + 1 < argc) NOUT = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "-rng") && i + 1 < argc) {
+      const char *m = argv[++i];
+      RNG = !strcmp(m, "minstd") ? OPS_PRNG_MINSTD
+                                 : (!strcmp(m, "shared") ? OPS_PRNG_SHARED
+                                                         : OPS_PRNG_MT19937);
+    }
   }
 }
 
@@ -328,7 +335,11 @@ int main(int argc, char **argv) {
 
   /* ---- 6. initialise the eddies ---------------------------------- */
 
-  ops_fill_random_uniform_particle(particle, p_rnd, p_gid, SEED, 1u);
+  ops_prandom_shared_init(SEED);
+  ops_printf("rng: %s\n", RNG == OPS_PRNG_MINSTD ? "minstd_rand per particle"
+             : (RNG == OPS_PRNG_SHARED ? "shared engine, storage order"
+                                       : "mt19937 per particle"));
+  ops_fill_random_uniform_particle(particle, p_rnd, p_gid, SEED, 1u, RNG);
 
   ops_particle_par_loop(
       KerInitEddy, "KerInitEddy", particle, 2, OPS_PARTICLE_ITERATE_LOCAL,
@@ -376,7 +387,7 @@ int main(int argc, char **argv) {
        are different costs and must not be conflated. */
     ops_timers(&c0, &w0);
     ops_fill_random_uniform_particle(particle, p_rnd, p_gid, SEED,
-                                     (unsigned int)it + 1u);
+                                     (unsigned int)it + 1u, RNG);
     ops_timers(&c1, &w1);
     t_rng += w1 - w0;
 
@@ -485,9 +496,43 @@ int main(int argc, char **argv) {
     double m[3] = {0, 0, 0};
     for (int i = 0; i < NEDDY; i++)
       for (int k = 0; k < 3; k++) m[k] += all_eddies[NCOMP * i + E_SX + k];
+    /* Pairwise sign correlation. The bug that skewed an earlier version was a
+       correlation, not a bias, so the means alone are not a sufficient check. */
+    double c01 = 0, c02 = 0, c12 = 0;
+    for (int i = 0; i < NEDDY; i++) {
+      const double a0 = all_eddies[NCOMP * i + E_SX];
+      const double a1 = all_eddies[NCOMP * i + E_SY];
+      const double a2 = all_eddies[NCOMP * i + E_SZ];
+      c01 += a0 * a1; c02 += a0 * a2; c12 += a1 * a2;
+    }
     ops_printf("\nmean eps (x,y,z) over %d eddies: %+.4f %+.4f %+.4f"
                "   (0 = balanced)\n", NEDDY, m[0] / NEDDY, m[1] / NEDDY,
                m[2] / NEDDY);
+    ops_printf("eps correlations xy/xz/yz: %+.4f %+.4f %+.4f"
+               "   (0 = independent)\n", c01 / NEDDY, c02 / NEDDY,
+               c12 / NEDDY);
+
+    /* THE ONE THAT MATTERS: does an eddy's SIGN correlate with its POSITION?
+       That is the failure mode that skewed an earlier version -- compute_fluct
+       selects eddies by x, so any x-sign coupling biases the selected set.
+       The sign-vs-sign correlations above do not test it. */
+    {
+      double mx = 0.0;
+      for (int i = 0; i < NEDDY; i++) mx += all_eddies[NCOMP * i + E_X];
+      mx /= NEDDY;
+      double sx = 0.0, px = 0.0, py = 0.0, pz = 0.0;
+      for (int i = 0; i < NEDDY; i++) {
+        const double xc = all_eddies[NCOMP * i + E_X] - mx;
+        sx += xc * xc;
+        px += xc * all_eddies[NCOMP * i + E_SX];
+        py += xc * all_eddies[NCOMP * i + E_SY];
+        pz += xc * all_eddies[NCOMP * i + E_SZ];
+      }
+      sx = sqrt(sx / NEDDY);
+      ops_printf("corr(x, eps_x/y/z):        %+.4f %+.4f %+.4f"
+                 "   (|.|>0.06 is suspicious at N=%d)\n",
+                 px / NEDDY / sx, py / NEDDY / sx, pz / NEDDY / sx, NEDDY);
+    }
   }
 
   const Real n = (st[3] > 0.0) ? st[3] : 1.0;

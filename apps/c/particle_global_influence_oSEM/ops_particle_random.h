@@ -87,51 +87,76 @@
  * of state n.
  */
 
-/** Build the per-particle engine. One place, so the fills and the
- *  single-value helper below cannot drift apart. */
-static inline std::mt19937 ops_prandom_engine(unsigned int seed, int gid,
-                                              unsigned int counter) {
+/* ------------------------------------------------------------------ *
+ * Three fill strategies, so they can be compared rather than argued about
+ * ------------------------------------------------------------------ */
+enum ops_particle_rng_method {
+  OPS_PRNG_MT19937 = 0,  /* per particle, gid-keyed. Strongest, slowest.   */
+  OPS_PRNG_MINSTD = 1,   /* per particle, gid-keyed. Tiny state, so fast.  */
+  OPS_PRNG_SHARED = 2    /* one engine per rank, walked in storage order.
+                            Mirrors ops_fill_random_uniform exactly.       */
+};
+
+/** Per-particle engine seeded from (seed, gid, counter) via std::seed_seq.
+ *  Templated on the engine so the two per-particle methods share one body. */
+template <typename Engine>
+static inline Engine ops_prandom_engine_t(unsigned int seed, int gid,
+                                          unsigned int counter) {
   std::seed_seq seq{static_cast<std::uint32_t>(seed),
                     static_cast<std::uint32_t>(gid),
                     static_cast<std::uint32_t>(counter)};
-  return std::mt19937(seq);
+  return Engine(seq);
 }
 
 /**
- * A single draw, uniform in [0,1), for code outside a fill -- the seeding pass
- * uses it so the initial positions come from exactly the stream the fill would
- * have produced. `component` is the position in the engine's sequence, matching
- * how the fills below lay components out.
+ * The shared engine, seeded exactly as ops_randomgen_init_host does
+ * (ops_lib_core.cpp:2570): `seed + rank * 2654435761u` when there is more than
+ * one rank. Without the rank offset every rank would draw the SAME sequence,
+ * so the k-th eddy on every rank would get identical signs -- spatially
+ * unrelated eddies with correlated randomness, which a mean-and-variance check
+ * would not catch.
+ */
+inline std::mt19937 &ops_prandom_shared_engine() {
+  static std::mt19937 gen;
+  return gen;
+}
+
+inline void ops_prandom_shared_init(unsigned int seed) {
+#ifdef OPS_MPI
+  int rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  ops_prandom_shared_engine().seed(seed + (unsigned int)rank * 2654435761u);
+#else
+  ops_prandom_shared_engine().seed(seed);
+#endif
+}
+
+/**
+ * A single draw, uniform in [0,1), keyed on gid. Used by the seeding pass so
+ * the initial eddy positions are identical for all three methods and at any
+ * rank count -- that keeps the comparison to the per-step fill alone.
  */
 static inline double ops_prandom_uniform(unsigned int seed, int gid,
                                          unsigned int counter, int component) {
-  std::mt19937 gen = ops_prandom_engine(seed, gid, counter);
+  std::mt19937 gen = ops_prandom_engine_t<std::mt19937>(seed, gid, counter);
   std::uniform_real_distribution<double> distribution(0.0, 1.0);
   for (int c = 0; c < component; c++) distribution(gen);
   return distribution(gen);
 }
 
 /**
- * Fill a particle dat with uniform [0,1) values, one per component per
- * particle, keyed on global id.
+ * Fill a particle dat with uniform [0,1) values.
  *
- * Call it from the driver before the kernels that consume it -- the same shape
- * of call as oSEM's ops_fill_random_uniform(d_y_rng).
+ * @param method  which strategy; see ops_particle_rng_method
  *
- * @param particle  the particle set
- * @param dat       destination, a double particle dat of any dim
- * @param gid_dat   the int particle dat holding global ids
- * @param seed      run seed; changing it changes the whole realisation
- * @param counter   normally the timestep, so successive steps draw afresh
- *
- * Only OWNED particles are filled (0 .. no_particles). Ghost copies are not:
- * they are refreshed from their owner by the border/forward exchange, so
- * filling them here would overwrite the owner's values with a second draw --
- * the same double-counting trap as iterating ITERATE_ALL in a publish kernel.
+ * Only OWNED particles are filled. Ghosts are refreshed from their owner by
+ * the border/forward exchange, so filling them here would overwrite the
+ * owner's values with a second draw.
  */
 inline void ops_fill_random_uniform_particle(ops_particle particle, ops_dat dat,
                                              ops_dat gid_dat, unsigned int seed,
-                                             unsigned int counter) {
+                                             unsigned int counter,
+                                             int method = OPS_PRNG_MT19937) {
   const int n = (int)particle->no_particles;
   const int d = dat->dim;
 
@@ -140,51 +165,27 @@ inline void ops_fill_random_uniform_particle(ops_particle particle, ops_dat dat,
 
   std::uniform_real_distribution<double> distribution(0.0, 1.0);
 
-  for (int i = 0; i < n; i++) {
-    std::mt19937 gen = ops_prandom_engine(seed, gid[i], counter);
-    for (int c = 0; c < d; c++) out[d * i + c] = distribution(gen);
+  if (method == OPS_PRNG_SHARED) {
+    /* Structurally identical to ops_fill_random_uniform_host: one engine,
+       walk the array. Values are keyed on STORAGE SLOT, so an eddy's draw
+       changes when it migrates or the list is compacted. */
+    std::mt19937 &gen = ops_prandom_shared_engine();
+    const int total = n * d;
+    for (int i = 0; i < total; i++) out[i] = distribution(gen);
+    return;
   }
-}
 
-/**
- * As above, but +1 / -1 with equal probability -- what eddy signs actually
- * want, and it keeps the threshold in one place rather than in every kernel.
- */
-inline void ops_fill_random_sign_particle(ops_particle particle, ops_dat dat,
-                                          ops_dat gid_dat, unsigned int seed,
-                                          unsigned int counter) {
-  const int n = (int)particle->no_particles;
-  const int d = dat->dim;
-
-  double *out = (double *)dat->data;
-  const int *gid = (const int *)gid_dat->data;
-
-  std::uniform_real_distribution<double> distribution(0.0, 1.0);
-
-  for (int i = 0; i < n; i++) {
-    std::mt19937 gen = ops_prandom_engine(seed, gid[i], counter);
-    for (int c = 0; c < d; c++)
-      out[d * i + c] = (distribution(gen) < 0.5) ? -1.0 : 1.0;
+  if (method == OPS_PRNG_MINSTD) {
+    for (int i = 0; i < n; i++) {
+      std::minstd_rand gen =
+          ops_prandom_engine_t<std::minstd_rand>(seed, gid[i], counter);
+      for (int c = 0; c < d; c++) out[d * i + c] = distribution(gen);
+    }
+    return;
   }
-}
-
-/**
- * Normal(mean, stddev) fill, mirroring ops_fill_random_normal.
- */
-inline void ops_fill_random_normal_particle(ops_particle particle, ops_dat dat,
-                                            ops_dat gid_dat, unsigned int seed,
-                                            unsigned int counter, double mean,
-                                            double stddev) {
-  const int n = (int)particle->no_particles;
-  const int d = dat->dim;
-
-  double *out = (double *)dat->data;
-  const int *gid = (const int *)gid_dat->data;
-
-  std::normal_distribution<double> distribution(mean, stddev);
 
   for (int i = 0; i < n; i++) {
-    std::mt19937 gen = ops_prandom_engine(seed, gid[i], counter);
+    std::mt19937 gen = ops_prandom_engine_t<std::mt19937>(seed, gid[i], counter);
     for (int c = 0; c < d; c++) out[d * i + c] = distribution(gen);
   }
 }
