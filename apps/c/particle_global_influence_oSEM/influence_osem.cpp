@@ -345,7 +345,7 @@ int main(int argc, char **argv) {
   /* ---- 7. time loop ---------------------------------------------- */
 
   double c0, w0, c1, w1;
-  double t_convect = 0, t_gather = 0, t_fluct = 0;
+  double t_convect = 0, t_gather = 0, t_fluct = 0, t_rng = 0;
   int lost_at = -1;
 
   /* Output is off by default: the timings quoted in the README were measured
@@ -370,13 +370,17 @@ int main(int argc, char **argv) {
   for (int it = 1; it <= NITER; it++) {
 
     /* -- convect: purely per-eddy, exactly like the advance kernel -- */
-    ops_timers(&c0, &w0);
-
     /* Refresh the randoms, exactly as oSEM does before convect_eddies. Keyed
        on global id and the step, so an eddy's draw is the same whichever rank
-       happens to own it. */
+       happens to own it. Timed separately from the convect loop below -- they
+       are different costs and must not be conflated. */
+    ops_timers(&c0, &w0);
     ops_fill_random_uniform_particle(particle, p_rnd, p_gid, SEED,
                                      (unsigned int)it + 1u);
+    ops_timers(&c1, &w1);
+    t_rng += w1 - w0;
+
+    ops_timers(&c0, &w0);
 
     ops_particle_par_loop(
         KerConvectEddies, "KerConvectEddies", particle, 2,
@@ -496,6 +500,7 @@ int main(int argc, char **argv) {
 
   const double ms = 1000.0 / (double)NITER;
   ops_printf("\n--- cost per timestep (ms, wall) ---------------------\n");
+  ops_printf("rng fill            %9.3f\n", t_rng * ms);
   ops_printf("convect + migrate   %9.3f\n", t_convect * ms);
   ops_printf("gather (allgather)  %9.3f\n", t_gather * ms);
   ops_printf("compute_fluct       %9.3f\n", t_fluct * ms);

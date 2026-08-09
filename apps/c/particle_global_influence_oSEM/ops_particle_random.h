@@ -42,7 +42,8 @@
  *
  *   - no state dat to declare, migrate or keep in the border list
  *   - reproducible: ask for step 137's draw at any time and get the same value
- *   - INDEPENDENT ACROSS COMPONENTS BY CONSTRUCTION. This one matters. The
+ *   - components are successive draws from a TEMPERED engine (mt19937), so
+ *     they are decorrelated. This one matters. The
  *     previous implementation advanced one LCG per eddy and took successive
  *     states for successive quantities, which made an eddy's eps_x a
  *     deterministic function of its x -- and since compute_fluct selects
@@ -60,83 +61,53 @@
 #include <random>
 
 /* ------------------------------------------------------------------ *
- * Bit source: counter-based, keyed on (seed, gid, counter, component)
+ * Everything below is standard library
  * ------------------------------------------------------------------ *
- * Deliberately separated from the DISTRIBUTION below. The keying is what this
- * header exists for; the mapping from bits to a distribution is standard and
- * should look like everybody else's.
+ * ops_fill_random_uniform_host (ops_lib_core.cpp:2581) is
  *
- * This satisfies the C++ UniformRandomBitGenerator requirements, so it can be
- * handed to any std:: distribution exactly as OPS hands std::mt19937 to
- * std::uniform_real_distribution in ops_fill_random_uniform_host
- * (ops_lib_core.cpp:2581).
+ *     std::mt19937 gen;                                    // seeded once
+ *     std::uniform_real_distribution<double> dist(0,1);
+ *     data[i] = dist(gen);
  *
- * Unlike mt19937 it carries no meaningful state between calls: every value is
- * a fresh hash of the key plus a local call count, so an engine constructed
- * with the same four inputs always produces the same sequence, wherever and
- * whenever it is constructed.
+ * and this is the same three lines, with one difference: the engine is seeded
+ * per PARTICLE, from (seed, global id, counter), instead of once for the whole
+ * dat. That is the entire point of the header -- see the note above on why the
+ * keying has to be the global id rather than the storage slot.
+ *
+ * std::seed_seq is the standard library's own facility for turning several
+ * values into a well-scrambled engine state, so no hand-written mixing is
+ * needed. It also avoids the known weakness of scalar-seeding mt19937 with
+ * nearby values, which can leave the first outputs of neighbouring seeds
+ * correlated -- and with one engine per eddy, the seeds ARE neighbouring.
+ *
+ * Components are successive draws from that engine. Safe here in a way it was
+ * not for the hand-rolled LCG this replaced: mt19937 tempers its output, so
+ * successive values are decorrelated. The earlier bug came from using a raw
+ * LCG state directly as the value, where state n+1 is a simple affine function
+ * of state n.
  */
-static inline uint64_t ops_prandom_mix64(uint64_t z) {
-  z += 0x9E3779B97F4A7C15ULL;
-  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-  return z ^ (z >> 31);
+
+/** Build the per-particle engine. One place, so the fills and the
+ *  single-value helper below cannot drift apart. */
+static inline std::mt19937 ops_prandom_engine(unsigned int seed, int gid,
+                                              unsigned int counter) {
+  std::seed_seq seq{static_cast<std::uint32_t>(seed),
+                    static_cast<std::uint32_t>(gid),
+                    static_cast<std::uint32_t>(counter)};
+  return std::mt19937(seq);
 }
 
-class ops_prandom_engine {
-public:
-  typedef uint64_t result_type;
-
-  ops_prandom_engine(unsigned int seed, int gid, unsigned int counter,
-                     int component)
-      : n_(0) {
-    uint64_t k = (uint64_t)seed;
-    k = ops_prandom_mix64(k ^ (0x9E3779B97F4A7C15ULL * (uint64_t)(uint32_t)gid));
-    k = ops_prandom_mix64(k ^ (0xC2B2AE3D27D4EB4FULL * (uint64_t)counter));
-    key_ = ops_prandom_mix64(k ^
-                             (0x165667B19E3779F9ULL * (uint64_t)(uint32_t)component));
-  }
-
-  static result_type min() { return 0; }
-  static result_type max() { return UINT64_MAX; }
-
-  result_type operator()() {
-    return ops_prandom_mix64(key_ ^ (0x9E3779B97F4A7C15ULL * (++n_)));
-  }
-
-private:
-  uint64_t key_;
-  uint64_t n_;
-};
-
-/* ------------------------------------------------------------------ *
- * Distributions: the same std:: objects OPS uses
- * ------------------------------------------------------------------ *
- * ops_fill_random_uniform_host builds
- *     std::uniform_real_distribution<double> distribution(0.0, 1.0);
- * and that is what is used here, so the bits-to-value mapping is identical to
- * every other OPS fill. Swapping in std::normal_distribution or anything else
- * is now a one-line change, which is the point of keeping the engine separate.
- *
- * One caveat worth knowing: std::uniform_real_distribution is not specified to
- * give identical values across standard library implementations, so results are
- * reproducible for a given toolchain rather than universally. That is the price
- * of matching OPS rather than hand-rolling the conversion, and it does not
- * affect rank invariance -- every rank in a run uses the same library.
+/**
+ * A single draw, uniform in [0,1), for code outside a fill -- the seeding pass
+ * uses it so the initial positions come from exactly the stream the fill would
+ * have produced. `component` is the position in the engine's sequence, matching
+ * how the fills below lay components out.
  */
 static inline double ops_prandom_uniform(unsigned int seed, int gid,
                                          unsigned int counter, int component) {
-  ops_prandom_engine gen(seed, gid, counter, component);
+  std::mt19937 gen = ops_prandom_engine(seed, gid, counter);
   std::uniform_real_distribution<double> distribution(0.0, 1.0);
-  return distribution(gen);
-}
-
-/** Normal(mean, stddev), for symmetry with ops_fill_random_normal. */
-static inline double ops_prandom_normal(unsigned int seed, int gid,
-                                        unsigned int counter, int component,
-                                        double mean, double stddev) {
-  ops_prandom_engine gen(seed, gid, counter, component);
-  std::normal_distribution<double> distribution(mean, stddev);
+  for (int c = 0; c < component; c++) distribution(gen);
   return distribution(gen);
 }
 
@@ -167,15 +138,17 @@ inline void ops_fill_random_uniform_particle(ops_particle particle, ops_dat dat,
   double *out = (double *)dat->data;
   const int *gid = (const int *)gid_dat->data;
 
-  for (int i = 0; i < n; i++)
-    for (int c = 0; c < d; c++)
-      out[d * i + c] = ops_prandom_uniform(seed, gid[i], counter, c);
+  std::uniform_real_distribution<double> distribution(0.0, 1.0);
+
+  for (int i = 0; i < n; i++) {
+    std::mt19937 gen = ops_prandom_engine(seed, gid[i], counter);
+    for (int c = 0; c < d; c++) out[d * i + c] = distribution(gen);
+  }
 }
 
 /**
  * As above, but +1 / -1 with equal probability -- what eddy signs actually
- * want, and it keeps the 0.5 threshold in one place rather than in every
- * kernel that needs a sign.
+ * want, and it keeps the threshold in one place rather than in every kernel.
  */
 inline void ops_fill_random_sign_particle(ops_particle particle, ops_dat dat,
                                           ops_dat gid_dat, unsigned int seed,
@@ -186,10 +159,13 @@ inline void ops_fill_random_sign_particle(ops_particle particle, ops_dat dat,
   double *out = (double *)dat->data;
   const int *gid = (const int *)gid_dat->data;
 
-  for (int i = 0; i < n; i++)
+  std::uniform_real_distribution<double> distribution(0.0, 1.0);
+
+  for (int i = 0; i < n; i++) {
+    std::mt19937 gen = ops_prandom_engine(seed, gid[i], counter);
     for (int c = 0; c < d; c++)
-      out[d * i + c] =
-          (ops_prandom_uniform(seed, gid[i], counter, c) < 0.5) ? -1.0 : 1.0;
+      out[d * i + c] = (distribution(gen) < 0.5) ? -1.0 : 1.0;
+  }
 }
 
 /**
@@ -205,10 +181,12 @@ inline void ops_fill_random_normal_particle(ops_particle particle, ops_dat dat,
   double *out = (double *)dat->data;
   const int *gid = (const int *)gid_dat->data;
 
-  for (int i = 0; i < n; i++)
-    for (int c = 0; c < d; c++)
-      out[d * i + c] =
-          ops_prandom_normal(seed, gid[i], counter, c, mean, stddev);
+  std::normal_distribution<double> distribution(mean, stddev);
+
+  for (int i = 0; i < n; i++) {
+    std::mt19937 gen = ops_prandom_engine(seed, gid[i], counter);
+    for (int c = 0; c < d; c++) out[d * i + c] = distribution(gen);
+  }
 }
 
 #endif /* _OPS_PARTICLE_RANDOM_H_ */
