@@ -1,0 +1,110 @@
+/*
+ * osem_io.h  --  per-timestep HDF5 output
+ *
+ * Same approach as the other apps in this series: the OPS particle API has no
+ * HDF5 path, but the eddies have already been all-gathered onto every rank by
+ * the reduction that compute_fluct needs anyway. So the writer costs one extra
+ * copy and no communication of its own, and the eddy arrays come out ordered by
+ * global id -- row i is eddy i in every frame, at any rank count.
+ *
+ * The grid dats go through the ordinary collective ops_fetch_dat_hdf5_file.
+ */
+
+#ifndef OSEM_IO_H
+#define OSEM_IO_H
+
+#include <cstdio>
+#include <vector>
+
+#include <ops_hdf5.h>
+
+struct osem_io_params {
+  int NY;
+  int NZ;
+  int NEDDY;
+  int NITER;
+  int NPRINT;
+  double DT;
+  double U0TI;
+  double XPLANE;
+  double box[4];    /* eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max */
+  double rms[3];    /* u', v', w' at this frame                       */
+};
+
+/* Collective barrier built out of OPS: ops_reduction_result ends in an
+   Allreduce, and ops_arg_reduce is what arms the handle. */
+inline void ops_sync_barrier(ops_reduction handle) {
+  ops_arg armed = ops_arg_reduce(handle, 1, "int", OPS_INC);
+  (void)armed;
+  int discard = 0;
+  ops_reduction_result(handle, &discard);
+}
+
+inline void remove_stale_output(const char *prefix, int niter, int nprint,
+                                ops_reduction sync) {
+  char name[128];
+  for (int s = nprint; s <= niter; s += nprint) {
+    snprintf(name, sizeof(name), "%s_%06d.h5", prefix, s);
+    remove(name);
+  }
+  ops_sync_barrier(sync);
+}
+
+/**
+ * One frame: the inlet fields, the complete eddy list, and the run constants.
+ *
+ * @param all  the gathered eddy buffer, NEDDY*NCOMP doubles, id-ordered
+ */
+inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
+                            ops_dat &vprime, ops_dat &wprime,
+                            const std::vector<double> &all,
+                            const osem_io_params &p, int step) {
+
+  char file[128];
+  snprintf(file, sizeof(file), "osem_output_%06d.h5", step);
+
+  ops_fetch_block_hdf5_file(block, file);
+  ops_fetch_dat_hdf5_file(crd, file);
+  ops_fetch_dat_hdf5_file(uprime, file);
+  ops_fetch_dat_hdf5_file(vprime, file);
+  ops_fetch_dat_hdf5_file(wprime, file);
+
+  const int N = p.NEDDY;
+
+  /* Split the interleaved gather buffer so a plot script can read one
+     quantity at a time. A few tens of kB per frame. */
+  std::vector<double> ex(N), ey(N), ez(N), er(N), sx(N), sy(N), sz(N);
+  for (int i = 0; i < N; i++) {
+    ex[i] = all[NCOMP * i + E_X];
+    ey[i] = all[NCOMP * i + E_Y];
+    ez[i] = all[NCOMP * i + E_Z];
+    er[i] = all[NCOMP * i + E_R];
+    sx[i] = all[NCOMP * i + E_SX];
+    sy[i] = all[NCOMP * i + E_SY];
+    sz[i] = all[NCOMP * i + E_SZ];
+  }
+
+  double time = p.DT * step;
+  ops_write_const_hdf5("neddy", 1, "int", (char *)&p.NEDDY, file);
+  ops_write_const_hdf5("NY", 1, "int", (char *)&p.NY, file);
+  ops_write_const_hdf5("NZ", 1, "int", (char *)&p.NZ, file);
+  ops_write_const_hdf5("NITER", 1, "int", (char *)&p.NITER, file);
+  ops_write_const_hdf5("timestep", 1, "int", (char *)&step, file);
+  ops_write_const_hdf5("time", 1, "double", (char *)&time, file);
+  ops_write_const_hdf5("u0ti", 1, "double", (char *)&p.U0TI, file);
+  ops_write_const_hdf5("x_plane", 1, "double", (char *)&p.XPLANE, file);
+  ops_write_const_hdf5("box", 4, "double", (char *)p.box, file);
+  ops_write_const_hdf5("rms", 3, "double", (char *)p.rms, file);
+
+  ops_write_const_hdf5("eddy_x", N, "double", (char *)ex.data(), file);
+  ops_write_const_hdf5("eddy_y", N, "double", (char *)ey.data(), file);
+  ops_write_const_hdf5("eddy_z", N, "double", (char *)ez.data(), file);
+  ops_write_const_hdf5("eddy_r", N, "double", (char *)er.data(), file);
+  /* All three signs: eps_x drives u', eps_y drives v', eps_z drives w', so a
+     plot can overlay each panel with the signs that actually produced it. */
+  ops_write_const_hdf5("eddy_sx", N, "double", (char *)sx.data(), file);
+  ops_write_const_hdf5("eddy_sy", N, "double", (char *)sy.data(), file);
+  ops_write_const_hdf5("eddy_sz", N, "double", (char *)sz.data(), file);
+}
+
+#endif /* OSEM_IO_H */
