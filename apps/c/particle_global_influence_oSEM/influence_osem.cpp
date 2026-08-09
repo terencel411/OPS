@@ -300,7 +300,7 @@ int main(int argc, char **argv) {
       ops_decl_reduction_handle(4 * sizeof(double), "double", "fluct_stats");
   ops_reduction h_sync = ops_decl_reduction_handle(sizeof(int), "int", "sync");
   ops_reduction h_prof = ops_decl_reduction_handle(
-      3 * (ny + 1) * sizeof(double), "double", "profile");
+      6 * (ny + 1) * sizeof(double), "double", "profile");
 
   /* ---- 4. the particle set --------------------------------------- */
 
@@ -444,6 +444,7 @@ int main(int argc, char **argv) {
                        use_tbl};
 
   /* The target profile is fixed for the run, so build it once. */
+  std::vector<Real> raw(6 * (ny + 1), 0.0);
   std::vector<Real> prof(3 * (ny + 1), 0.0), targ(3 * (ny + 1), 0.0);
   if (use_tbl)
     for (int i = 0; i <= ny; i++) {
@@ -557,10 +558,12 @@ int main(int argc, char **argv) {
                      ops_arg_dat(vprime, 1, S2D_00, "double", OPS_READ),
                      ops_arg_dat(wprime, 1, S2D_00, "double", OPS_READ),
                      ops_arg_idx(),
-                     ops_arg_reduce(h_prof, 3 * (ny + 1), "double", OPS_INC));
-        ops_reduction_result(h_prof, prof.data());
+                     ops_arg_reduce(h_prof, 6 * (ny + 1), "double", OPS_INC));
+        ops_reduction_result(h_prof, raw.data());
         const Real nrow = (Real)(nz + 1);
-        for (size_t k = 0; k < prof.size(); k++) prof[k] = sqrt(prof[k] / nrow);
+        for (int i = 0; i <= ny; i++)
+          for (int c = 0; c < 3; c++)
+            prof[3 * i + c] = sqrt(raw[6 * i + c] / nrow);
       }
 
       write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, prof,
@@ -636,14 +639,14 @@ int main(int argc, char **argv) {
    * the Cholesky and the eddy summation together.
    */
   if (use_tbl) {
-    std::vector<Real> pf(3 * (ny + 1), 0.0);
+    std::vector<Real> pf(6 * (ny + 1), 0.0);
 
     ops_par_loop(KerFluctProfile, "KerFluctProfile", block, 2, grid_range,
                  ops_arg_dat(uprime, 1, S2D_00, "double", OPS_READ),
                  ops_arg_dat(vprime, 1, S2D_00, "double", OPS_READ),
                  ops_arg_dat(wprime, 1, S2D_00, "double", OPS_READ),
                  ops_arg_idx(),
-                 ops_arg_reduce(h_prof, 3 * (ny + 1), "double", OPS_INC));
+                 ops_arg_reduce(h_prof, 6 * (ny + 1), "double", OPS_INC));
     ops_reduction_result(h_prof, pf.data());
 
     const Real nrow = (Real)(nz + 1);
@@ -654,9 +657,9 @@ int main(int argc, char **argv) {
     int nused = 0;
     for (int i = 0; i <= ny; i++) {
       const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) * (Real)i / (Real)ny;
-      const Real got[3] = {sqrt(pf[3 * i + 0] / nrow),
-                           sqrt(pf[3 * i + 1] / nrow),
-                           sqrt(pf[3 * i + 2] / nrow)};
+      const Real got[3] = {sqrt(pf[6 * i + 0] / nrow),
+                           sqrt(pf[6 * i + 1] / nrow),
+                           sqrt(pf[6 * i + 2] / nrow)};
       const Real want[3] = {sqrt(tbl_at(uu_inp, y)), sqrt(tbl_at(vv_inp, y)),
                             sqrt(tbl_at(ww_inp, y))};
       for (int c = 0; c < 3; c++) {
@@ -670,6 +673,40 @@ int main(int argc, char **argv) {
     }
     ops_printf("\nprofile agreement over %d rows: %.1f %% rms deviation\n",
                nused, 100.0 * sqrt(se / st));
+
+    /* ---- shear stress ------------------------------------------------ *
+     * <u'v'> = a11 * a21 * <S_x^2> = a11 * a21 = R21 by construction. This is
+     * the ONLY check that exercises a21: the rms values are blind to it,
+     * because a22 = sqrt(R22 - a21^2) makes a21^2 + a22^2 collapse to R22
+     * whatever a21 happens to be. An error in the shear term would otherwise
+     * pass every test in this app silently.
+     *
+     * <u'w'> and <v'w'> must vanish (a31 = a32 = 0), so they come free.
+     */
+    Real se_uv = 0, st_uv = 0, worst_uw = 0, worst_vw = 0;
+    ops_printf("\n   y         <u'v'>    target R21\n");
+    for (int i = 0; i <= ny; i++) {
+      const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) * (Real)i / (Real)ny;
+      const Real uv = pf[6 * i + 3] / nrow;
+      const Real want = tbl_at(uv_inp, y);
+      se_uv += (uv - want) * (uv - want);
+      st_uv += want * want;
+      /* Normalise the cross terms by their natural scale sqrt(R11*R33). */
+      const Real scale = sqrt(sqrt(tbl_at(uu_inp, y) * tbl_at(ww_inp, y)) *
+                              sqrt(tbl_at(vv_inp, y) * tbl_at(ww_inp, y)));
+      if (scale > 1e-6) {
+        const Real a = fabs(pf[6 * i + 4] / nrow) / (scale * scale);
+        const Real b = fabs(pf[6 * i + 5] / nrow) / (scale * scale);
+        if (a > worst_uw) worst_uw = a;
+        if (b > worst_vw) worst_vw = b;
+      }
+      if (i % 20 == 0)
+        ops_printf("  %.5f  %10.2f  %10.2f\n", y, uv, want);
+    }
+    ops_printf("\nshear agreement: %.1f %% rms deviation from R21\n",
+               100.0 * sqrt(se_uv / st_uv));
+    ops_printf("cross terms that must vanish: max |<u'w'>| %.4f,"
+               " max |<v'w'>| %.4f  (normalised)\n", worst_uw, worst_vw);
   }
 
   ops_printf("\n--- final inlet plane --------------------------------\n");

@@ -100,10 +100,19 @@ void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
  * whether the computed PROFILE follows the tabulated one. */
 void KerFluctProfile(const ACC<double> &uprime, const ACC<double> &vprime,
                      const ACC<double> &wprime, const int *idx, double *acc) {
-  const int r = 3 * idx[0];
-  acc[r + 0] += uprime(0, 0) * uprime(0, 0);
-  acc[r + 1] += vprime(0, 0) * vprime(0, 0);
-  acc[r + 2] += wprime(0, 0) * wprime(0, 0);
+  const double u = uprime(0, 0), v = vprime(0, 0), w = wprime(0, 0);
+  const int r = 6 * idx[0];
+  acc[r + 0] += u * u;
+  acc[r + 1] += v * v;
+  acc[r + 2] += w * w;
+  /* The off-diagonal stresses. <u'v'> should reproduce R21 -- that is the
+     SHEAR stress, and it is the only thing that tests a21: the rms values
+     depend on a21 only through a22 = sqrt(R22 - a21^2), which collapses to
+     R22 whatever a21 is. <u'w'> and <v'w'> should vanish, because a31 = a32 =
+     0, so they are a free check that nothing is leaking between components. */
+  acc[r + 3] += u * v;
+  acc[r + 4] += u * w;
+  acc[r + 5] += v * w;
 }
 
 /* ------------------------------------------------------------------ *
