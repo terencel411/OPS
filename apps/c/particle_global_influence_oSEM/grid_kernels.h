@@ -73,9 +73,10 @@ void KerInitRST(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
  * If you raise y_max or r_max, fix this first.
  *
  * The driver's tbl_at() (influence_osem.cpp) mirrors this search exactly,
- * including the idx = 0 initialisation. It must: it builds the TARGET profile
- * the checks compare against, so if the two extrapolated differently the
- * comparison would report a huge deviation that is an artefact of the check.
+ * including the idx = 0 initialisation. It must: it builds the rms_target
+ * dataset each frame carries, which the plot script draws against the computed
+ * profile. If the two interpolated differently the plot would show a
+ * discrepancy that is an artefact of the target, not of the flow.
  */
 void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
                     ACC<double> &a31, ACC<double> &a32, ACC<double> &a33,
@@ -115,26 +116,6 @@ void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
   a31(0, 0) = 0.0;
   a32(0, 0) = 0.0;
   a33(0, 0) = sqrt(r33 - a31(0, 0) * a31(0, 0) - a32(0, 0) * a32(0, 0));
-}
-
-/* Per-row sums of u'^2, v'^2, w'^2, indexed by the wall-normal grid index.
- * Feeds the frame's rms_profile, which the plot script draws against the
- * tabulated target.
- *
- * This also accumulated the three off-diagonal stresses (<u'v'>, <u'w'>,
- * <v'w'>) while the port was being verified: <u'v'> is the only observable
- * that tests a21, because the rms values depend on a21 only through
- * a22 = sqrt(R22 - a21^2), which collapses to R22 whatever a21 is. That check
- * has served its purpose (a21 confirmed exact to 0.9 % over 12 realisations)
- * and is in the git history if it is ever needed again -- see Part 3 of
- * UNDERSTANDING_oSEM.md. */
-void KerFluctProfile(const ACC<double> &uprime, const ACC<double> &vprime,
-                     const ACC<double> &wprime, const int *idx, double *acc) {
-  const double u = uprime(0, 0), v = vprime(0, 0), w = wprime(0, 0);
-  const int r = 3 * idx[0];
-  acc[r + 0] += u * u;
-  acc[r + 1] += v * v;
-  acc[r + 2] += w * w;
 }
 
 /* ------------------------------------------------------------------ *

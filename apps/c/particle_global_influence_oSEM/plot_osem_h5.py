@@ -75,7 +75,15 @@ def read_frame(path):
             "box": f["box"][:],
             "rms": f["rms"][:],
             "use_tbl": int(f["use_tbl"][0]),
-            "prof": f["rms_profile"][:].reshape(-1, 3),
+            # Per-row rms, computed here rather than written by the app. The
+            # fields above already carry everything needed -- row i of `fields`
+            # is one wall-normal station, so the mean over z is the row rms.
+            # This reproduces the app's old rms_profile dataset exactly (checked
+            # bit-for-bit), and dropping it let the app lose a kernel, an
+            # MPI reduction and its ny <= 100 restriction.
+            "prof": np.stack(
+                [np.sqrt((fields[n] ** 2).mean(axis=1))
+                 for n in ("uprime", "vprime", "wprime")], axis=1),
             "targ": f["rms_target"][:].reshape(-1, 3),
             "neddy": int(f["neddy"][0]),
             "ny": NY,

@@ -106,39 +106,6 @@
 
 typedef double Real;
 
-/* ------------------------------------------------------------------ *
- * PROF_SLOTS -- why the stress-profile reduction is a fixed size
- * ------------------------------------------------------------------ *
- * KerFluctProfile accumulates 3 stresses per wall-normal row, so the natural
- * dimension is 3*(ny+1). It cannot be written that way: the OPS translator
- * parses the ops_arg_reduce dimension with parseIntLiteral
- * (ops_translator/ops-translator/cpp/parser.py:353), which accepts an
- * INTEGER_LITERAL or a unary +/- literal and raises "Expected int expression"
- * on anything else. `3 * (ny + 1)` is a BINARY_OPERATOR, so the translator
- * build fails to parse while the seq/dev builds compile it happily -- which is
- * how it went unnoticed.
- *
- * So the reduction is declared once at a fixed maximum and the loop names that
- * literal. Rows above 3*(ny+1) are never written and stay zero; the driver
- * reads only the first 3*(ny+1).
- *
- * KEEP THIS NUMBER SMALL. The translator UNROLLS the reduction: the generated
- * kernel carries one scalar local and one write-back per slot, plus an OpenMP
- * reduction clause naming every one of them. A first attempt at 6150 (ny up to
- * 1024) generated a 24819-line kernel that had not finished compiling at -O3
- * after 500 s; 303 generates ~1200 lines and builds in seconds. Compile time
- * scales with the literal, so raise it only as far as an actual grid needs.
- *
- * 303 = 3 * (100 + 1), the default ny. Three things must stay in step: this
- * macro, the literal in the ops_arg_reduce call, and PROF_MAX_NY. main()
- * checks ny against PROF_MAX_NY at startup and refuses rather than silently
- * truncating the profile.
- *
- * The restriction bites only with the tabulated RST, since that is the only
- * mode that runs KerFluctProfile; -rst iso leaves ny unbounded.
- */
-#define PROF_SLOTS 303
-#define PROF_MAX_NY 100
 
 /* Every constant and run option is declared in osem_constants.h and given its
    value at the top of main -- nothing is defined at file scope. */
@@ -274,18 +241,6 @@ int main(int argc, char **argv) {
      from them. */
   parse_args(argc, argv);
 
-  /* The stress-profile reduction is a fixed size (see PROF_SLOTS), so ny has a
-     hard ceiling. Fail loudly rather than silently truncating the profile. */
-  if (use_tbl && ny > PROF_MAX_NY) {
-    ops_printf("error: -ny %d exceeds PROF_MAX_NY = %d (the stress-profile\n"
-               "reduction is fixed at %d slots because the OPS translator\n"
-               "requires a literal ops_arg_reduce dimension). Raise both\n"
-               "PROF_SLOTS and the literal in the KerFluctProfile loop.\n",
-               ny, PROF_MAX_NY, PROF_SLOTS);
-    ops_exit();
-    return 1;
-  }
-
   /* Derived geometry. r_max is the eddy search radius: it sets the streamwise
      extent of the eddy box and the padding on the plane, because an eddy
      further away than that contributes exactly nothing. */
@@ -369,11 +324,6 @@ int main(int argc, char **argv) {
   ops_reduction h_stat =
       ops_decl_reduction_handle(4 * sizeof(double), "double", "fluct_stats");
   ops_reduction h_sync = ops_decl_reduction_handle(sizeof(int), "int", "sync");
-  /* Sized from PROF_SLOTS, not from ny, because the ops_arg_reduce that fills
-     it has to name the same number -- and there it must be a bare literal.
-     See the note on PROF_SLOTS. Slots above 6*(ny+1) stay zero. */
-  ops_reduction h_prof = ops_decl_reduction_handle(
-      PROF_SLOTS * sizeof(double), "double", "profile");
 
   /* ---- 4. the particle set --------------------------------------- */
 
@@ -517,10 +467,7 @@ int main(int argc, char **argv) {
                        use_tbl};
 
   /* The target profile is fixed for the run, so build it once. */
-  /* PROF_SLOTS, not 6*(ny+1): ops_reduction_result writes the handle's full
-     declared length, so a buffer sized to the grid would be overrun. */
-  std::vector<Real> raw(PROF_SLOTS, 0.0);
-  std::vector<Real> prof(3 * (ny + 1), 0.0), targ(3 * (ny + 1), 0.0);
+  std::vector<Real> targ(3 * (ny + 1), 0.0);
   if (use_tbl)
     for (int i = 0; i <= ny; i++) {
       const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) * (Real)i / (Real)ny;
@@ -628,32 +575,8 @@ int main(int argc, char **argv) {
       io.rms[1] = sqrt(fs[1] / nn2);
       io.rms[2] = sqrt(fs[2] / nn2);
 
-      if (use_tbl) {
-        /* Per-row stresses for the frame's rms_profile, which the plot script
-           draws against rms_target. Only on output steps -- it used to run
-           every step because the verification checks time-averaged it. */
-        static_assert(PROF_SLOTS == 303,
-                      "PROF_SLOTS and the literal dimension in the "
-                      "KerFluctProfile ops_arg_reduce must match");
-        ops_par_loop(KerFluctProfile, "KerFluctProfile", block, 2, grid_range,
-                     ops_arg_dat(uprime, 1, S2D_00, "double", OPS_READ),
-                     ops_arg_dat(vprime, 1, S2D_00, "double", OPS_READ),
-                     ops_arg_dat(wprime, 1, S2D_00, "double", OPS_READ),
-                     ops_arg_idx(),
-                     /* 303 = PROF_SLOTS, and it MUST be a literal: the
-                        translator parses this token and cannot evaluate a
-                        macro. The static_assert above keeps them in step. */
-                     ops_arg_reduce(h_prof, 303, "double", OPS_INC));
-        ops_reduction_result(h_prof, raw.data());
-
-        const Real nrow = (Real)(nz + 1);
-        for (int i = 0; i <= ny; i++)
-          for (int c = 0; c < 3; c++)
-            prof[3 * i + c] = sqrt(raw[3 * i + c] / nrow);
-      }
-
-      write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, prof,
-                      targ, io, it);
+      write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, targ,
+                      io, it);
     }
 
     if (it % nprint == 0) ops_printf("step %5d / %d\n", it, niter);

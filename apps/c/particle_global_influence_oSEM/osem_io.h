@@ -75,7 +75,6 @@ inline void remove_stale_output(const char *prefix, int niter, int nprint,
 inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
                             ops_dat &vprime, ops_dat &wprime,
                             const std::vector<double> &all,
-                            const std::vector<double> &prof,
                             const std::vector<double> &targ,
                             const osem_io_params &p, int step) {
 
@@ -115,11 +114,12 @@ inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
   ops_write_const_hdf5("box", 4, "double", (char *)p.box, file);
   ops_write_const_hdf5("rms", 3, "double", (char *)p.rms, file);
   ops_write_const_hdf5("use_tbl", 1, "int", (char *)&p.use_tbl, file);
-  /* Per-row rms and the tabulated target it should follow. With the TBL
-     profile a plane-averaged rms has nothing meaningful to be compared
-     against -- the target is a PROFILE -- so the frames carry both. */
-  ops_write_const_hdf5("rms_profile", 3 * (p.NY + 1), "double",
-                       (char *)prof.data(), file);
+  /* The tabulated target the profile should follow. A plane-averaged rms has
+     nothing meaningful to compare against under the TBL profile -- the target
+     is a PROFILE -- so each frame carries it. The computed profile is NOT
+     written: it is derivable from the uprime/vprime/wprime fields above, and
+     the plot script forms it there instead. That is what let the app drop a
+     kernel, an MPI reduction and its ny <= 100 restriction. */
   ops_write_const_hdf5("rms_target", 3 * (p.NY + 1), "double",
                        (char *)targ.data(), file);
 
