@@ -77,6 +77,8 @@
  *   -nprint N    report interval                          default 200
  *   -nout N      write an HDF5 frame every N steps        default 0 (off)
  *   -rst tbl|iso boundary-layer profile or isotropic       default tbl
+ *   -rng mt19937|minstd|shared                            default minstd
+ *   -seed N      realisation seed                         default 2893328493
  *
  * Build:  make influence_osem_dev_seq / _dev_mpi
  * Run:    ./influence_osem_dev_seq
@@ -107,27 +109,27 @@ typedef double Real;
 /* ------------------------------------------------------------------ *
  * PROF_SLOTS -- why the stress-profile reduction is a fixed size
  * ------------------------------------------------------------------ *
- * KerFluctProfile accumulates 6 stresses per wall-normal row, so the natural
- * dimension is 6*(ny+1). It cannot be written that way: the OPS translator
+ * KerFluctProfile accumulates 3 stresses per wall-normal row, so the natural
+ * dimension is 3*(ny+1). It cannot be written that way: the OPS translator
  * parses the ops_arg_reduce dimension with parseIntLiteral
  * (ops_translator/ops-translator/cpp/parser.py:353), which accepts an
  * INTEGER_LITERAL or a unary +/- literal and raises "Expected int expression"
- * on anything else. `6 * (ny + 1)` is a BINARY_OPERATOR, so the translator
+ * on anything else. `3 * (ny + 1)` is a BINARY_OPERATOR, so the translator
  * build fails to parse while the seq/dev builds compile it happily -- which is
  * how it went unnoticed.
  *
  * So the reduction is declared once at a fixed maximum and the loop names that
- * literal. Rows above 6*(ny+1) are never written and stay zero; the driver
- * reads only the first 6*(ny+1).
+ * literal. Rows above 3*(ny+1) are never written and stay zero; the driver
+ * reads only the first 3*(ny+1).
  *
  * KEEP THIS NUMBER SMALL. The translator UNROLLS the reduction: the generated
  * kernel carries one scalar local and one write-back per slot, plus an OpenMP
  * reduction clause naming every one of them. A first attempt at 6150 (ny up to
  * 1024) generated a 24819-line kernel that had not finished compiling at -O3
- * after 500 s; 606 generates ~2400 lines and builds in seconds. Compile time
+ * after 500 s; 303 generates ~1200 lines and builds in seconds. Compile time
  * scales with the literal, so raise it only as far as an actual grid needs.
  *
- * 606 = 6 * (100 + 1), the default ny. Three things must stay in step: this
+ * 303 = 3 * (100 + 1), the default ny. Three things must stay in step: this
  * macro, the literal in the ops_arg_reduce call, and PROF_MAX_NY. main()
  * checks ny against PROF_MAX_NY at startup and refuses rather than silently
  * truncating the profile.
@@ -135,19 +137,11 @@ typedef double Real;
  * The restriction bites only with the tabulated RST, since that is the only
  * mode that runs KerFluctProfile; -rst iso leaves ny unbounded.
  */
-#define PROF_SLOTS 606
+#define PROF_SLOTS 303
 #define PROF_MAX_NY 100
 
 /* Every constant and run option is declared in osem_constants.h and given its
    value at the top of main -- nothing is defined at file scope. */
-
-/* Optional per-row dump of the time-averaged shear profile, for averaging
-   ACROSS realisations. The in-run deviation flattens onto a per-seed floor
-   because the eddy (y,z) trajectories are deterministic, so no single run can
-   distinguish that floor from a systematic error in a21; the ensemble mean
-   over seeds can, because a lattice residual averages away and a bias does
-   not. See the shear-stress block at the end of main. */
-static const char *shear_dump = NULL;
 
 static void parse_args(int argc, char **argv) {
   for (int i = 1; i < argc; i++) {
@@ -157,13 +151,10 @@ static void parse_args(int argc, char **argv) {
     else if (!strcmp(argv[i], "-nprint") && i + 1 < argc) nprint = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-nout") && i + 1 < argc) nout = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-rst") && i + 1 < argc) use_tbl = strcmp(argv[++i], "iso") != 0;
-    /* A different seed is a different REALISATION of the same flow. The
-       statistical checks below are only meaningful against their own
-       realisation-to-realisation scatter, and this is how to measure it. */
+    /* A different seed is a different REALISATION of the same flow -- the
+       eddy positions and signs change, the statistics do not. */
     else if (!strcmp(argv[i], "-seed") && i + 1 < argc)
       seed_gbl = (unsigned int)strtoul(argv[++i], NULL, 10);
-    else if (!strcmp(argv[i], "-dumpshear") && i + 1 < argc)
-      shear_dump = argv[++i];
     else if (!strcmp(argv[i], "-rng") && i + 1 < argc) {
       const char *m = argv[++i];
       rng_method = !strcmp(m, "minstd") ? OPS_PRNG_MINSTD
@@ -529,13 +520,6 @@ int main(int argc, char **argv) {
   /* PROF_SLOTS, not 6*(ny+1): ops_reduction_result writes the handle's full
      declared length, so a buffer sized to the grid would be overrun. */
   std::vector<Real> raw(PROF_SLOTS, 0.0);
-  /* Running time-average of the stress profile. A single snapshot is a poor
-     test of the SHEAR: <u'v'> depends on the cancellation <Sx Sy> -> 0 between
-     two independent sign fields, and with only ~40 independent eddy-sized
-     patches per row that cancellation scatters badly. Accumulating over the
-     run averages it down. */
-  std::vector<Real> pf_sum(6 * (ny + 1), 0.0);
-  long pf_nsamp = 0;
   std::vector<Real> prof(3 * (ny + 1), 0.0), targ(3 * (ny + 1), 0.0);
   if (use_tbl)
     for (int i = 0; i <= ny; i++) {
@@ -630,33 +614,6 @@ int main(int argc, char **argv) {
     ops_timers(&c1, &w1);
     t_fluct += w1 - w0;
 
-    if (use_tbl) {
-      /* The literal in the ops_arg_reduce below cannot be written as
-         PROF_SLOTS (the translator parses the token, not the preprocessed
-         value), so this is what keeps the two in agreement. */
-      static_assert(PROF_SLOTS == 606,
-                    "PROF_SLOTS and the literal dimension in the "
-                    "KerFluctProfile ops_arg_reduce must match");
-      ops_par_loop(KerFluctProfile, "KerFluctProfile", block, 2, grid_range,
-                   ops_arg_dat(uprime, 1, S2D_00, "double", OPS_READ),
-                   ops_arg_dat(vprime, 1, S2D_00, "double", OPS_READ),
-                   ops_arg_dat(wprime, 1, S2D_00, "double", OPS_READ),
-                   ops_arg_idx(),
-                   /* 606 = PROF_SLOTS, and it MUST be spelled as a literal:
-                      the translator parses this token itself and cannot
-                      evaluate a macro or an expression. The static_assert
-                      above the loop is what stops the two drifting -- getting
-                      this wrong once already produced a loop declaring 6150
-                      doubles against a 606-double handle, which overruns the
-                      reduction buffer without crashing. */
-                   ops_arg_reduce(h_prof, 606, "double", OPS_INC));
-      ops_reduction_result(h_prof, raw.data());
-      /* pf_sum.size(), not raw.size(): raw is the oversized reduction buffer
-         and only its first 6*(ny+1) entries are ever written. */
-      for (size_t k = 0; k < pf_sum.size(); k++) pf_sum[k] += raw[k];
-      pf_nsamp++;
-    }
-
     /* -- output (not timed) ---------------------------------------- */
     if (nout > 0 && it % nout == 0) {
       Real fs[4] = {0, 0, 0, 0};
@@ -672,11 +629,27 @@ int main(int argc, char **argv) {
       io.rms[2] = sqrt(fs[2] / nn2);
 
       if (use_tbl) {
-        /* `raw` already holds this step's sums, from the accumulation above. */
+        /* Per-row stresses for the frame's rms_profile, which the plot script
+           draws against rms_target. Only on output steps -- it used to run
+           every step because the verification checks time-averaged it. */
+        static_assert(PROF_SLOTS == 303,
+                      "PROF_SLOTS and the literal dimension in the "
+                      "KerFluctProfile ops_arg_reduce must match");
+        ops_par_loop(KerFluctProfile, "KerFluctProfile", block, 2, grid_range,
+                     ops_arg_dat(uprime, 1, S2D_00, "double", OPS_READ),
+                     ops_arg_dat(vprime, 1, S2D_00, "double", OPS_READ),
+                     ops_arg_dat(wprime, 1, S2D_00, "double", OPS_READ),
+                     ops_arg_idx(),
+                     /* 303 = PROF_SLOTS, and it MUST be a literal: the
+                        translator parses this token and cannot evaluate a
+                        macro. The static_assert above keeps them in step. */
+                     ops_arg_reduce(h_prof, 303, "double", OPS_INC));
+        ops_reduction_result(h_prof, raw.data());
+
         const Real nrow = (Real)(nz + 1);
         for (int i = 0; i <= ny; i++)
           for (int c = 0; c < 3; c++)
-            prof[3 * i + c] = sqrt(raw[6 * i + c] / nrow);
+            prof[3 * i + c] = sqrt(raw[3 * i + c] / nrow);
       }
 
       write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, prof,
@@ -743,179 +716,6 @@ int main(int argc, char **argv) {
   }
 
   const Real n = (st[3] > 0.0) ? st[3] : 1.0;
-  /* ---- profile check ---------------------------------------------- *
-   * With the TBL profile the three rms values are supposed to DIFFER, so the
-   * isotropic invariant is gone. The test instead is whether the computed
-   * rms(y) follows the tabulated target: rms(u') should track sqrt(R11),
-   * rms(v') sqrt(R22), rms(w') sqrt(R33), since the raw sums are unit
-   * variance by construction (shape_norm). This exercises the interpolation,
-   * the Cholesky and the eddy summation together.
-   */
-  if (use_tbl) {
-    /* Time-averaged, not a final snapshot. */
-    std::vector<Real> pf(pf_sum);
-    const Real navg = (Real)(pf_nsamp > 0 ? pf_nsamp : 1);
-    for (size_t k = 0; k < pf.size(); k++) pf[k] /= navg;
-
-
-    const Real nrow = (Real)(nz + 1);
-    ops_printf("\n--- stress profile vs tabulated target ---------------\n");
-    ops_printf("averaged over %ld steps. Note the decorrelation time is one\n"
-               "flow-through, ~%d steps, so the number of INDEPENDENT samples\n"
-               "is roughly %ld.\n", pf_nsamp,
-               (int)((x_max - x_min) / increment),
-               1L + pf_nsamp / (long)((x_max - x_min) / increment));
-    ops_printf("   y        rms u'   target    rms v'   target    rms w'   target\n");
-
-    Real se = 0.0, st = 0.0;
-    int nused = 0;
-    for (int i = 0; i <= ny; i++) {
-      const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) * (Real)i / (Real)ny;
-      const Real got[3] = {sqrt(pf[6 * i + 0] / nrow),
-                           sqrt(pf[6 * i + 1] / nrow),
-                           sqrt(pf[6 * i + 2] / nrow)};
-      const Real want[3] = {sqrt(tbl_at(uu_inp, y)), sqrt(tbl_at(vv_inp, y)),
-                            sqrt(tbl_at(ww_inp, y))};
-      for (int c = 0; c < 3; c++) {
-        se += (got[c] - want[c]) * (got[c] - want[c]);
-        st += want[c] * want[c];
-      }
-      nused++;
-      if (i % 20 == 0)
-        ops_printf("  %.5f  %7.2f %8.2f   %7.2f %8.2f   %7.2f %8.2f\n", y,
-                   got[0], want[0], got[1], want[1], got[2], want[2]);
-    }
-    ops_printf("\nprofile agreement over %d rows: %.1f %% rms deviation\n",
-               nused, 100.0 * sqrt(se / st));
-
-    /* ---- shear stress ------------------------------------------------ *
-     * <u'v'> = a11 * a21 * <S_x^2> = a11 * a21 = R21 by construction. This is
-     * the ONLY check that exercises a21: the rms values are blind to it,
-     * because a22 = sqrt(R22 - a21^2) makes a21^2 + a22^2 collapse to R22
-     * whatever a21 happens to be. An error in the shear term would otherwise
-     * pass every test in this app silently.
-     *
-     * <u'w'> and <v'w'> must vanish (a31 = a32 = 0), so they come free.
-     *
-     * SPLIT IN TWO, and the reason matters. R21 is only non-zero inside the
-     * boundary layer: it peaks at 601 near the wall and is identically 0 over
-     * the top third of the grid, which is padding out to y_max + r_max. A
-     * single relative rms over ALL rows puts the freestream rows' noise in the
-     * numerator while they contribute nothing to the denominator, so the number
-     * measures how far the average has converged rather than whether a21 is
-     * right -- which is why it swung 64 / 52 / 154 % across realisations of the
-     * same correct code.
-     *
-     * So: the AGREEMENT figure covers only rows carrying real shear (|R21|
-     * above 5 % of peak, y < 0.0078), and the freestream rows are reported
-     * separately as a NOISE FLOOR. The floor is what has to fall as 1/sqrt(N)
-     * with averaging; the agreement figure is the actual test of a21.
-     */
-    const Real uv_peak = 601.048494;         /* max |uv_inp|, from TBL_data.h */
-    const Real uv_cut = 0.05 * uv_peak;
-    Real se_uv = 0, st_uv = 0, worst_uw = 0, worst_vw = 0;
-    Real noise_sq = 0.0;
-    int n_sig = 0, n_free = 0;
-    /* The CORRELATION COEFFICIENT is the test that actually isolates a21:
-     *
-     *     rho = <u'v'> / sqrt(<u'u'> <v'v'>)   ->   R21 / sqrt(R11 R22)
-     *
-     * Every stress here carries a common factor <S^2>, the variance of the
-     * raw eddy sum, which is NOT 1 in this app (see the note printed below).
-     * That factor cancels from rho and does not cancel from <u'v'> alone, so
-     * the raw rms deviation above conflates an a21 error with a normalisation
-     * error while rho separates them. Accumulated as a slope, sum(rho m rho t)
-     * / sum(rho t^2), so the near-wall rows where rho is largest dominate. */
-    Real rho_num = 0.0, rho_den = 0.0;
-    Real s2_sum = 0.0;      /* mean <u'u'>/R11 over sheared rows = <S_x^2> */
-    int s2_n = 0;
-    /* pf comes from ops_reduction_result, which ends in an Allreduce, so every
-       rank holds the same numbers -- hence the root guard, or every rank would
-       write the same file. */
-    FILE *dump = (shear_dump && ops_is_root()) ? fopen(shear_dump, "w") : NULL;
-    /* The diagonal terms ride along so the CORRELATION COEFFICIENT
-       <u'v'>/(rms u' rms v') can be formed offline. That ratio is the real
-       test of a21: it is independent of the overall shape normalisation, so a
-       shape_norm that leaves <S_x^2> = c != 1 cancels out of it, while it
-       inflates <u'v'> and the rms values by c and sqrt(c) respectively. */
-    if (dump) fprintf(dump, "# y  <u'v'>  R21  <u'u'>  R11  <v'v'>  R22\n");
-    ops_printf("\n   y         <u'v'>    target R21\n");
-    for (int i = 0; i <= ny; i++) {
-      const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) * (Real)i / (Real)ny;
-      const Real uv = pf[6 * i + 3] / nrow;
-      const Real want = tbl_at(uv_inp, y);
-      if (fabs(want) >= uv_cut) {
-        se_uv += (uv - want) * (uv - want);
-        st_uv += want * want;
-        n_sig++;
-        const Real uu = pf[6 * i + 0] / nrow, vv = pf[6 * i + 1] / nrow;
-        const Real R11 = tbl_at(uu_inp, y), R22 = tbl_at(vv_inp, y);
-        if (uu > 0 && vv > 0 && R11 > 0 && R22 > 0) {
-          const Real rho_m = uv / sqrt(uu * vv);
-          const Real rho_t = want / sqrt(R11 * R22);
-          rho_num += rho_m * rho_t;
-          rho_den += rho_t * rho_t;
-          s2_sum += uu / R11;
-          s2_n++;
-        }
-      } else {
-        noise_sq += (uv - want) * (uv - want);
-        n_free++;
-      }
-      /* Normalise the cross terms by their natural scale sqrt(R11*R33). */
-      const Real scale = sqrt(sqrt(tbl_at(uu_inp, y) * tbl_at(ww_inp, y)) *
-                              sqrt(tbl_at(vv_inp, y) * tbl_at(ww_inp, y)));
-      if (scale > 1e-6) {
-        const Real a = fabs(pf[6 * i + 4] / nrow) / (scale * scale);
-        const Real b = fabs(pf[6 * i + 5] / nrow) / (scale * scale);
-        if (a > worst_uw) worst_uw = a;
-        if (b > worst_vw) worst_vw = b;
-      }
-      if (dump)
-        fprintf(dump, "%.8e %.8e %.8e %.8e %.8e %.8e %.8e\n", y, uv, want,
-                pf[6 * i + 0] / nrow, tbl_at(uu_inp, y), pf[6 * i + 1] / nrow,
-                tbl_at(vv_inp, y));
-      if (i % 20 == 0)
-        ops_printf("  %.5f  %10.2f  %10.2f%s\n", y, uv, want,
-                   fabs(want) >= uv_cut ? "" : "   (freestream)");
-    }
-    if (dump) fclose(dump);
-    ops_printf("\nshear agreement over %d sheared rows: %.1f %% rms deviation"
-               " from R21\n", n_sig, 100.0 * sqrt(se_uv / st_uv));
-    ops_printf("noise floor from %d freestream rows (R21 = 0 there):"
-               " %.1f %% of peak R21\n", n_free,
-               100.0 * sqrt(noise_sq / (Real)(n_free > 0 ? n_free : 1)) /
-                   uv_peak);
-    ops_printf("cross terms that must vanish: max |<u'w'>| %.4f,"
-               " max |<v'w'>| %.4f  (normalised)\n", worst_uw, worst_vw);
-
-    /* ---- what the two numbers above actually mean --------------------- *
-     * The rms deviation is NOT a verdict on a21. It is dominated by a
-     * normalisation offset that a21 has nothing to do with:
-     *
-     *   eddies = vol / eddy_radius^3, with
-     *   vol    = (x_max-x_min)(y_max-y_min + 2 r_max)(z_max-z_min + 2 r_max)
-     *
-     * pads y by 2*r_max, but the eddy box only pads y on TOP (eddy_y_min =
-     * y_min, eddy_y_max = y_max + r_max). So the eddy count is sized for a box
-     * 1.24x larger in y than the one the eddies occupy, and the density -- and
-     * with it every stress -- comes out that much high. Measured <S^2> ~ 1.16
-     * against a shape-function prediction of 0.949 * 1.242 = 1.179. This is
-     * INHERITED, not introduced: apps/c/oSEM/OPS_oSEM.cpp:43-49 has the same
-     * pair. Left alone deliberately -- the port holds the reference's
-     * invariants, including this one.
-     *
-     * The correlation coefficient divides that factor out, which is why it,
-     * and not the rms deviation, is the verification of a21. */
-    ops_printf("mean <u'u'>/R11 over sheared rows: %.3f"
-               "  (= <S_x^2>; 1.0 if the eddy density were consistent with"
-               " the box -- see note in source)\n",
-               s2_sum / (Real)(s2_n > 0 ? s2_n : 1));
-    ops_printf("CORRELATION rho = <u'v'>/sqrt(<u'u'><v'v'>) vs R21/sqrt(R11 R22):"
-               " slope %.4f\n   (normalisation-independent, so THIS is the test"
-               " of a21; 1.0 = exact)\n",
-               rho_den > 0 ? rho_num / rho_den : 0.0);
-  }
 
   ops_printf("\n--- final inlet plane --------------------------------\n");
   ops_printf("rms u' = %.4f   v' = %.4f   w' = %.4f   (u0*TI = %.4f)\n",

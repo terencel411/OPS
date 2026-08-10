@@ -7,6 +7,9 @@
 #ifndef _OSEM_COMMON_H_
 #define _OSEM_COMMON_H_
 
+/* The kernel headers use sqrt/fabs/exp and include nothing themselves, so this
+   is where they get it -- both in the driver TU and in the translator's
+   generated kernel files. */
 #include <cmath>
 
 /* ------------------------------------------------------------------ *
@@ -30,27 +33,11 @@
 #define E_SY 5  /* eps_y                                                   */
 #define E_SZ 6  /* eps_z                                                   */
 
-/* ------------------------------------------------------------------ *
- * Run parameters, passed into kernels as one ops_arg_gbl array
- * ------------------------------------------------------------------ *
- * oSEM puts these in ops_decl_const globals. A parameter block keeps the
- * kernel signatures short and, more usefully, keeps every kernel reading the
- * same numbers the driver computed -- no second copy to drift out of step.
- */
-#define P_XMIN 0
-#define P_XMAX 1
-#define P_XPLANE 2
-#define P_EYMIN 3
-#define P_EYMAX 4
-#define P_EZMIN 5
-#define P_EZMAX 6
-#define P_RADIUS 7   /* 0.2 * delta, the eddy radius                       */
-#define P_INCREMENT 8 /* u0 * dt, the per-step convection distance         */
-#define P_SHAPENORM 9 /* the 1/1.5829045 normalisation from oSEM           */
-#define P_U0TI 10     /* u0 * TI, the diagonal of the Cholesky RST         */
-#define P_VTY 11      /* transverse speed scale in y, see KerConvectEddies */
-#define P_VTZ 12      /* transverse speed scale in z                       */
-#define NPARAM 13
+/* Run parameters are NOT here. An earlier version passed them into the kernels
+   as one ops_arg_gbl `prm[NPARAM]` array; they are ops_decl_const globals now,
+   declared in osem_constants.h and given their values at the top of main, the
+   same arrangement oSEM uses. The P_* index block that went with the old
+   scheme is gone. */
 
 /* ------------------------------------------------------------------ *
  * Randoms

@@ -118,32 +118,23 @@ void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
 }
 
 /* Per-row sums of u'^2, v'^2, w'^2, indexed by the wall-normal grid index.
- * With the TBL profile the three rms values are SUPPOSED to differ, so the
- * isotropic invariant (all three equal) no longer applies -- the test becomes
- * whether the computed PROFILE follows the tabulated one. */
+ * Feeds the frame's rms_profile, which the plot script draws against the
+ * tabulated target.
+ *
+ * This also accumulated the three off-diagonal stresses (<u'v'>, <u'w'>,
+ * <v'w'>) while the port was being verified: <u'v'> is the only observable
+ * that tests a21, because the rms values depend on a21 only through
+ * a22 = sqrt(R22 - a21^2), which collapses to R22 whatever a21 is. That check
+ * has served its purpose (a21 confirmed exact to 0.9 % over 12 realisations)
+ * and is in the git history if it is ever needed again -- see Part 3 of
+ * UNDERSTANDING_oSEM.md. */
 void KerFluctProfile(const ACC<double> &uprime, const ACC<double> &vprime,
                      const ACC<double> &wprime, const int *idx, double *acc) {
   const double u = uprime(0, 0), v = vprime(0, 0), w = wprime(0, 0);
-  const int r = 6 * idx[0];
+  const int r = 3 * idx[0];
   acc[r + 0] += u * u;
   acc[r + 1] += v * v;
   acc[r + 2] += w * w;
-  /* The off-diagonal stresses. <u'v'> is the SHEAR stress, and it is the only
-     thing that tests a21: the rms values depend on a21 only through
-     a22 = sqrt(R22 - a21^2), which collapses to R22 whatever a21 is.
-     <u'w'> and <v'w'> should vanish, because a31 = a32 = 0, so they are a free
-     check that nothing is leaking between components.
-
-     <u'v'> reproduces R21 only up to a common factor <S^2>, the variance of
-     the raw eddy sum, which is ~1.16 rather than 1 here because the eddy count
-     is sized from a `vol` that pads y by 2*r_max while the eddy box pads it
-     only on top. That is oSEM's own inconsistency, ported as-is. The diagonal
-     terms carry the same factor, so the driver forms the correlation
-     coefficient <u'v'>/sqrt(<u'u'><v'v'>) to divide it out -- which is why
-     these six slots are accumulated together rather than the shear alone. */
-  acc[r + 3] += u * v;
-  acc[r + 4] += u * w;
-  acc[r + 5] += v * w;
 }
 
 /* ------------------------------------------------------------------ *
