@@ -40,6 +40,7 @@ import numpy as np
 from matplotlib.patches import Circle
 
 BLOCK = "osem_block"
+H5DIR = "h5files"          # where the app writes frames (OSEM_OUTDIR in osem_io.h)
 OUTDIR = "frames"
 GIF = os.path.join(OUTDIR, "osem.gif")
 
@@ -198,9 +199,17 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = sys.argv[1:]
 
-    files = args or sorted(glob.glob("osem_output_[0-9]*.h5"))
+    files = args or sorted(glob.glob(os.path.join(H5DIR, "osem_output_[0-9]*.h5")))
     if not files:
-        sys.exit("no osem_output_*.h5 files found in %s" % os.getcwd())
+        # Fall back to the old location so frames written before the move
+        # still plot, rather than failing with a bare "none found".
+        files = sorted(glob.glob("osem_output_[0-9]*.h5"))
+        if files:
+            print("note: reading from the app root; the app now writes to %s/"
+                  % H5DIR)
+    if not files:
+        sys.exit("no osem_output_*.h5 files found in %s/ or %s"
+                 % (H5DIR, os.getcwd()))
 
     frames = [read_frame(p) for p in files]
 

@@ -13,10 +13,17 @@
 #ifndef OSEM_IO_H
 #define OSEM_IO_H
 
+#include <cerrno>
 #include <cstdio>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <vector>
 
 #include <ops_hdf5.h>
+
+/* Frames go in a subdirectory rather than the app root -- 50 files per run
+   otherwise sit alongside the sources. Both plot scripts read from here. */
+#define OSEM_OUTDIR "h5files"
 
 struct osem_io_params {
   int NY;
@@ -43,9 +50,18 @@ inline void ops_sync_barrier(ops_reduction handle) {
 
 inline void remove_stale_output(const char *prefix, int niter, int nprint,
                                 ops_reduction sync) {
-  char name[128];
+  /* Create the output directory before anything tries to write into it.
+     Every rank calls mkdir and EEXIST is the expected answer on all but one --
+     racing is harmless here and avoids needing a rank query just for this.
+     ops_fetch_*_hdf5_file is collective, so the barrier below still has to be
+     reached by everyone before the first write. */
+  if (mkdir(OSEM_OUTDIR, 0777) != 0 && errno != EEXIST)
+    ops_printf("warning: could not create %s/ (errno %d); "
+               "HDF5 writes will fail\n", OSEM_OUTDIR, errno);
+
+  char name[160];
   for (int s = nprint; s <= niter; s += nprint) {
-    snprintf(name, sizeof(name), "%s_%06d.h5", prefix, s);
+    snprintf(name, sizeof(name), "%s/%s_%06d.h5", OSEM_OUTDIR, prefix, s);
     remove(name);
   }
   ops_sync_barrier(sync);
@@ -63,8 +79,8 @@ inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
                             const std::vector<double> &targ,
                             const osem_io_params &p, int step) {
 
-  char file[128];
-  snprintf(file, sizeof(file), "osem_output_%06d.h5", step);
+  char file[160];
+  snprintf(file, sizeof(file), "%s/osem_output_%06d.h5", OSEM_OUTDIR, step);
 
   ops_fetch_block_hdf5_file(block, file);
   ops_fetch_dat_hdf5_file(crd, file);

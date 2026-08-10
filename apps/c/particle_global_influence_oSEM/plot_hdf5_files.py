@@ -10,11 +10,20 @@ from PIL import Image
 output_dir = "paraview"
 os.makedirs(output_dir, exist_ok=True)
 
-# 2. Find and sort HDF5 files numerically based on the timestep index
-h5_files = glob.glob("*.h5")
+# 2. Find and sort HDF5 files numerically based on the timestep index.
+#    The app writes into h5files/ (OSEM_OUTDIR in osem_io.h); the app-root
+#    fallback keeps frames written before that move working.
+h5_dir = "h5files"
+h5_files = glob.glob(os.path.join(h5_dir, "*.h5"))
+if not h5_files:
+    h5_files = glob.glob("*.h5")
+    if h5_files:
+        print(f"note: reading from the app root; the app now writes to {h5_dir}/")
 
 def extract_number(filename):
-    match = re.search(r'\d+', filename)
+    # basename first: the path now carries a directory, and "h5files" has a
+    # digit in it, so searching the full path sorts on the '5' in the folder.
+    match = re.search(r'\d+', os.path.basename(filename))
     return int(match.group()) if match else 0
 
 h5_files.sort(key=extract_number)
@@ -29,7 +38,8 @@ frame_paths = []
 
 # 3. Iterate over every file and generate individual PNG frames
 for file_path in h5_files:
-    base_name = os.path.splitext(file_path)[0]
+    # basename, or the PNG would land in paraview/h5files/ (which does not exist)
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
     output_png = os.path.join(output_dir, f"{base_name}.png")
     
     with h5py.File(file_path, "r") as f:

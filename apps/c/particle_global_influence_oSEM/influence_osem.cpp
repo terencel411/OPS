@@ -546,7 +546,8 @@ int main(int argc, char **argv) {
     }
   if (nout > 0) {
     remove_stale_output("osem_output", niter, nout, h_sync);
-    ops_printf("writing %d HDF5 frames (osem_output_??????.h5)\n", niter / nout);
+    ops_printf("writing %d HDF5 frames (%s/osem_output_??????.h5)\n",
+               niter / nout, OSEM_OUTDIR);
   } else {
     ops_printf("hint: add -nout 10 to write frames for plot_osem_h5.py\n");
   }
