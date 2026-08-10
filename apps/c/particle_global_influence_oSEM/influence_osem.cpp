@@ -221,7 +221,8 @@ static void seed_eddies(ops_particle particle, ops_dat pos, ops_dat gid,
    deliberately separate rather than shared: if the two ever disagree, the test
    has caught something real. */
 static Real tbl_at(const double *tab, Real y) {
-  int idx = ntbl - 2;
+  int idx = 0;   /* must match KerInitRST_TBL exactly, including this
+                    initialisation -- see the hazard note in grid_kernels.h */
   for (int i = 1; i < ntbl - 1; i++)
     if ((y - y_inp[i]) < 0) { idx = i - 1; break; }
   const Real w = (y - y_inp[idx]) / (y_inp[idx + 1] - y_inp[idx]);

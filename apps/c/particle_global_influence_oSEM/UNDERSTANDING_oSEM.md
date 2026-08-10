@@ -450,6 +450,50 @@ Nodes at either y extreme are surrounded by eddies on one side only, because
 the plane spans the *whole* eddy box rather than sitting inside it. Also
 inherited: oSEM's `instantiate_grid` does the same.
 
+## Defect 3 — the table search runs off the end (latent)
+
+`KerInitRST_TBL` finds the bracketing interval with oSEM's search:
+
+```c
+int idx = 0;
+for (i = 1; i < ntbl - 1; i++) if ((y - y_inp[i]) < 0) { idx = i - 1; break; }
+```
+
+If `y >= y_inp[ntbl-2]` the loop never breaks and `idx` stays **0**, so the
+interpolation runs off the *first* two rows with `w = y / 8.559e-6` — in the
+thousands. This is not a fallback to wall values (an earlier version of this
+document and of the source comment said so; both were wrong). It is an
+unbounded extrapolation:
+
+| y | `idx = 0` (oSEM, and what we use) | `idx = ntbl-2` |
+|---|---|---|
+| 0.01920 | R11 = **98351** | 0.289 |
+| 0.02500 | R11 = **128062** | 0.111 |
+| 0.05000 | R11 = **256123** | −0.656 |
+
+The table's own peak R11 is 5980, so the first y that triggers it already
+overshoots by 16x, and it grows without limit.
+
+**It cannot trigger as shipped.** Fall-through needs `y >= y_inp[258] =
+0.01912`; the grid reaches `eddy_y_max = 0.01187`. Every node today takes the
+same branch under either initialisation — verified identical to 4 decimals.
+
+**Kept as oSEM has it, by decision.** `idx = ntbl - 2` was used for a while: it
+saturates on the last interval and pushes the failure out to y ~ 0.027, where
+it becomes a NaN instead (the last two tabulated points slope down, so the
+extrapolation crosses zero — R11 at 0.02862, R22 at 0.02814, R33 at 0.02713 —
+and `sqrt()` fails). Later and louder, but not safe either. The correct fix is
+to clamp `w` to `[0,1]` so values saturate at the last tabulated point; that is
+a larger deviation from the reference than either, and is not applied.
+
+**If you raise `y_max` or `r_max`, fix this first.** The `idx = 0` failure is
+silent: a plausible-looking run with a garbage freestream, no NaN and no error.
+
+The driver's `tbl_at()` mirrors the search exactly, `idx = 0` included. It has
+to — it builds the target profile the checks compare against, so if the two
+extrapolated differently the check would report a large deviation that is an
+artefact of the check rather than of the physics.
+
 ## Three hypotheses the measurements killed
 
 Recorded because each looked convincing and each was wrong:

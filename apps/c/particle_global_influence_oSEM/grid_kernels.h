@@ -51,17 +51,31 @@ void KerInitRST(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
  * with z spanwise. The 0.001 clamp on a11 guards the wall, where R11 -> 0 and
  * the division for a21 would blow up.
  *
- * ONE DEPARTURE FROM THE REFERENCE. oSEM's search is
+ * A LATENT HAZARD, KEPT BECAUSE IT IS THE REFERENCE'S. The search below is
+ * oSEM's, idx initialised to 0 included. If y lies beyond y_inp[ntbl-2] the
+ * loop never breaks and idx stays 0, so the interpolation runs off the FIRST
+ * two rows with a weight of w = y / 8.559e-6 -- thousands. That is not a
+ * fallback to wall values, it is an unbounded extrapolation: R11 comes out at
+ * 98351 for y = 0.01920 (the table's own peak is 5980) and grows without limit.
  *
- *     for (i = 1; i < 260-1; i++) if ((y - ydata[i]) < 0) { idx = i-1; break; }
+ * It cannot trigger as shipped -- fall-through needs y >= 0.01912 and the grid
+ * reaches eddy_y_max = 0.01187 -- but it would the moment anyone raised y_max
+ * or r_max, and it would do so SILENTLY, producing a plausible-looking run
+ * with a garbage freestream.
  *
- * with idx initialised to 0. If y lies beyond the last tabulated point the
- * loop never breaks and idx stays 0 -- so it silently interpolates from the
- * first two rows, applying WALL values out in the freestream. It cannot
- * trigger with the shipped numbers (table reaches y = 0.01925, grid only
- * 0.01187), but it would the moment anyone raised y_max or r_max. Initialising
- * idx to the LAST interval makes it saturate instead, which is the behaviour
- * the silent version was presumably meant to have.
+ * Initialising idx to ntbl-2 instead makes the search saturate on the last
+ * interval, which pushes the failure out to y ~ 0.027 and turns it into a NaN
+ * (the last two tabulated points slope down, so the extrapolation eventually
+ * goes negative and sqrt() fails) -- later and louder, but still not safe. The
+ * actually-correct fix is to clamp w to [0,1] so values saturate at the last
+ * tabulated point. Neither is used: parity with oSEM wins for now.
+ *
+ * If you raise y_max or r_max, fix this first.
+ *
+ * The driver's tbl_at() (influence_osem.cpp) mirrors this search exactly,
+ * including the idx = 0 initialisation. It must: it builds the TARGET profile
+ * the checks compare against, so if the two extrapolated differently the
+ * comparison would report a huge deviation that is an artefact of the check.
  */
 void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
                     ACC<double> &a31, ACC<double> &a32, ACC<double> &a33,
@@ -71,7 +85,7 @@ void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
 
   const double y = crd(0, 0, 0);
 
-  int idx = ntbl - 2;                    /* clamp: saturate at the last row */
+  int idx = 0;                           /* oSEM's; see the hazard note above */
   for (int i = 1; i < ntbl - 1; i++) {
     if ((y - ydata[i]) < 0) { idx = i - 1; break; }
   }
