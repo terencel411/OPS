@@ -311,7 +311,22 @@ int main(int argc, char **argv) {
   shape_norm = 1.0 / 1.5829045;
   u0ti = u0 * ti;
 
-  /* One eddy per cube of side eddy_radius, over the box volume. */
+  /* One eddy per cube of side eddy_radius, over the box volume.
+   *
+   * KEPT AS THE REFERENCE HAS IT, KNOWINGLY. The y extent below pads BOTH
+   * sides by r_max, but the eddy box pads only the TOP (eddy_y_min = y_min,
+   * eddy_y_max = y_max + r_max). So `vol` describes a box 1.2418x larger in y
+   * than the one the eddies occupy, the eddy count is that much too high, and
+   * every Reynolds stress is inflated with it -- measured <S^2> = 1.16 where
+   * it must be 1, i.e. ~8 % high in rms.
+   *
+   * Do NOT "fix" this without asking. It is oSEM's
+   * (apps/c/oSEM/OPS_oSEM.cpp:43-49) and the port matches it deliberately, so
+   * that numbers from the two apps stay comparable. The corrected form is
+   *   (y_max - y_min + r_max)
+   * which makes vol exactly (x_max-x_min)(eddy_y_max-eddy_y_min)
+   * (eddy_z_max-eddy_z_min); it was tried and measured, and Part 3 of
+   * UNDERSTANDING_oSEM.md records what it changes. */
   vol = fabs((x_max - x_min) * (y_max - y_min + 2 * r_max) *
              (z_max - z_min + 2 * r_max));
   eddies = (int)trunc(vol / pow(eddy_radius, 3));

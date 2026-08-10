@@ -176,7 +176,11 @@ eddies = vol / eddy_radius^3;
 0.01187, so the eddy count is **1.24x** too high for the box the eddies occupy.
 Predicted `<S^2> = 0.949 * 1.242 = 1.179` against 1.16 measured. This is
 inherited: `apps/c/oSEM/OPS_oSEM.cpp:43-49` has the identical pair, and it is
-left alone because the port holds the reference's invariants.
+left alone because the port holds the reference's invariants. The one-term
+correction was tried and reverted — it removes the density excess (1718 eddies
+-> 1384, `<S^2>` 1.16 -> ~0.93) but does not reach 1 on its own, and keeping
+parity with oSEM matters more for now. `UNDERSTANDING_oSEM.md` Part 3 has the
+measurements.
 
 The correlation coefficient divides that factor out:
 

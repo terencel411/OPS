@@ -312,3 +312,263 @@ rms u' = 8.6893   v' = 8.8646   w' = 8.8594   (target u0·TI = 8.2360)
 with the eddy population conserved throughout. That falls out of three things
 together: per-eddy random streams, a bit-exact gather, and motion that is
 deterministic per eddy.
+
+---
+
+# Part 3 — Verifying the Reynolds stresses, and what it found
+
+A record of the checks that exist, why each is shaped the way it is, and the
+two inherited defects they exposed. Dated 2026-08-10.
+
+## Why a shear check was needed at all
+
+With the isotropic RST every off-diagonal of the Cholesky factor is zero, so
+nothing exercises them. The tabulated profile (`-rst tbl`) turns on `a21`, and
+at that point the app had **no test that could see it**. The reason is worth
+stating precisely, because it is not obvious:
+
+```
+a22 = sqrt(R22 - a21²)   so   a21² + a22² = R22   for ANY a21
+```
+
+The rms of `v'` therefore comes out at `sqrt(R22)` whatever `a21` is — a wrong
+`a21` is exactly cancelled by the `a22` that is derived from it. Every check in
+the app was an rms check, so `a21` could have been arbitrarily wrong and
+everything would still have passed. The shear stress `<u'v'>` is the only
+observable that sees it.
+
+## Two things the check needed before it meant anything
+
+**1. Time-averaging.** `<u'v'>` depends on the cancellation `<Sx Sy> -> 0`
+between two independent sign fields. At a single instant, with only ~40
+independent eddy-sized patches per row, that cancellation scatters by far more
+than the signal: the deviation from `R21` swung **64 / 52 / 154 %** across
+snapshots of identical, correct code. The profile accumulator now sums every
+step, and the deviation falls as it should:
+
+| niter | 200 | 800 | 3200 | 12800 |
+|---|---|---|---|---|
+| shear deviation | 35.6 % | 32.2 % | 23.3 % | 18.0 % |
+| max abs cross terms | 0.0667 | — | 0.0055 | 0.0048 |
+
+**2. Dividing out the normalisation.** Even time-averaged, the deviation
+flattened near 17 % and *stayed there* under ensemble averaging over 12 seeds,
+which makes it systematic rather than scatter. It is not `a21`. Every stress
+carries a common factor `<S²>`, the variance of the raw eddy sum, and the
+correlation coefficient cancels it:
+
+```
+rho = <u'v'> / sqrt(<u'u'> <v'v'>)   ->   R21 / sqrt(R11 R22)
+```
+
+Over 12 realisations: **slope 1.0090**, row-by-row ratios 0.98–1.03. `a21` is
+exact to 0.9 %. That is the verification; the raw rms deviation is not.
+
+Single runs are not enough to conclude anything here — `rho` scatters ±7 %
+realisation to realisation. Hence `-seed N`, and `-dumpshear FILE` for the
+per-row profile.
+
+## Defect 1 — the eddy count is sized for the wrong box
+
+`<S²>` measures **1.16** where it should be 1, so every Reynolds stress the app
+produces is ~16 % high in variance, ~8 % high in rms. The cause:
+
+```c
+vol    = (x_max-x_min) * (y_max-y_min + 2*r_max) * (z_max-z_min + 2*r_max);
+eddy_y_min = y_min;            /* NO bottom padding */
+eddy_y_max = y_max + r_max;    /* top padding only  */
+eddies = vol / eddy_radius³;
+```
+
+`vol` pads y on both sides, the eddy box pads only the top: 0.01474 against
+0.01187, a ratio of **1.2418**. So `eddies` is that much too large for the box
+the eddies actually occupy, and the density — and every stress with it — comes
+out high. Predicted `<S²> = 0.949 × 1.2418 = 1.179` against 1.16 measured.
+
+Inherited, not introduced — `apps/c/oSEM/OPS_oSEM.cpp:43-49` has the identical
+pair. The `0.949` is separately interesting: it is `∫shape² dV / (norm² · r³)`
+with oSEM's `shape_norm = 1/1.5829045`, so even with a consistent box the raw
+sum would be ~5 % low in variance.
+
+### Deliberately NOT fixed — and what fixing it does
+
+**The code keeps oSEM's form on purpose.** Matching the reference matters more
+right now than matching the tabulated target, because numbers from the two apps
+have to stay comparable. Do not "correct" this without asking first; the source
+comment at the `vol` assignment says the same thing.
+
+The correction is one term — `2*r_max` -> `r_max` in the y extent, which makes
+`vol` exactly `(x_max-x_min)(eddy_y_max-eddy_y_min)(eddy_z_max-eddy_z_min)`.
+It was applied, measured over the full 12-seed ensemble, and reverted.
+`-ny 50 -nz 75 -niter 1600`, 12 seeds each:
+
+| | oSEM base | vol fixed |
+|---|---|---|
+| `eddies` | 1718 | 1384 |
+| `<S²>` interior plateau | 1.1558 | 0.9318 |
+| `<uu>/R11` slope | 0.9362 | 0.7620 |
+| `<vv>/R22` slope | 1.1261 | 0.9059 |
+| `<uv>/R21` slope | 1.1005 | 0.8897 |
+| `rho` (the a21 test) | 1.0090 ± 0.0128 | 1.0105 ± 0.0106 |
+
+Three things to read out of this.
+
+**The mechanism is confirmed exactly.** The eddy count falls by 1.2413 and
+`<S²>` falls by 1.1558/0.9318 = 1.2404 — the same ratio to three digits. The
+excess really is the density and nothing else.
+
+**The fix improves absolute agreement but does not reach 1.** `<S²>` goes from
+~16 % *high* to ~7 % *low*; in rms, from ~7.5 % high to ~3.5 % low. It cannot
+land on 1 on its own, because `shape_norm` alone predicts 0.949 (above) — the
+normalisation constant is itself ~5 % off in variance for this shape function
+and eddy density. Correcting the box exposes that second, smaller error rather
+than cancelling against it. The two errors currently work in opposite
+directions, which is why the shipped app looks better on `<S²>` than either
+constituent deserves.
+
+**`rho` is untouched, as designed.** 1.0090 -> 1.0105, a shift far inside the
+±0.011–0.013 standard error. The `a21` verification is genuinely independent of
+the density error, which is the whole reason for using a correlation
+coefficient instead of the raw shear.
+
+The earlier version of this table was two seeds and gave a muddled picture
+(profile agreement improved on one seed and worsened on the other — pure
+scatter). The 12-seed numbers above supersede it.
+
+## Defect 2 — the plane reaches the edge of the eddy box
+
+`<u'u'>/R11` by row, ensemble-averaged over 12 seeds:
+
+```
+y = 0.00047  ->  0.867      first interior row
+y = 0.00570  ->  1.162      interior, flat
+y = 0.01140  ->  0.895
+y = 0.01187  ->  0.591      top row
+```
+
+Nodes at either y extreme are surrounded by eddies on one side only, because
+the plane spans the *whole* eddy box rather than sitting inside it. Also
+inherited: oSEM's `instantiate_grid` does the same.
+
+## Three hypotheses the measurements killed
+
+Recorded because each looked convincing and each was wrong:
+
+1. **"Freestream rows dominate the metric."** They sit at 0.1–0.5 % of peak
+   `R21`. Splitting the metric changed the number not at all.
+2. **"The eddy positions are a frozen lattice."** Drift and reflection are
+   deterministic, so only the signs re-randomise — plausible, but the ensemble
+   mean over 12 seeds did not collapse (17.2 / 16.3 / 18.6 / 16.7 % for 2 / 4 /
+   8 / 12), which rules it out.
+3. **"`eps_x` and `eps_y` are correlated."** Measured directly over 4×10⁶
+   draws: `<eps_x eps_y> = +0.00025` at 1σ = 0.00050. Clean.
+
+A fourth was my own artefact: an `R11²`-weighted regression appeared to show
+`<Sx²> = 0.936` against `<Sy²> = 1.17`, which is impossible by construction.
+The weighting simply sampled different parts of the y-dependent curve above.
+Per row the two agree exactly.
+
+## A translator constraint worth knowing
+
+`ops_arg_reduce`'s dimension must be a **bare integer literal**: the translator
+parses that token with `parseIntLiteral`
+(`ops_translator/ops-translator/cpp/parser.py:353`), which accepts an
+`INTEGER_LITERAL` only. `6 * (ny + 1)` fails with "Expected int expression" —
+and only in the translator build, so the seq/dev builds compile it happily and
+the breakage hides until someone builds the MPI target.
+
+It also **unrolls** the reduction: one scalar local and one write-back per
+slot, plus an OpenMP clause naming every one. A cap of 6150 generated a
+24819-line kernel that had not compiled after 500 s; 606 generates 2643 lines
+and builds in 15 s. Hence `PROF_SLOTS = 606`, the `ny <= 100` ceiling under
+`-rst tbl`, and the `static_assert` binding the macro to the literal.
+
+## Defects in the reference implementation itself
+
+Established by inspection of `apps/c/oSEM` and the OPS library source — oSEM
+was **not run** (out of scope). These matter for one specific reason: they set
+a hard limit on what "matching oSEM" can mean.
+
+### 1. Every eddy sign in oSEM is +1
+
+```c
+/* OPS_oSEM_kernels.h:82-84, and again at 71-73 in convect_eddies */
+eps_x(0, 0) = ((eps_x_rng(0, 0) < 0) ? -1 : 1);
+```
+
+fed from `ops_fill_random_uniform(d_eps_x_rng)` on an **int** dat, which is
+
+```c
+/* ops_lib_core.cpp:2604 */
+std::uniform_int_distribution<int> distribution(0, INT_MAX);
+```
+
+Never negative, so the `< 0` test never fires and all three sign fields are
+uniformly `+1`. SEM works by *cancellation* between random ±1 signs; with every
+sign positive there is none. `S_x` becomes a sum of strictly positive terms, so
+the fluctuations are not zero-mean and the Reynolds stresses do not mean
+anything.
+
+### 2. oSEM's eddies occupy one eighth of the box
+
+```c
+/* OPS_oSEM_kernels.h:80-82 */
+x(0,0) = x_min + ((double)x_rng(0,0) + 2147483648.0) / 4294967295.0 * (x_max - x_min);
+```
+
+`x_rng` comes from the same fill, so it spans `[0, 2^31-1]`, and
+
+```
+(0          + 2147483648) / 4294967295 = 0.5000000001
+(2147483647 + 2147483648) / 4294967295 = 1.0
+```
+
+The mapped fraction spans **[0.5, 1.0]**, not [0, 1]. Every coordinate is
+confined to the upper half of its range — in 3-D, one eighth of the volume.
+The same expression is used for the re-seed in `convect_eddies`, so it does not
+wash out over time.
+
+### 3. `compute_fluct` reads uninitialised memory under MPI
+
+Documented in Part 2 §2: `ops_dat_fetch_data` computes a displacement `ldisp`
+and then never applies it, so each rank gets its own slice written at offset 0
+while the kernel loops over the global eddy count.
+
+### What this implies
+
+**Bit-for-bit agreement with oSEM is neither achievable nor desirable.** This
+app deliberately differs in four places — random signs, uniform positions, the
+allgather, and continuous drift — three of which are fixes for the above. So
+"has this been validated against oSEM's output?" is the wrong question to keep
+open: the reference output is not a valid target.
+
+What the port *does* keep is oSEM's **physical parameterisation**: box extents,
+the `vol`-based density formula, `shape_norm`, the RST construction, the shape
+function. That is the sense in which it is a faithful port.
+
+One consequence worth stating plainly. Those constants sat, in oSEM, on top of
+a generator with no sign cancellation and eddies in an eighth of the domain —
+so they cannot have been calibrated against working physics. That is a
+plausible reading of why `shape_norm` matches no natural integral of its own
+shape function and arrives through a chain of square roots of `5.01117`
+(`1/2.2385651 = 1/sqrt(5.01117)`, then `1/1.5829045 = 1/sqrt(5.01117/2)`, both
+still in the source as comments). In *this* app the physics underneath is
+correct, so `vol` and `shape_norm` are now the only things between the output
+and the tabulated target — they are load-bearing here in a way they never were
+in the reference.
+
+They are kept as-is for now by explicit decision. Revisiting them is a matter
+of getting the output right on its own merits, not of oSEM parity.
+
+## What is and is not established
+
+| Claim | Status |
+|---|---|
+| Time-averaging accumulates and converges | verified |
+| `a21` is correct | verified — `rho` slope 1.0090 |
+| Cross terms `<u'w'>`, `<v'w'>` vanish | verified — 0.0667 -> 0.0048 |
+| Rank-invariant | verified — np = 1, 2, 4, 8, 16, both builds |
+| App reproduces the target Reynolds stresses | **no** — ~8 % high in rms |
+| Eddies uniform in the box, signs unbiased, radius constant | verified — χ² 10.7 / 5.9 / 4.7 over 10 bins |
+| Profile *shape* follows the target once scaled | verified — flat to 0.9 % (`uu`), 0.7 % (`vv`) over interior rows |
+| App agrees with reference oSEM's own output | **not a valid target** — see "Defects in the reference implementation itself" |
