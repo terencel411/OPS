@@ -90,11 +90,20 @@ void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
     if ((y - ydata[i]) < 0) { idx = i - 1; break; }
   }
 
-  const double w = (y - ydata[idx]) / (ydata[idx + 1] - ydata[idx]);
-  const double r11 = r11data[idx] + w * (r11data[idx + 1] - r11data[idx]);
-  const double r21 = r21data[idx] + w * (r21data[idx + 1] - r21data[idx]);
-  const double r22 = r22data[idx] + w * (r22data[idx + 1] - r22data[idx]);
-  const double r33 = r33data[idx] + w * (r33data[idx + 1] - r33data[idx]);
+  /* Written in oSEM's exact form -- slope first, then multiply by (y - y0) --
+     rather than the tidier "compute the weight once and share it". The two are
+     the same interpolation, but (a/b)*c and (c/b)*a do not round identically,
+     so the shared-weight version differed from the reference in the last bit
+     (measured: 1.1e-16 relative, worst case, on vv and uv). Harmless, and
+     still not worth diverging for. */
+  const double r11 = (r11data[idx + 1] - r11data[idx]) /
+                     (ydata[idx + 1] - ydata[idx]) * (y - ydata[idx]) + r11data[idx];
+  const double r21 = (r21data[idx + 1] - r21data[idx]) /
+                     (ydata[idx + 1] - ydata[idx]) * (y - ydata[idx]) + r21data[idx];
+  const double r22 = (r22data[idx + 1] - r22data[idx]) /
+                     (ydata[idx + 1] - ydata[idx]) * (y - ydata[idx]) + r22data[idx];
+  const double r33 = (r33data[idx + 1] - r33data[idx]) /
+                     (ydata[idx + 1] - ydata[idx]) * (y - ydata[idx]) + r33data[idx];
 
   a11(0, 0) = sqrt(r11);
 

@@ -225,8 +225,10 @@ static Real tbl_at(const double *tab, Real y) {
                     initialisation -- see the hazard note in grid_kernels.h */
   for (int i = 1; i < ntbl - 1; i++)
     if ((y - y_inp[i]) < 0) { idx = i - 1; break; }
-  const Real w = (y - y_inp[idx]) / (y_inp[idx + 1] - y_inp[idx]);
-  return tab[idx] + w * (tab[idx + 1] - tab[idx]);
+  /* oSEM's exact form, matching KerInitRST_TBL bit for bit -- see the note
+     there on why the slope-first ordering is kept. */
+  return (tab[idx + 1] - tab[idx]) / (y_inp[idx + 1] - y_inp[idx]) *
+             (y - y_inp[idx]) + tab[idx];
 }
 
 static void update_maps(ops_particle particle, ops_dat *db, int nb,
