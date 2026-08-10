@@ -105,11 +105,19 @@ void KerFluctProfile(const ACC<double> &uprime, const ACC<double> &vprime,
   acc[r + 0] += u * u;
   acc[r + 1] += v * v;
   acc[r + 2] += w * w;
-  /* The off-diagonal stresses. <u'v'> should reproduce R21 -- that is the
-     SHEAR stress, and it is the only thing that tests a21: the rms values
-     depend on a21 only through a22 = sqrt(R22 - a21^2), which collapses to
-     R22 whatever a21 is. <u'w'> and <v'w'> should vanish, because a31 = a32 =
-     0, so they are a free check that nothing is leaking between components. */
+  /* The off-diagonal stresses. <u'v'> is the SHEAR stress, and it is the only
+     thing that tests a21: the rms values depend on a21 only through
+     a22 = sqrt(R22 - a21^2), which collapses to R22 whatever a21 is.
+     <u'w'> and <v'w'> should vanish, because a31 = a32 = 0, so they are a free
+     check that nothing is leaking between components.
+
+     <u'v'> reproduces R21 only up to a common factor <S^2>, the variance of
+     the raw eddy sum, which is ~1.16 rather than 1 here because the eddy count
+     is sized from a `vol` that pads y by 2*r_max while the eddy box pads it
+     only on top. That is oSEM's own inconsistency, ported as-is. The diagonal
+     terms carry the same factor, so the driver forms the correlation
+     coefficient <u'v'>/sqrt(<u'u'><v'v'>) to divide it out -- which is why
+     these six slots are accumulated together rather than the shear alone. */
   acc[r + 3] += u * v;
   acc[r + 4] += u * w;
   acc[r + 5] += v * w;

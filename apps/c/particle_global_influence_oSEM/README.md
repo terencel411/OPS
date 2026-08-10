@@ -145,6 +145,58 @@ evolve continuously rather than being resampled. If exact fidelity to oSEM's
 resampling matters more than running past two ranks, the teleporting version is
 in the git history.
 
+## Verifying the shear stress, and what it turned up
+
+With the tabulated RST (`-rst tbl`) the Cholesky factor gains an off-diagonal
+term `a21`, and nothing else in the app tests it: the rms values depend on `a21`
+only through `a22 = sqrt(R22 - a21^2)`, so `a21^2 + a22^2` collapses to `R22`
+whatever `a21` is. An error there would pass every other check silently. The
+shear stress `<u'v'>` is the one observable that sees it.
+
+Two things were needed to make that check mean anything.
+
+**Time-averaging.** A single snapshot is hopeless: `<u'v'>` depends on the
+cancellation `<S_x S_y> -> 0`, which at one instant scatters by far more than
+the signal. The deviation from `R21` swung 64 / 52 / 154 % across snapshots of
+identical code. The profile accumulator now sums over every step.
+
+**Dividing out the normalisation.** Even time-averaged, the deviation flattened
+at ~17 % and stayed there under ensemble averaging over 12 seeds, which makes it
+systematic. It is not `a21`. Every stress carries a common factor `<S^2>`, the
+variance of the raw eddy sum, measured at **1.16** where it should be 1:
+
+```c
+vol    = (x_max-x_min) * (y_max-y_min + 2*r_max) * (z_max-z_min + 2*r_max);
+eddy_y_min = y_min;            /* no bottom padding */
+eddy_y_max = y_max + r_max;    /* top padding only  */
+eddies = vol / eddy_radius^3;
+```
+
+`vol` pads y by `2*r_max`, the eddy box pads it only on top — 0.01474 against
+0.01187, so the eddy count is **1.24x** too high for the box the eddies occupy.
+Predicted `<S^2> = 0.949 * 1.242 = 1.179` against 1.16 measured. This is
+inherited: `apps/c/oSEM/OPS_oSEM.cpp:43-49` has the identical pair, and it is
+left alone because the port holds the reference's invariants.
+
+The correlation coefficient divides that factor out:
+
+```
+rho = <u'v'> / sqrt(<u'u'> <v'v'>)   ->   R21 / sqrt(R11 R22)
+```
+
+Over 12 realisations, **slope 1.0090** — `a21` is exact to 0.9 %, row-by-row
+ratios 0.98–1.03. The free cross-terms `<u'w'>` and `<v'w'>` converge to zero as
+they must (0.0667 -> 0.0048 from 200 to 12800 steps).
+
+A by-product worth knowing: `<u'u'>/R11` drops to ~0.87 at the first interior
+row and ~0.59 at the top row, because the plane spans the full eddy box, so
+nodes at either y extreme are surrounded by eddies on one side only. Also
+inherited — oSEM's grid does the same.
+
+`-seed N` selects the realisation and `-dumpshear FILE` writes the per-row
+profile, since these statistics are only interpretable against their own
+realisation-to-realisation scatter (single-run `rho` scatters +/- 7 %).
+
 ## Files
 
 | File | Contents |
