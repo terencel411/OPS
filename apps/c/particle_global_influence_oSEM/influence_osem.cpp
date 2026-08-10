@@ -612,14 +612,25 @@ int main(int argc, char **argv) {
     t_fluct += w1 - w0;
 
     if (use_tbl) {
+      /* The literal in the ops_arg_reduce below cannot be written as
+         PROF_SLOTS (the translator parses the token, not the preprocessed
+         value), so this is what keeps the two in agreement. */
+      static_assert(PROF_SLOTS == 606,
+                    "PROF_SLOTS and the literal dimension in the "
+                    "KerFluctProfile ops_arg_reduce must match");
       ops_par_loop(KerFluctProfile, "KerFluctProfile", block, 2, grid_range,
                    ops_arg_dat(uprime, 1, S2D_00, "double", OPS_READ),
                    ops_arg_dat(vprime, 1, S2D_00, "double", OPS_READ),
                    ops_arg_dat(wprime, 1, S2D_00, "double", OPS_READ),
                    ops_arg_idx(),
-                   /* 6150 = PROF_SLOTS. Must be a literal here -- the
-                      translator cannot parse an expression. */
-                   ops_arg_reduce(h_prof, 6150, "double", OPS_INC));
+                   /* 606 = PROF_SLOTS, and it MUST be spelled as a literal:
+                      the translator parses this token itself and cannot
+                      evaluate a macro or an expression. The static_assert
+                      above the loop is what stops the two drifting -- getting
+                      this wrong once already produced a loop declaring 6150
+                      doubles against a 606-double handle, which overruns the
+                      reduction buffer without crashing. */
+                   ops_arg_reduce(h_prof, 606, "double", OPS_INC));
       ops_reduction_result(h_prof, raw.data());
       /* pf_sum.size(), not raw.size(): raw is the oversized reduction buffer
          and only its first 6*(ny+1) entries are ever written. */
