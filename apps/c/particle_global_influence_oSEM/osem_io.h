@@ -25,18 +25,19 @@
    otherwise sit alongside the sources. Both plot scripts read from here. */
 #define OSEM_OUTDIR "h5files"
 
-struct osem_io_params {
-  int NY;
-  int NZ;
-  int NEDDY;
-  int NITER;
-  int NPRINT;
-  double DT;
-  double U0TI;
-  double XPLANE;
-  double box[4];    /* eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max */
-  int use_tbl;      /* 1 = tabulated boundary-layer RST, 0 = isotropic  */
-};
+/* The run constants below are read straight off the file-scope globals that
+   osem_constants.h defines -- the same thing oSEM's io.h write_constants()
+   does, and the same thing grid_kernels.h and particle_kernels.h already do
+   with ny, nz, eddies and shape_norm. This header therefore has to be included
+   AFTER osem_constants.h, which the driver does.
+   Note that being an OPS constant is not what makes this work: ops_decl_const
+   only makes a value visible inside KERNELS (device constant memory on the
+   accelerated backends), and this is host code. niter, nprint and use_tbl are
+   not ops_decl_const'd at all and are read here just the same.
+   An osem_io_params struct used to carry these into write_osem_step. It bought
+   nothing: its own aggregate initialiser was an unlabelled positional list of
+   five ints then three doubles, exactly the transposition hazard a struct is
+   supposed to remove, and one of its fields (NPRINT) was never read. */
 
 /* Collective barrier built out of OPS: ops_reduction_result ends in an
    Allreduce, and ops_arg_reduce is what arms the handle. */
@@ -74,8 +75,7 @@ inline void remove_stale_output(const char *prefix, int niter, int nprint,
 inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
                             ops_dat &vprime, ops_dat &wprime,
                             const std::vector<double> &all,
-                            const std::vector<double> &targ,
-                            const osem_io_params &p, int step) {
+                            const std::vector<double> &targ, int step) {
 
   char file[160];
   snprintf(file, sizeof(file), "%s/osem_output_%06d.h5", OSEM_OUTDIR, step);
@@ -86,7 +86,7 @@ inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
   ops_fetch_dat_hdf5_file(vprime, file);
   ops_fetch_dat_hdf5_file(wprime, file);
 
-  const int N = p.NEDDY;
+  const int N = eddies;
 
   /* Split the interleaved gather buffer so a plot script can read one
      quantity at a time. A few tens of kB per frame. */
@@ -101,17 +101,19 @@ inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
     sz[i] = all[NCOMP * i + E_SZ];
   }
 
-  double time = p.DT * step;
-  ops_write_const_hdf5("neddy", 1, "int", (char *)&p.NEDDY, file);
-  ops_write_const_hdf5("NY", 1, "int", (char *)&p.NY, file);
-  ops_write_const_hdf5("NZ", 1, "int", (char *)&p.NZ, file);
-  ops_write_const_hdf5("NITER", 1, "int", (char *)&p.NITER, file);
+  double time = dt * step;
+  const double box[4] = {eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max};
+
+  ops_write_const_hdf5("neddy", 1, "int", (char *)&eddies, file);
+  ops_write_const_hdf5("NY", 1, "int", (char *)&ny, file);
+  ops_write_const_hdf5("NZ", 1, "int", (char *)&nz, file);
+  ops_write_const_hdf5("NITER", 1, "int", (char *)&niter, file);
   ops_write_const_hdf5("timestep", 1, "int", (char *)&step, file);
   ops_write_const_hdf5("time", 1, "double", (char *)&time, file);
-  ops_write_const_hdf5("u0ti", 1, "double", (char *)&p.U0TI, file);
-  ops_write_const_hdf5("x_plane", 1, "double", (char *)&p.XPLANE, file);
-  ops_write_const_hdf5("box", 4, "double", (char *)p.box, file);
-  ops_write_const_hdf5("use_tbl", 1, "int", (char *)&p.use_tbl, file);
+  ops_write_const_hdf5("u0ti", 1, "double", (char *)&u0ti, file);
+  ops_write_const_hdf5("x_plane", 1, "double", (char *)&x_plane, file);
+  ops_write_const_hdf5("box", 4, "double", (char *)box, file);
+  ops_write_const_hdf5("use_tbl", 1, "int", (char *)&use_tbl, file);
   /* The tabulated target the profile should follow. A plane-averaged rms has
      nothing meaningful to compare against under the TBL profile -- the target
      is a PROFILE -- so each frame carries it.
@@ -123,7 +125,7 @@ inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
      path. Python and the reduction agreed to 4.5e-15 relative over 50 frames.
      KerFluctStats itself stays -- the end-of-run report still uses it, and
      nothing is written at that point for a script to work from. */
-  ops_write_const_hdf5("rms_target", 3 * (p.NY + 1), "double",
+  ops_write_const_hdf5("rms_target", 3 * (ny + 1), "double",
                        (char *)targ.data(), file);
 
   ops_write_const_hdf5("eddy_x", N, "double", (char *)ex.data(), file);

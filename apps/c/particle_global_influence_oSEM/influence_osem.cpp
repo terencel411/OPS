@@ -453,23 +453,10 @@ int main(int argc, char **argv) {
   double t_convect = 0, t_gather = 0, t_fluct = 0, t_rng = 0;
   int lost_at = -1;
 
-  /* Output is ON by default now, at the report interval -- one knob, -nprint,
-     so a run that tells you where it is also leaves you something to plot.
-     A frame write is not part of any of the three kernels and is not timed,
-     but it is not free either: the README timings were measured with output
-     off, so quote them from a -nprint 0 run. */
-  osem_io_params io = {ny,
-                       nz,
-                       eddies,
-                       niter,
-                       nprint,
-                       dt,
-                       u0ti,
-                       x_plane,
-                       {eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max},
-                       use_tbl};
-
-  /* The target profile is fixed for the run, so build it once. */
+  /* The target profile is fixed for the run, so build it once. It is the one
+     thing write_osem_step cannot read off a global: it is derived here, not a
+     run constant. Everything else the writer needs it takes straight from
+     osem_constants.h, as oSEM's io.h does -- see the note there. */
   std::vector<Real> targ(3 * (ny + 1), 0.0);
   if (use_tbl)
     for (int i = 0; i <= ny; i++) {
@@ -478,6 +465,11 @@ int main(int argc, char **argv) {
       targ[3 * i + 1] = sqrt(tbl_at(vv_inp, y));
       targ[3 * i + 2] = sqrt(tbl_at(ww_inp, y));
     }
+  /* Output is ON by default now, at the report interval -- one knob, -nprint,
+     so a run that tells you where it is also leaves you something to plot.
+     A frame write is not part of any of the three kernels and is not timed,
+     but it is not free either: the README timings were measured with output
+     off, so quote them from a -nprint 0 run. */
   if (nprint > 0) {
     remove_stale_output("osem_output", niter, nprint, h_sync);
     ops_printf("reporting and writing an HDF5 frame every %d steps: "
@@ -567,7 +559,7 @@ int main(int argc, char **argv) {
 
     /* -- output (not timed) ---------------------------------------- */
     /* No statistics are computed here. The plane rms used to be a
-       KerFluctStats loop plus an MPI reduction feeding io.rms, written into
+       KerFluctStats loop plus an MPI reduction feeding an rms dataset in
        every frame; the plot script now forms it from the uprime/vprime/wprime
        fields the frame already carries (sqrt of the mean square over the
        plane), which agreed with the reduction to 4.5e-15 relative over 50
@@ -576,8 +568,7 @@ int main(int argc, char **argv) {
     /* One interval drives both: a step that reports is a step that writes.
        The frame is named for `it`, the iteration that produced it. */
     if (nprint > 0 && it % nprint == 0) {
-      write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, targ,
-                      io, it);
+      write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, targ, it);
       ops_printf("step %5d / %d\n", it, niter);
     }
   }
