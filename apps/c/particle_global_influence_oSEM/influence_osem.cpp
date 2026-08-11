@@ -463,7 +463,6 @@ int main(int argc, char **argv) {
                        u0ti,
                        x_plane,
                        {eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max},
-                       {0.0, 0.0, 0.0},
                        use_tbl};
 
   /* The target profile is fixed for the run, so build it once. */
@@ -562,22 +561,16 @@ int main(int argc, char **argv) {
     t_fluct += w1 - w0;
 
     /* -- output (not timed) ---------------------------------------- */
-    if (nout > 0 && it % nout == 0) {
-      Real fs[4] = {0, 0, 0, 0};
-      ops_par_loop(KerFluctStats, "KerFluctStats", block, 2, grid_range,
-                   ops_arg_dat(uprime, 1, S2D_00, "double", OPS_READ),
-                   ops_arg_dat(vprime, 1, S2D_00, "double", OPS_READ),
-                   ops_arg_dat(wprime, 1, S2D_00, "double", OPS_READ),
-                   ops_arg_reduce(h_stat, 4, "double", OPS_INC));
-      ops_reduction_result(h_stat, fs);
-      const Real nn2 = (fs[3] > 0.0) ? fs[3] : 1.0;
-      io.rms[0] = sqrt(fs[0] / nn2);
-      io.rms[1] = sqrt(fs[1] / nn2);
-      io.rms[2] = sqrt(fs[2] / nn2);
-
+    /* No statistics are computed here. The plane rms used to be a
+       KerFluctStats loop plus an MPI reduction feeding io.rms, written into
+       every frame; the plot script now forms it from the uprime/vprime/wprime
+       fields the frame already carries (sqrt of the mean square over the
+       plane), which agreed with the reduction to 4.5e-15 relative over 50
+       frames -- summation order, nothing more. Same move that removed the
+       rms_profile dataset earlier. See the note in osem_io.h. */
+    if (nout > 0 && it % nout == 0)
       write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, targ,
                       io, it);
-    }
 
     if (it % nprint == 0) ops_printf("step %5d / %d\n", it, niter);
   }

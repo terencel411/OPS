@@ -35,7 +35,6 @@ struct osem_io_params {
   double U0TI;
   double XPLANE;
   double box[4];    /* eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max */
-  double rms[3];    /* u', v', w' at this frame                       */
   int use_tbl;      /* 1 = tabulated boundary-layer RST, 0 = isotropic  */
 };
 
@@ -112,14 +111,18 @@ inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
   ops_write_const_hdf5("u0ti", 1, "double", (char *)&p.U0TI, file);
   ops_write_const_hdf5("x_plane", 1, "double", (char *)&p.XPLANE, file);
   ops_write_const_hdf5("box", 4, "double", (char *)p.box, file);
-  ops_write_const_hdf5("rms", 3, "double", (char *)p.rms, file);
   ops_write_const_hdf5("use_tbl", 1, "int", (char *)&p.use_tbl, file);
   /* The tabulated target the profile should follow. A plane-averaged rms has
      nothing meaningful to compare against under the TBL profile -- the target
-     is a PROFILE -- so each frame carries it. The computed profile is NOT
-     written: it is derivable from the uprime/vprime/wprime fields above, and
-     the plot script forms it there instead. That is what let the app drop a
-     kernel, an MPI reduction and its ny <= 100 restriction. */
+     is a PROFILE -- so each frame carries it.
+     NEITHER the computed profile NOR the plane rms is written: both are
+     derivable from the uprime/vprime/wprime fields above, and the plot script
+     forms them there instead. Dropping the profile lost a kernel, an MPI
+     reduction and the ny <= 100 restriction; dropping the plane rms lost a
+     second KerFluctStats loop and its per-frame Allreduce from the output
+     path. Python and the reduction agreed to 4.5e-15 relative over 50 frames.
+     KerFluctStats itself stays -- the end-of-run report still uses it, and
+     nothing is written at that point for a script to work from. */
   ops_write_const_hdf5("rms_target", 3 * (p.NY + 1), "double",
                        (char *)targ.data(), file);
 

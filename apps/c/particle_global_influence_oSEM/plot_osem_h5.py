@@ -73,8 +73,15 @@ def read_frame(path):
             "u0ti": float(f["u0ti"][0]),
             "xplane": float(f["x_plane"][0]),
             "box": f["box"][:],
-            "rms": f["rms"][:],
             "use_tbl": int(f["use_tbl"][0]),
+            # Plane rms, computed here rather than written by the app -- same
+            # reasoning as `prof` below. Matched the app's KerFluctStats
+            # reduction to 4.5e-15 relative over 50 frames (summation order),
+            # and dropping it took a kernel launch and an Allreduce out of the
+            # app's output path.
+            "rms": np.array(
+                [np.sqrt((fields[n] ** 2).mean())
+                 for n in ("uprime", "vprime", "wprime")]),
             # Per-row rms, computed here rather than written by the app. The
             # fields above already carry everything needed -- row i of `fields`
             # is one wall-normal station, so the mean over z is the row rms.
