@@ -74,8 +74,7 @@ inline void remove_stale_output(const char *prefix, int niter, int nprint,
  */
 inline void write_osem_step(ops_block &block, ops_dat &crd, ops_dat &uprime,
                             ops_dat &vprime, ops_dat &wprime,
-                            const std::vector<double> &all,
-                            const std::vector<double> &targ, int step) {
+                            const std::vector<double> &all, int step) {
 
   char file[160];
   snprintf(file, sizeof(file), "%s/osem_output_%06d.h5", OSEM_OUTDIR, step);

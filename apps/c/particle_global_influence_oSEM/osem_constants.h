@@ -29,6 +29,8 @@
 #ifndef _OSEM_CONSTANTS_H_
 #define _OSEM_CONSTANTS_H_
 
+#include <vector>       /* for targ, group 5 below                          */
+
 /* ---- 1. flow ------------------------------------------------------ */
 
 double u0;              /* convection speed; eddies are swept past at this  */
@@ -80,6 +82,17 @@ double vol;             /* eddy box volume                                  */
 int eddies;             /* = vol / eddy_radius^3, one per cube of that side */
 double u0ti;            /* u0 * ti -- the diagonal of the Cholesky RST       */
 double shape_norm;      /* 1/1.5829045, so the raw signal has unit variance */
+
+/* The rms each component should have at each of the ny+1 wall-normal
+   stations, interleaved u,v,w -- sqrt of the tabulated diagonal Reynolds
+   stresses, zero under -rst iso. Sized and filled in main once ny is known,
+   then never written again, which is what lets it live here: it is derived
+   from the table, but it is as fixed for a run as anything else in this file.
+   Read by write_osem_step (the rms_target dataset in every frame) and by the
+   end-of-run tbl report, neither of which is passed it.
+   NOT here: all_eddies. That one is rewritten every timestep by the gather,
+   so it is per-step state, not a run constant, and it stays a parameter. */
+std::vector<double> targ;
 
 /* ---- 6. run options -------------------------------------------------- *
  * Driver only -- no kernel reads these, so none is registered with

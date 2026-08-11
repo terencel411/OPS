@@ -7,10 +7,17 @@
 #ifndef _OSEM_COMMON_H_
 #define _OSEM_COMMON_H_
 
-/* The kernel headers use sqrt/fabs/exp and include nothing themselves, so this
-   is where they get it -- both in the driver TU and in the translator's
-   generated kernel files. */
-#include <cmath>
+/* No <cmath> here. It used to be, on the stated grounds that the kernel
+   headers use sqrt/fabs/exp, include nothing themselves, and would need it
+   "both in the driver TU and in the translator's generated kernel files".
+   The second half was never true: no generated file includes this header, or
+   any app header -- the translator copies the kernel bodies into
+   <backend>/Ker*_kernel.cpp, which get <cmath> transitively from
+   ops_lib_core.h. And the first half is already covered, because the only two
+   TUs that include this header (influence_osem.cpp, influence_osem_ops.cpp)
+   include <cmath> themselves ahead of it, and ahead of the kernel headers.
+   If you ever include grid_kernels.h or particle_kernels.h from a TU that has
+   no <cmath> of its own, add it there -- that is where the dependency is. */
 
 /* ------------------------------------------------------------------ *
  * The gather buffer

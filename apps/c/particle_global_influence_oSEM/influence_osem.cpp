@@ -453,11 +453,12 @@ int main(int argc, char **argv) {
   double t_convect = 0, t_gather = 0, t_fluct = 0, t_rng = 0;
   int lost_at = -1;
 
-  /* The target profile is fixed for the run, so build it once. It is the one
-     thing write_osem_step cannot read off a global: it is derived here, not a
-     run constant. Everything else the writer needs it takes straight from
-     osem_constants.h, as oSEM's io.h does -- see the note there. */
-  std::vector<Real> targ(3 * (ny + 1), 0.0);
+  /* The target profile is fixed for the run, so build it once. `targ` itself
+     is declared in osem_constants.h -- derived here rather than set from the
+     command line, but as fixed for the run as anything else there, so the
+     writer and the end-of-run report read it as a global like everything else
+     they need. Only the size waits for ny. */
+  targ.assign(3 * (ny + 1), 0.0);
   if (use_tbl)
     for (int i = 0; i <= ny; i++) {
       const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) * (Real)i / (Real)ny;
@@ -568,7 +569,7 @@ int main(int argc, char **argv) {
     /* One interval drives both: a step that reports is a step that writes.
        The frame is named for `it`, the iteration that produced it. */
     if (nprint > 0 && it % nprint == 0) {
-      write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, targ, it);
+      write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, it);
       ops_printf("step %5d / %d\n", it, niter);
     }
   }
