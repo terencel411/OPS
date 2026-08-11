@@ -236,10 +236,26 @@ def main():
     history = ([frames[i][2]["time"] for i in order],
                [frames[i][2]["rms"] for i in order])
 
+    meta0 = frames[0][2]
+    end = history[1][-1]
     print("field range   : +/- %.4g" % clim)
-    print("rms at the end: u' %.4f  v' %.4f  w' %.4f  (target %.4f)"
-          % (history[1][-1][0], history[1][-1][1], history[1][-1][2],
-             frames[0][2]["u0ti"]))
+    if meta0["use_tbl"]:
+        # u0*TI is NOT the target under the tabulated profile -- it governs
+        # nothing there (only the isotropic KerInitRST reads it), and printing
+        # it here said the same misleading thing the app's own report used to.
+        # `rms` above is a plane average over every node, so the comparable
+        # target is the target PROFILE collapsed the same way: rows are equally
+        # weighted, targ holds sqrt(R), hence sqrt of its mean square. Matches
+        # what influence_osem.cpp now prints. The honest comparison is per-y --
+        # that is the bottom panel, and the reason this line ends in a pointer.
+        tgt = np.sqrt((meta0["targ"] ** 2).mean(axis=0))
+        print("rms at the end: u' %.4f  v' %.4f  w' %.4f" % tuple(end))
+        print("tabulated tgt : u' %.4f  v' %.4f  w' %.4f"
+              " (collapsed the same way; per-y is the bottom panel)"
+              % tuple(tgt))
+    else:
+        print("rms at the end: u' %.4f  v' %.4f  w' %.4f  (target %.4f)"
+              % (end[0], end[1], end[2], meta0["u0ti"]))
 
     pngs = []
     for path, frame in zip(files, frames):

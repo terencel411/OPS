@@ -74,8 +74,9 @@
  * OPTIONS
  *   -niter N     timesteps                                default 2000
  *   -ny N -nz N  inlet plane resolution                   default 100 x 150
- *   -nprint N    report interval                          default 200
- *   -nout N      write an HDF5 frame every N steps        default 0 (off)
+ *   -nprint N    report AND HDF5 frame interval           default 100
+ *                (one knob: a step that reports also writes a frame;
+ *                 <= 0 turns both off)
  *   -rst tbl|iso boundary-layer profile or isotropic       default tbl
  *   -rng mt19937|minstd|shared                            default minstd
  *   -seed N      realisation seed                         default 2893328493
@@ -116,7 +117,6 @@ static void parse_args(int argc, char **argv) {
     else if (!strcmp(argv[i], "-ny") && i + 1 < argc) ny = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-nz") && i + 1 < argc) nz = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-nprint") && i + 1 < argc) nprint = atoi(argv[++i]);
-    else if (!strcmp(argv[i], "-nout") && i + 1 < argc) nout = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-rst") && i + 1 < argc) use_tbl = strcmp(argv[++i], "iso") != 0;
     /* A different seed is a different REALISATION of the same flow -- the
        eddy positions and signs change, the statistics do not. */
@@ -226,8 +226,9 @@ int main(int argc, char **argv) {
 
   seed_gbl = 2893328493u;   /* oSEM's seed_gbl */
   niter = 2000;
-  nprint = 200;
-  nout = 0;
+  nprint = 100;   /* one interval for both the progress report and the HDF5
+                     frame: every step that reports also writes. 2000/100 = 20
+                     frames, named for the iteration that produced them. */
   /* minstd_rand per particle: 130x faster than mt19937 (0.08 vs 10.99 ms/step)
      at the same rank invariance, and measured clean on the correlation that
      matters -- see ops_particle_random.h. Override with -rng. */
@@ -452,13 +453,16 @@ int main(int argc, char **argv) {
   double t_convect = 0, t_gather = 0, t_fluct = 0, t_rng = 0;
   int lost_at = -1;
 
-  /* Output is off by default: the timings quoted in the README were measured
-     without it, and a frame write is not part of any of the three kernels. */
+  /* Output is ON by default now, at the report interval -- one knob, -nprint,
+     so a run that tells you where it is also leaves you something to plot.
+     A frame write is not part of any of the three kernels and is not timed,
+     but it is not free either: the README timings were measured with output
+     off, so quote them from a -nprint 0 run. */
   osem_io_params io = {ny,
                        nz,
                        eddies,
                        niter,
-                       nout,
+                       nprint,
                        dt,
                        u0ti,
                        x_plane,
@@ -474,12 +478,13 @@ int main(int argc, char **argv) {
       targ[3 * i + 1] = sqrt(tbl_at(vv_inp, y));
       targ[3 * i + 2] = sqrt(tbl_at(ww_inp, y));
     }
-  if (nout > 0) {
-    remove_stale_output("osem_output", niter, nout, h_sync);
-    ops_printf("writing %d HDF5 frames (%s/osem_output_??????.h5)\n",
-               niter / nout, OSEM_OUTDIR);
+  if (nprint > 0) {
+    remove_stale_output("osem_output", niter, nprint, h_sync);
+    ops_printf("reporting and writing an HDF5 frame every %d steps: "
+               "%d frames (%s/osem_output_??????.h5)\n",
+               nprint, niter / nprint, OSEM_OUTDIR);
   } else {
-    ops_printf("hint: add -nout 10 to write frames for plot_osem_h5.py\n");
+    ops_printf("-nprint %d: no progress report and no HDF5 frames\n", nprint);
   }
 
   for (int it = 1; it <= niter; it++) {
@@ -568,11 +573,13 @@ int main(int argc, char **argv) {
        plane), which agreed with the reduction to 4.5e-15 relative over 50
        frames -- summation order, nothing more. Same move that removed the
        rms_profile dataset earlier. See the note in osem_io.h. */
-    if (nout > 0 && it % nout == 0)
+    /* One interval drives both: a step that reports is a step that writes.
+       The frame is named for `it`, the iteration that produced it. */
+    if (nprint > 0 && it % nprint == 0) {
       write_osem_step(block, crd, uprime, vprime, wprime, all_eddies, targ,
                       io, it);
-
-    if (it % nprint == 0) ops_printf("step %5d / %d\n", it, niter);
+      ops_printf("step %5d / %d\n", it, niter);
+    }
   }
 
   /* ---- 8. report -------------------------------------------------- */
@@ -634,8 +641,36 @@ int main(int argc, char **argv) {
   const Real n = (st[3] > 0.0) ? st[3] : 1.0;
 
   ops_printf("\n--- final inlet plane --------------------------------\n");
-  ops_printf("rms u' = %.4f   v' = %.4f   w' = %.4f   (u0*TI = %.4f)\n",
-             sqrt(st[0] / n), sqrt(st[1] / n), sqrt(st[2] / n), u0ti);
+  if (use_tbl) {
+    /* u0*ti is NOT the target here, and printing it was misleading: under the
+       tabulated profile it governs nothing at all -- only KerInitRST, the
+       isotropic path, ever reads it. KerInitRST_TBL takes every stress from
+       the table.
+
+       The number that IS comparable to the plane rms above is the target
+       profile collapsed the same way. KerFluctStats weights every node of the
+       plane equally, and each of the ny+1 rows carries the same nz+1 nodes,
+       so the plane mean square is the mean of R(y) over the rows -- i.e. the
+       mean square of targ, which already holds sqrt(R). Host-side over ny+1
+       entries: no kernel and no reduction, targ is identical on every rank.
+
+       This is still a collapse of a profile onto one number. The comparison
+       that matters is per-y, and it is the bottom panel of plot_osem_h5.py. */
+    Real tp[3] = {0, 0, 0};
+    for (int i = 0; i <= ny; i++)
+      for (int k = 0; k < 3; k++) tp[k] += targ[3 * i + k] * targ[3 * i + k];
+    for (int k = 0; k < 3; k++) tp[k] = sqrt(tp[k] / (Real)(ny + 1));
+
+    ops_printf("rms u' = %.4f   v' = %.4f   w' = %.4f\n",
+               sqrt(st[0] / n), sqrt(st[1] / n), sqrt(st[2] / n));
+    ops_printf("tabulated target, collapsed the same way:"
+               "  %.4f      %.4f      %.4f\n", tp[0], tp[1], tp[2]);
+    ops_printf("  (the target is a PROFILE in y -- the per-y comparison is the"
+               " bottom panel of plot_osem_h5.py)\n");
+  } else {
+    ops_printf("rms u' = %.4f   v' = %.4f   w' = %.4f   (u0*TI = %.4f)\n",
+               sqrt(st[0] / n), sqrt(st[1] / n), sqrt(st[2] / n), u0ti);
+  }
   ops_printf("eddy population: %s\n",
              lost_at < 0 ? "conserved for the whole run"
                          : "CHANGED -- see the message above");

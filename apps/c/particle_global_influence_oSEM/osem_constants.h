@@ -89,8 +89,7 @@ double shape_norm;      /* 1/1.5829045, so the raw signal has unit variance */
 
 unsigned int seed_gbl;  /* changing it changes the whole realisation        */
 int niter;
-int nprint;             /* progress print interval                          */
-int nout;               /* HDF5 frame interval; 0 = off                     */
+int nprint;             /* report + HDF5 frame interval; <= 0 = both off    */
 int rng_method;         /* one of ops_particle_rng_method                    */
 int ntbl;               /* points in the tabulated RST profile (TBL_data.h) */
 int use_tbl;            /* 1 = boundary-layer profile, 0 = isotropic        */
