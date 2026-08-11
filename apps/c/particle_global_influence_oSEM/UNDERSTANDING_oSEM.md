@@ -523,9 +523,95 @@ the breakage hides until someone builds the MPI target.
 
 It also **unrolls** the reduction: one scalar local and one write-back per
 slot, plus an OpenMP clause naming every one. A cap of 6150 generated a
-24819-line kernel that had not compiled after 500 s; 606 generates 2643 lines
-and builds in 15 s. Hence `PROF_SLOTS = 606`, the `ny <= 100` ceiling under
-`-rst tbl`, and the `static_assert` binding the macro to the literal.
+24819-line kernel that had not compiled after 500 s; 606 generated 2643 lines
+and built in 15 s.
+
+That measurement is why the app once carried `PROF_SLOTS = 606`, an
+`ny <= 100` ceiling under `-rst tbl`, and a `static_assert` binding the macro
+to the literal. **None of those exist any more.** They belonged to the
+`rms_profile` reduction, dropped once the plot script began deriving the
+per-row profile from the `uprime`/`vprime`/`wprime` fields every frame already
+carries -- which cost the app a kernel, an MPI reduction and the resolution
+ceiling in one move. The constraint itself still holds; nothing in the app
+currently runs into it.
+
+## A second translator constraint — and this one is silent
+
+The constraint above announces itself. This one does not.
+
+**`KerComputeFluct` is never translated.** Run the translator with
+`OPS_GENERATOR_VERBOSE=1` and every backend reports the same count:
+
+```
+Generated loop host 1 of 4: cuda/KerInitGrid_kernel.cu
+Generated loop host 2 of 4: cuda/KerInitRST_TBL_kernel.cu
+Generated loop host 3 of 4: cuda/KerInitRST_kernel.cu
+Generated loop host 4 of 4: cuda/KerFluctStats_kernel.cu
+```
+
+Four of four. There are **five** `ops_par_loop` calls in the driver. The fifth
+is never registered: no error, no warning, exit 0. It shows up in the generated
+driver as the only call site left untouched —
+
+```
+influence_osem_ops.cpp:106   void ops_par_loop_KerInitGrid(...)
+influence_osem_ops.cpp:108   void ops_par_loop_KerInitRST_TBL(...)
+influence_osem_ops.cpp:110   void ops_par_loop_KerInitRST(...)
+influence_osem_ops.cpp:112   void ops_par_loop_KerFluctStats(...)
+influence_osem_ops.cpp:562   ops_par_loop(KerComputeFluct, "KerComputeFluct", ...)   <- templated
+```
+
+The mechanism is in `parseLoops` (`parser.py:88`): it calls `parseCall` only on
+cursors satisfying `child.kind.is_unexposed()`, and `parseUnexposedFunction`
+returns `None` unless the first child is a `MEMBER_REF_EXPR` or
+`DECL_REF_EXPR`. A call whose AST shape it does not recognise is dropped
+without a diagnostic.
+
+WHICH feature of the call trips it is NOT established. `KerComputeFluct` is
+distinguished three ways: it is the only grid loop inside the timestep loop,
+the only one whose `ops_arg_gbl` has a runtime-computed dimension
+(`eddies * NCOMP`, against `KerInitRST_TBL`'s literal `260`), and the only one
+passing `std::vector::data()`. The runtime-sized `gbl` is the suspicion,
+because it rhymes with the `ops_arg_reduce` limitation above, but it has not
+been confirmed against the translator source.
+
+**Today this costs nothing.** `ops_seq_v2.h:330` is a complete host
+implementation, not a fallback stub: `ops_halo_exchanges` at line 271,
+`ops_set_halo_dirtybit3` per non-READ dat, `ops_set_dirtybit_host`, and
+MPI-aware pointer shifting under `#ifdef OPS_MPI`. Measured: frames are
+bit-identical at np = 1, 2, 4 and 8, all 22 datasets over 20 frames, in both
+`-rst tbl` and `-rst iso`.
+
+**When it would bite: a device backend.** The templated path is device-aware,
+which is exactly the problem — `ops_H_D_exchanges_host` before and
+`ops_set_dirtybit_host` after mean a CUDA build would copy every dat
+device -> host, run `compute_fluct` serially on one host thread, then mark the
+host copy dirty so the next device kernel copies it all back. Every timestep,
+for the kernel that is 58-63 ms of a 59-64 ms step -- about 99 % of runtime.
+Correct, and slower than the pure-host build, with nothing in the output
+saying one kernel of five never reached the device.
+
+That is not currently reachable, and NOT because of this loop: **the OPS
+particle API is host-only**. The tree carries `ops_particle_seq.h`,
+`ops_particle_seq_v1.h`, `ops_particle_seq_original.h` and
+`ops_particle_grid_seq.h` and no CUDA/HIP/SYCL equivalent, which is why the
+Makefile says
+
+```make
+# Particle kernels are resolved by C++ templates and compile host-side only,
+# so GPU targets are deliberately not offered here.
+TARGETS=dev_seq dev_mpi seq openmp mpi mpi_openmp
+```
+
+So translating this loop would not by itself unlock a GPU build. The reason to
+record it is the silence: if a target is ever added, the "N of M" line in the
+translator output is the only place the omission is visible.
+
+One tidy-up that follows from the same fact: `cuda/`, `hip/`, `sycl/` and
+`openmp_offload/` still hold a `KerFluctProfile_kernel.*` for the `rms_profile`
+kernel that was deleted. The translator writes new files but never removes
+orphans; the regenerated master kernel files no longer include them, so they
+are dead weight rather than a hazard.
 
 ## Defects in the reference implementation itself
 
