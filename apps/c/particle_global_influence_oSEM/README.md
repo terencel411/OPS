@@ -206,9 +206,32 @@ realisation-to-realisation scatter (single-run `rho` scatters +/- 7 %).
 | File | Contents |
 |---|---|
 | `osem_common.h` | gather layout and parameter block |
+| `osem_constants.h` | every constant and run option; valued at the top of `main` |
 | `ops_particle_random.h` | `ops_fill_random_uniform_particle()` — the RNG fill |
 | `particle_kernels.h` | init / convect / publish / count — the eddies |
 | `grid_kernels.h` | grid, RST, `compute_fluct` — the inlet plane |
 | `influence_osem.cpp` | driver |
-| `osem_io.h` / `plot_osem_h5.py` | per-step HDF5 frames, and the plots |
+| `osem_io.h` | per-step HDF5 frames, written to `h5files/` |
 | `UNDERSTANDING_oSEM.md` | the method explained, and how this app differs |
+
+Four plot scripts, each answering a different question of the same frames:
+
+| Script | Question | Needs |
+|---|---|---|
+| `plot_osem_h5.py` | is the **amplitude** right? rms and the wall-normal profile against the tabulated stresses | any frame |
+| `plot_hdf5_files.py` | what does the plane **look like**? u'/v'/w' maps, without opening ParaView | any frame |
+| `plot_structure.py` | is the **structure** right? in-plane `(w',v')` vectors, streamwise vorticity, divergence | one frame, but needs ≳8 cells per eddy radius — it warns below that |
+| `plot_correlation.py` | are the structures the **size** they were asked to be? `R_uu(Δy,Δz)` and the integral length scale, against an analytic prediction | many frames, ideally ≥1 flow-through apart |
+
+Two aggregate modes turn a single number into one with an error bar:
+
+- `plot_structure.py … --stats` — the divergence ratio over every frame: mean,
+  spread, and a time series. Measured **0.996 ± 0.016** on the isotropic run
+  against an incompressible reference of 0.408, with −0.1% drift across 2000
+  steps.
+- `plot_correlation.py … --split` — the integral length scale on two halves of
+  the frames, split **chronologically** (moves if the field is still drifting)
+  and **interleaved** (moves only with sampling noise). The interleaved
+  difference gives `SE ≈ |a−b|/2` for the full set. Both need enough
+  decorrelated realisations per half; below ~8 the script says so and declines
+  to give a verdict.
