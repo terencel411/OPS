@@ -1,48 +1,14 @@
 """In-plane structure of the synthetic field: vectors, vorticity, divergence.
 
-plot_osem_h5.py answers "is the AMPLITUDE right" -- rms against the tabulated
-targets. This script answers "is the STRUCTURE right", which is a different
-question and needs a different picture: the in-plane pair (w', v') drawn as a
-VECTOR field rather than two more scalar maps.
-
     python3 plot_structure.py                  # last frame -> structure/*.png
     python3 plot_structure.py --all --gif      # every frame, plus a GIF
     python3 plot_structure.py --full           # whole plane, not a zoom window
     python3 plot_structure.py h5files_iso/*.h5 --stats   # aggregate, no maps
-    python3 plot_structure.py h5files_iso/osem_output_002000.h5 \
-            --outdir structure_iso
 
---outdir matters when you keep more than one run around: the PNG is named for
-the frame's BASENAME, so h5files_tbl/..._002000.h5 and h5files_iso/..._002000.h5
-would otherwise overwrite each other. Same hazard the other two plot scripts
-have; here there is a flag for it.
-
-Three panels:
-
-  vectors     (w', v') quivers over streamwise vorticity
-              omega_x = dw'/dy - dv'/dz, with the eddies that reach the plane
-              outlined. The overlay is the point of the panel: it shows the
-              vorticity sitting in a RING at each eddy's edge rather than in a
-              core, which is what this SEM must produce and what distinguishes
-              it from a field of real vortices. See the note on the divergence
-              panel below.
-
-  streamlines the same field, integrated. Swirls are easy to see here; so are
-              the radial source/sink nodes that a solenoidal field cannot have.
-
-  divergence  the in-plane divergence dv'/dy + dw'/dz, and the diagnostic
-              number printed with it.
-
---stats drops the maps and reduces MANY frames to the divergence diagnostic as
-a statistic instead: mean, spread, and a time series, so the number carries an
-uncertainty and any drift is visible. Everything else here is per-frame.
-
-RESOLUTION FIRST. Every panel here is a DERIVATIVE of the velocity, so it is
-far more sensitive to grid spacing than the rms plots are. At the shipped
-101 x 151 an eddy is only 3.8 cells across in z and omega_x comes out as
-cell-scale checkerboard -- the picture is differentiation noise, not flow. The
-script prints cells-per-eddy-radius and warns below 8. -ny 200 -nz 600 gives 15
-and resolves it.
+Answers "is the STRUCTURE right", where plot_osem_h5.py answers "is the
+AMPLITUDE right". Every panel is a derivative, so it needs >= 8 cells per eddy
+radius -- the script warns below that. --outdir avoids overwriting between
+runs. See the README.
 """
 
 import glob
@@ -135,13 +101,9 @@ def report(d, dy, dz, omx, div):
 
 
 def stats_mode(files, outdir):
-    """Aggregate the divergence diagnostic over many frames.
-
-    The per-frame panel quotes rms(div)/rms(omega_x) from ONE field, which has
-    no uncertainty attached and cannot show whether the number drifts. Over a
-    run it becomes a statistic: a mean, a spread, and a time series that says
-    whether the field is stationary in this respect.
-    """
+    """Aggregate the divergence diagnostic over many frames. The per-frame
+    panel quotes rms(div)/rms(omega_x) from ONE field, which has no
+    uncertainty attached and cannot show whether the number drifts."""
     rows = []
     for p in files:
         d = read_frame(p)

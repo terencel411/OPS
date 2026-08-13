@@ -4,68 +4,10 @@
     python3 plot_correlation.py --yref 0.0045
     python3 plot_correlation.py h5files_tbl/*.h5 --split    # has it converged?
 
---split is the acceptance test, and it separates two questions that a single
-number cannot:
-
-  CHRONOLOGICAL halves (first N/2 frames vs last N/2) move if the field is
-  still DRIFTING -- a spin-up transient, or a slow migration of the eddy
-  population. Everything after such a transient would be measuring the wrong
-  thing.
-
-  INTERLEAVED halves (odd frames vs even frames) span the same time range, so
-  they cannot see drift and move only with SAMPLING NOISE.
-
-Comparing the two is the point. Interleaved alone gives the error bar; if
-chronological moves substantially more than interleaved, the extra motion is
-drift, not noise, and a longer run would be averaging over a transient rather
-than converging.
-
-This is the figure that answers "does the field actually contain structures of
-the size I asked for". plot_osem_h5.py checks the AMPLITUDE (rms against the
-tabulated stresses) and plot_structure.py shows one instantaneous field; this
-one is an ENSEMBLE statistic and needs many frames.
-
-    R_uu(dy, dz) = <u'(yref, z) u'(yref+dy, z+dz)> / sqrt(<u'^2(yref)><u'^2>)
-
-Contoured, it is a set of nested closed curves centred on the reference point,
-and the integral length scale L = \\int R d(sep) comes straight out of it.
-
-Kept OUT of plot_structure.py deliberately. That script maps one frame to one
-picture; this one reduces every frame to a single figure, has no per-frame
-output and no GIF, and carries the analytic machinery below. Two ~250-line
-scripts read better than one 500-line script with two modes.
-
-WHY THERE IS AN ANALYTIC CURVE ON THE PLOT
-------------------------------------------
-A measured correlation that merely looks plausible proves nothing, so the
-prediction is drawn with it. It is exact, not a fit, and it follows from the
-kernel:
-
-    u' = a11 * P,   v' = a21 * P + a22 * Q,   w' = a33 * T
-
-where P, Q, T are the three sign-weighted sums over the shape function (see
-KerComputeFluct -- a31 = a32 = 0). The a_ij are evaluated at the NODE, so they
-factor straight out of the sum. For two points on the SAME row they are
-identical and cancel in the normalisation, which gives an exact prediction:
-
-    R_uu = R_vv = R_ww = C(|sep|) / C(0)      along dz at dy = 0
-
-with C the 3-D autocorrelation of the shape function. So all three components
-must collapse onto ONE curve, and that curve is computable. If they collapse
-onto it, the SEM machinery is doing what it was told to; any quarrel left is
-with the shape function, which is a modelling choice, not an implementation.
-If they miss it, there is a bug, and where they miss says something about it.
-
-C depends only on |sep| because the shape function is spherical, so the
-contours must come out CIRCULAR. Elongated contours would be a real boundary
-layer; the single fixed eddy_radius here cannot produce them. That is a
-limitation worth being able to show rather than assert.
-
-SAMPLING
---------
-Frames must be at least one flow-through apart -- (x_max-x_min)/(u0*dt), 348
-steps as shipped -- or the same eddies are being counted repeatedly and the
-error bars are fiction. The script prints the spacing it was given and warns.
+Answers "does the field contain structures of the size I asked for", as an
+ensemble statistic over many frames. An exact analytic prediction is drawn with
+the measurement; --split separates drift from sampling noise. Frames must be
+>= 1 flow-through apart. See the README.
 """
 
 import glob
@@ -95,19 +37,8 @@ RMAX_OVER_R = 0.41 / 0.2
 
 def shape_autocorr(nsep=241, nrho=400, nzeta=1200):
     """C(s)/C(0) for the kernel's shape function, s in units of the radius.
-
     The shape is a Gaussian of standard deviation sigma = eddy_radius, HARD
-    TRUNCATED at |r| < eddy_radius -- i.e. cut at one standard deviation, which
-    is severe enough that the truncation, not the Gaussian, sets the width. So
-    this is integrated numerically rather than taken from the textbook Gaussian
-    result (which would be a Gaussian of sigma*sqrt(2) and is wrong here).
-
-    Spherical symmetry reduces the 3-D overlap integral to two dimensions, in
-    cylindrical coordinates about the separation axis:
-
-        C(s) = 2*pi * \\int rho drho \\int dzeta f(r1) f(r2)
-        r1 = sqrt(rho^2 + zeta^2),  r2 = sqrt(rho^2 + (zeta-s)^2)
-    """
+    TRUNCATED at |r| < eddy_radius -- i.e."""
     def f(r):
         return np.where(r < 1.0, np.exp(-0.5 * r * r), 0.0)
 
@@ -148,8 +79,8 @@ def frame_fields(path, j0, j1):
 
 def corr_lags(a, b, maxlag):
     """sum_z a[y,z] b[y,z+lag] for lag in [-maxlag, maxlag], LINEAR not
-    circular. z is not periodic here -- the eddies reflect off the box faces --
-    so the transform is zero padded and each lag is normalised by its own
+    circular. z is not periodic here -- the eddies reflect off the box faces
+    -- so the transform is zero padded and each lag is normalised by its own
     overlap count by the caller."""
     n = a.shape[-1]
     nfft = 1 << int(np.ceil(np.log2(2 * n)))
@@ -160,61 +91,75 @@ def corr_lags(a, b, maxlag):
     return np.concatenate([c[..., -maxlag:], c[..., :maxlag + 1]], axis=-1)
 
 
-def accumulate(files, iref, j0, j1, maxlag):
-    """Two passes: the per-row mean first, then the correlation about it.
-
-    Streaming rather than loading every frame, because a 200k-step run at
-    201x601 is 1.6 GB of frames and this has to survive that.
-    """
-    nf = len(files)
-    m = frame_meta(files[0])
-    ny = m["ny"]
-
-    # -- pass 1: <u'> per row. It is ~0 by construction; measured, not assumed.
-    tot = {n: np.zeros(ny + 1) for n in COMPS}
+def partials(files, iref, j0, j1, maxlag):
+    """Per-frame RAW sums, read once. Everything else is arithmetic on these."""
+    P, A, Q = {}, {}, {}
+    for n in COMPS:
+        P[n], A[n], Q[n] = [], [], []
     for p in files:
         d = frame_fields(p, j0, j1)
         for n in COMPS:
-            tot[n] += d[n].mean(axis=1)
-    mean = {n: tot[n] / nf for n in COMPS}
+            a = d[n]
+            P[n].append(corr_lags(np.broadcast_to(a[iref], a.shape).copy(), a,
+                                  maxlag))
+            A[n].append(a.sum(axis=1))
+            Q[n].append((a * a).sum(axis=1))
+    return ({n: np.stack(P[n]) for n in COMPS},
+            {n: np.stack(A[n]) for n in COMPS},
+            {n: np.stack(Q[n]) for n in COMPS})
 
-    # -- pass 2: raw products about that mean
-    nlag = 2 * maxlag + 1
-    S = {n: np.zeros((ny + 1, nlag)) for n in COMPS}   # row vs reference row
-    V = {n: np.zeros(ny + 1) for n in COMPS}           # per-row variance
-    for p in files:
-        d = frame_fields(p, j0, j1)
-        for n in COMPS:
-            a = d[n] - mean[n][:, None]
-            S[n] += corr_lags(np.broadcast_to(a[iref], a.shape).copy(), a,
-                              maxlag)
-            V[n] += (a * a).sum(axis=1)
 
-    nz_used = j1 - j0
+def combine(par, idx, iref, nz_used, maxlag):
+    """R for a subset of frames, from the stored partial sums."""
+    P, A, Q = par
+    nf = len(idx)
     lags = np.arange(-maxlag, maxlag + 1)
     npair = (nz_used - np.abs(lags)).astype(float) * nf
     nsamp = float(nz_used * nf)
 
-    R = {}
+    R, mean, rms = {}, {}, {}
     for n in COMPS:
-        cov = S[n] / npair[None, :]
-        var = V[n] / nsamp
+        Ps = P[n][idx].sum(axis=0)
+        mu = A[n][idx].sum(axis=0) / nsamp
+        var = Q[n][idx].sum(axis=0) / nsamp - mu * mu
+        # E[ab] - E[a]E[b]. The mean correction uses the whole-row means rather
+        # than the means of each lag's overlap window; with |<u'>|/rms ~ 0.03
+        # that difference is far below the sampling noise.
+        cov = Ps / npair[None, :] - mu[iref] * mu[:, None]
+
         # The wall row is exactly zero -- a11 = sqrt(R11) and the table takes
         # R11 to 0 at y = 0, so u' vanishes there identically and the
         # normalisation is 0/0. Leave those rows undefined rather than let a
         # warning through; the contour plot simply omits them.
-        den = np.sqrt(var[iref] * var)
+        den = np.sqrt(np.maximum(var[iref] * var, 0.0))
         good = den > 1e-12 * max(den.max(), 1e-30)
         R[n] = np.full_like(cov, np.nan)
         R[n][good] = cov[good] / den[good, None]
-    return R, lags, mean, {n: np.sqrt(V[n] / nsamp) for n in COMPS}
+        mean[n] = mu
+        rms[n] = np.sqrt(np.maximum(var, 0.0))
+    return R, lags, mean, rms
 
 
-def scales_of(files, iref, j0, j1, maxlag, sep_z, half):
+def scales_of(par, idx, iref, nz_used, maxlag, sep_z, half):
     """Integral length scale per component for one subset of frames."""
-    R, _, _, _ = accumulate(files, iref, j0, j1, maxlag)
+    R, _, _, _ = combine(par, idx, iref, nz_used, maxlag)
     return ({n: integral_scale(sep_z[half:], R[n][iref, half:])
              for n in COMPS}, R)
+
+
+def jackknife_se(par, iref, nz_used, maxlag, sep_z, half, comp="uprime"):
+    """Leave-one-frame-out standard error of L. The half-split SE that came
+    before used ONE difference of two numbers, so the error bar itself carried
+    ~100% uncertainty -- enough that 0.042 and 0.035 from two runs an order of
+    magnitude apart in length were not distinguishable, which is no basis for
+    a decision."""
+    F = len(par[0][COMPS[0]])
+    allidx = np.arange(F)
+    L = np.empty(F)
+    for k in range(F):
+        R, _, _, _ = combine(par, allidx[allidx != k], iref, nz_used, maxlag)
+        L[k] = integral_scale(sep_z[half:], R[comp][iref, half:])
+    return float(np.sqrt((F - 1.0) / F * np.sum((L - L.mean()) ** 2))), L
 
 
 def integral_scale(sep, r):
@@ -295,7 +240,10 @@ def main():
     print("lags             : +/-%d cells in z, rows %d..%d in y"
           % (maxlag, ilo, ihi))
 
-    R, lags, mean, rms = accumulate(files, iref, j0, j1, maxlag)
+    nz_used = j1 - j0
+    par = partials(files, iref, j0, j1, maxlag)
+    R, lags, mean, rms = combine(par, np.arange(len(files)), iref, nz_used,
+                                 maxlag)
     sep_z = lags * dz
 
     # ---- diagnostics -----------------------------------------------------
@@ -331,6 +279,18 @@ def main():
               integral_scale(sep_z[half:], cut) / er))
     print("   analytic (shape function autocorrelation)")
     print("       L = %.6f  = %.3f eddy radii" % (L_an, L_an / er))
+    # The measurement integrates a curve sampled only at the grid's lags, by
+    # trapezoid, to the first zero. Resampling the analytic curve exactly the
+    # same way separates "the field is wrong" from "the grid is coarse". At
+    # 3.8 cells per radius the bias is +0.3%, so it settles the question
+    # rather than raising one -- but it is cheap and it would matter on a
+    # coarser grid.
+    L_an_g = integral_scale(sep_z[half:],
+                            np.interp(sep_z[half:] / er, sep_an, R_an,
+                                      right=0.0))
+    print("       resampled onto this grid's lags: %.3f radii"
+          " (discretisation bias %+.1f%%)"
+          % (L_an_g / er, 100.0 * (L_an_g - L_an) / L_an))
     print("   eddy_radius = %.6f,  support diameter 2r = %.6f" % (er, 2 * er))
 
     if gap and gap < 348:
@@ -345,15 +305,17 @@ def main():
         if len(files) < 4:
             print("\n--split needs at least 4 frames; got %d" % len(files))
         else:
-            k = len(files) // 2
+            F = len(files)
+            ix = np.arange(F)
+            k = F // 2
             sets = {
-                "chronological": (files[:k], files[k:]),
-                "interleaved": (files[0::2], files[1::2]),
+                "chronological": (ix[:k], ix[k:]),
+                "interleaved": (ix[0::2], ix[1::2]),
             }
             L = {}
-            for mode, (fa, fb) in sets.items():
-                La, Ra = scales_of(fa, iref, j0, j1, maxlag, sep_z, half)
-                Lb, Rb = scales_of(fb, iref, j0, j1, maxlag, sep_z, half)
+            for mode, (ia, ib) in sets.items():
+                La, Ra = scales_of(par, ia, iref, nz_used, maxlag, sep_z, half)
+                Lb, Rb = scales_of(par, ib, iref, nz_used, maxlag, sep_z, half)
                 L[mode] = (La, Lb)
                 if mode == "chronological":
                     split_curves = (Ra, Rb)   # drawn on the right panel
@@ -371,16 +333,22 @@ def main():
                 print("   %-4s %8.4f %8.4f %6.4f  %8.4f %8.4f %6.4f"
                       % (LABEL[n], a1, b1, dch[-1], a2, b2, din[-1]))
 
-            # Two independent halves of equal size: an estimate of the FULL
-            # set's standard error is |a-b|/2. Taken from the interleaved
-            # split, which cannot be contaminated by drift.
-            se = float(np.mean(din)) / 2.0
-            print("\n   SE(full-set L) ~ %.4f radii (interleaved half-split)"
-                  % se)
+            # The error bar comes from the jackknife, NOT from the half-split
+            # above. A half-split SE is one difference of two numbers and is
+            # itself ~100% uncertain; the table is kept only because the
+            # chronological/interleaved COMPARISON is what detects drift.
+            se, Ljk = jackknife_se(par, iref, nz_used, maxlag, sep_z, half)
+            Lfull = integral_scale(sep_z[half:], R["uprime"][iref, half:])
+            print("\n   jackknife SE(L)  = %.4f radii  (%d leave-one-out"
+                  " estimates)" % (se / er, F))
+            print("   half-split SE(L) = %.4f radii  (one difference, ~100%%"
+                  " uncertain -- do not quote this)"
+                  % (float(np.mean(din)) / 2.0))
             print("   quote L = %.3f +/- %.3f radii against analytic %.3f"
-                  % (integral_scale(sep_z[half:],
-                                    R["uprime"][iref, half:]) / er, se,
-                     L_an / er))
+                  % (Lfull / er, se / er, L_an / er))
+            nsig = abs(Lfull - L_an) / max(se, 1e-30)
+            print("   -> %.1f sigma from the analytic prediction%s"
+                  % (nsig, "" if nsig < 2.0 else "   ** worth chasing **"))
 
             ratio = float(np.mean(dch)) / max(float(np.mean(din)), 1e-12)
             print("\n   drift indicator = chronological/interleaved = %.2f"
@@ -411,7 +379,7 @@ def main():
                 print("   than the noise, so a longer run buys sample count")
                 print("   rather than a different answer. Error scales as")
                 print("   1/sqrt(frames): %dx the frames -> %.4f radii."
-                      % (10, se / np.sqrt(10.0)))
+                      % (10, se / er / np.sqrt(10.0)))
 
             # u' and v' are NOT independent estimators -- both carry the same
             # sign-sum P (u' = a11*P, v' = a21*P + a22*Q), so the spread across

@@ -12,6 +12,16 @@ make influence_osem_dev_mpi
 OMP_NUM_THREADS=1 mpirun -np 2 ./influence_osem_dev_mpi -niter 150
 ```
 
+| flag | default | |
+|---|---|---|
+| `-niter N` | 2000 | timesteps |
+| `-ny N` `-nz N` | 100, 150 | inlet plane resolution |
+| `-nprint N` | 100 | report **and** HDF5 frame interval; `<= 0` turns both off |
+| `-rst tbl\|iso` | `tbl` | tabulated boundary-layer profile, or isotropic |
+| `-rng mt19937\|minstd\|shared` | `minstd` | see *Which generator* below |
+| `-seed N` | 2893328493 | realisation seed |
+| `-dumpshear FILE` | — | per-row shear profile |
+
 > **New to the method?** [`UNDERSTANDING_oSEM.md`](./UNDERSTANDING_oSEM.md)
 > explains what SEM is doing from first principles — what the eddies are, why
 > their positions are 3-D when the output is a 2-D plane, how they traverse the
@@ -201,6 +211,148 @@ inherited — oSEM's grid does the same.
 profile, since these statistics are only interpretable against their own
 realisation-to-realisation scatter (single-run `rho` scatters +/- 7 %).
 
+## A latent hazard in `KerInitRST_TBL`, kept because it is the reference's
+
+The tabulated-RST search is oSEM's, `idx` initialised to `0` included. If `y`
+lies beyond `y_inp[ntbl-2]` the loop never breaks and `idx` stays `0`, so the
+interpolation runs off the **first two rows** with a weight of
+`w = y / 8.559e-6` — thousands. That is not a fallback to wall values, it is an
+unbounded extrapolation: `R11` comes out at **98351** for `y = 0.01920` when the
+table's own peak is 5980, and it grows without limit.
+
+It cannot trigger as shipped — fall-through needs `y >= 0.01912` and the grid
+reaches `eddy_y_max = 0.01187` — but it would the moment anyone raised `y_max`
+or `r_max`, and it would do so **silently**, producing a plausible-looking run
+with a garbage freestream.
+
+Initialising `idx` to `ntbl-2` makes the search saturate on the last interval,
+pushing the failure out to `y ≈ 0.027` and turning it into a NaN (the last two
+tabulated points slope down, so the extrapolation eventually goes negative and
+`sqrt()` fails) — later and louder, but still not safe. The correct fix is to
+clamp `w` to `[0,1]` so values saturate at the last tabulated point. Neither is
+applied: parity with oSEM wins for now.
+
+**If you raise `y_max` or `r_max`, fix this first.**
+
+The driver's `tbl_at()` mirrors this search exactly, `idx = 0` included, and it
+must: it builds the `rms_target` dataset each frame carries, which the plot
+scripts draw against the computed profile. If the two interpolated differently,
+the plot would show a discrepancy that is an artefact of the target rather than
+of the flow.
+
+## Which generator, and why `minstd` is the default
+
+`-rng` selects how `p_rnd` is filled. Measured on this app:
+
+| method | fill cost | rank-invariant | notes |
+|---|---|---|---|
+| `mt19937` | 10.99 ms | yes | 624-word `seed_seq` per eddy per step |
+| `minstd` | **0.08 ms** | yes | **default** |
+| `shared` | 0.13 ms | **no** | one engine per rank, walked in storage order; mirrors OPS exactly |
+
+The obvious objection to `minstd` — that a bare LCG's consecutive outputs lie on
+a lattice, so an eddy's position could couple to its signs, which is exactly the
+bug described above — was tested rather than assumed. Drawing the 6-tuple for
+10⁶ `(gid, counter)` pairs:
+
+```
+mt19937      corr(x, eps) = +0.00115 +0.00115 -0.00177   (1 sigma = 0.00100)
+minstd_rand  corr(x, eps) = -0.00150 +0.00126 -0.00132
+```
+
+Indistinguishable, and minstd's are no larger. The lattice problem needs a
+*continuing* stream; here every eddy gets a fresh `seed_seq`-scrambled state and
+six draws, far too short for the structure to appear. That tests the one
+coupling known to have caused a real bug, not general RNG quality — if a future
+kernel draws long sequences from a single engine, `mt19937` becomes the right
+choice again.
+
+## What the plot scripts are actually testing
+
+### Why `plot_correlation.py` draws an analytic curve
+
+A measured correlation that merely looks plausible proves nothing, so the
+prediction is drawn with it. It is exact, not a fit, and follows from the
+kernel:
+
+```
+u' = a11 * P,   v' = a21 * P + a22 * Q,   w' = a33 * T
+```
+
+where `P, Q, T` are the three sign-weighted sums over the shape function
+(`KerComputeFluct`, with `a31 = a32 = 0`). The `a_ij` are evaluated at the
+**node**, so they factor straight out of the sum. For two points on the same row
+they are identical and cancel in the normalisation, giving
+
+```
+R_uu = R_vv = R_ww = C(|sep|) / C(0)      along dz at dy = 0
+```
+
+with `C` the 3-D autocorrelation of the shape function. So all three components
+must **collapse onto one curve**, and that curve is computable. If they do, the
+SEM machinery is doing what it was told; any quarrel left is with the shape
+function, which is a modelling choice. If they miss it there is a bug, and where
+they miss says something about it.
+
+`C` depends only on `|sep|` because the shape function is spherical, so the
+contours must come out **circular**. Elongated contours would be a real boundary
+layer; the single fixed `eddy_radius` here cannot produce them — a limitation
+worth being able to show rather than assert.
+
+Frames must be at least one flow-through apart — `(x_max-x_min)/(u0*dt)`, 348
+steps as shipped — or the same eddies are counted repeatedly and the error bars
+are fiction. The script prints the spacing it was given and warns.
+
+### Where a non-zero mean would come from (`check_zero_mean.py`)
+
+Not from the shape function, which is positive and symmetric, and not from the
+Cholesky factors, which multiply a zero-mean quantity. The only route is the
+**signs**:
+
+```
+u'(y,z) = a11(y) * sum_k eps_x^k S_k(y,z)
+```
+
+so a net sign imbalance in the eddy population is inherited by every node. With
+N eddies that imbalance is `~1/sqrt(N)` = 2.4% here, and it is **not a bug** —
+it is the finite population. It also does not average away frame to frame the
+way independent noise would, because the same eddies persist and their signs are
+only redrawn on recycle, every ~348 steps.
+
+The third panel tests exactly that: plane mean against the population's sign
+mean. On a line means the residue is finite-N sampling and nothing else. A mean
+that does *not* track the sign balance is the interesting failure, and would
+point at the shape function or the RNG rather than the eddy count.
+
+Every number is a z-score, `mean / SE`, with `|z| < 2` the test — a mean of 0.7
+is either fine or a disaster depending on whether its standard error is 3 or
+0.03.
+
+### Resolution first, for `plot_structure.py`
+
+Every panel there is a **derivative** of the velocity, so it is far more
+sensitive to grid spacing than the rms plots. At the shipped 101 x 151 an eddy is
+only 3.8 cells across in z and `omega_x` comes out as cell-scale checkerboard —
+the picture is differentiation noise, not flow. The script prints
+cells-per-eddy-radius and warns below 8; `-ny 200 -nz 600` gives 15 and resolves
+it.
+
+What the vorticity overlay is for: it shows the vorticity sitting in a **ring**
+at each eddy's edge rather than in a core, which is what this SEM must produce
+and what distinguishes it from a field of real vortices.
+
+### Two conventions worth knowing
+
+**Shared colour scale.** `plot_osem_h5.py` puts `u'`, `v'`, `w'` on one
+diverging scale centred on zero, across all three components *and* all frames. A
+per-frame or per-component autoscale would hide both the evolution and the fact
+that the three are supposed to be statistically alike.
+
+**`--outdir` prevents overwrites.** PNGs are named for the frame's *basename*,
+so `h5files_tbl/..._002000.h5` and `h5files_iso/..._002000.h5` would otherwise
+clobber each other. `plot_structure.py` and `plot_correlation.py` take the flag;
+watch for it when keeping several runs around.
+
 ## Files
 
 | File | Contents |
@@ -222,6 +374,7 @@ Four plot scripts, each answering a different question of the same frames:
 | `plot_hdf5_files.py` | what does the plane **look like**? u'/v'/w' maps, without opening ParaView | any frame |
 | `plot_structure.py` | is the **structure** right? in-plane `(w',v')` vectors, streamwise vorticity, divergence | one frame, but needs ≳8 cells per eddy radius — it warns below that |
 | `plot_correlation.py` | are the structures the **size** they were asked to be? `R_uu(Δy,Δz)` and the integral length scale, against an analytic prediction | many frames, ideally ≥1 flow-through apart |
+| `check_zero_mean.py` | is `⟨u'⟩ = ⟨v'⟩ = ⟨w'⟩ = 0`, as SEM requires? Reports each as a z-score and traces any residue to the eddy sign balance | many frames |
 
 Two aggregate modes turn a single number into one with an error bar:
 

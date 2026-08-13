@@ -1,85 +1,15 @@
 /*
- * OPS Particles -- oSEM with the eddies as particles
- * ==================================================
+ * OPS Particles -- oSEM with the eddies as particles.
  *
- * A port of apps/c/oSEM (2-D inlet plane) in which the synthetic eddies are
- * OPS PARTICLES rather than grid dats on a second block, structured like
- * apps/c/particle_global_influence.
+ * A port of apps/c/oSEM (2-D inlet plane) with the synthetic eddies as OPS
+ * particles rather than grid dats on a second block, structured like
+ * apps/c/particle_global_influence. The eddies are gathered with an
+ * array-valued ops_reduction in place of oSEM's ops_dat_fetch_data, which
+ * returns only the local slice and is wrong under MPI.
  *
- * THE THREE KERNELS, AND WHAT THEY CORRESPOND TO
- *
- *   before the loop   KerInitGrid / KerInitRST / KerInitEddy
- *                       <- instantiate_grid / instantiate_RST /
- *                          instantiate_eddies
- *   in the loop       KerConvectEddies      <- convect_eddies
- *                       the "advance" kernel: purely per-eddy, no coupling
- *   in the loop       KerComputeFluct       <- compute_fluct
- *                       the "influence" kernel: every inlet node sums over
- *                       EVERY eddy in the domain
- *
- * WHY THIS IS NOT JUST A RESTRUCTURING
- *
- *   oSEM hands the eddy state to compute_fluct by calling ops_dat_fetch_data
- *   on each of seven eddy dats and passing the host arrays as ops_arg_gbl.
- *   Under MPI that is wrong, not merely partial. ops_dat_fetch_data
- *   (ops_mpi_rt_support.cpp:2125) copies only THIS RANK's slice of the
- *   decomposed eddy block, and writes it starting at offset 0 -- it computes a
- *   displacement, `ldisp`, and then never uses it in the memcpy. compute_fluct
- *   then loops over the GLOBAL eddy count, so every index past the local slice
- *   reads uninitialised heap on the first step and stale values afterwards.
- *   Each rank therefore builds the inlet from a different, partly garbage set
- *   of eddies. It is correct only at np = 1.
- *
- *   Here the eddies are gathered with an array-valued ops_reduction: each rank
- *   INCs its own eddies into slots picked by global id, and the MPI_Allreduce
- *   inside ops_reduction_result returns the COMPLETE list, in id order, on
- *   every rank. That is the same array shape compute_fluct already wanted, so
- *   the kernel body ports across unchanged -- and it is correct at any rank
- *   count.
- *
- * TWO DELIBERATE DEPARTURES FROM THE REFERENCE
- *
- *   1. Randoms. oSEM calls ops_fill_random_uniform into int dats on the eddy
- *      block once per quantity per step. Eddies here migrate between ranks, so
- *      a rank-indexed random dat would hand a migrating eddy someone else's
- *      stream. Each eddy carries its own LCG state instead, so the stream
- *      belongs to the eddy and is identical at any rank count. This also
- *      sidesteps a known defect: ops_fill_random_uniform on an int dat never
- *      returns a negative value, so oSEM's `(rng < 0) ? -1 : 1` sign draws are
- *      always +1.
- *
- *   2. One block, not two. oSEM has an inlet_block and an eddy_block. The
- *      eddies are particles here, so they live inside the inlet block, and its
- *      grid already spans the full eddy box -- oSEM's instantiate_grid runs
- *      from z_min - r_max to z_max + r_max for exactly that reason. The
- *      bounding box OPS derives from the coordinate dat is what decides
- *      whether an eddy is inside the domain, so it must cover everywhere an
- *      eddy may legally be.
- *
- * THE RECYCLE IS A TELEPORT -- READ THIS BEFORE RUNNING UNDER MPI
- *
- *   convect_eddies recycles an eddy leaving the downstream face by giving it a
- *   fresh random (y, z). As a particle operation that is a jump to an
- *   arbitrary point in the plane, and OPS particle migration only hands a
- *   particle to a NEIGHBOURING rank. The drift tutorial measured what that
- *   costs (silent loss at np = 8, segfault at np = 3 for a full-width jump),
- *   and the two supported alternatives are both blocked here: halo groups
- *   express a fixed translation, not a random one, and runtime insert/delete
- *   does not compile with rearrange_for_removal hanging under MPI.
- *
- *   The kernel is written faithfully rather than worked around, and the eddy
- *   population is counted every step through an OPS reduction, so any loss is
- *   reported rather than silent. See the README for what actually happens.
- *
- * OPTIONS
- *   -niter N     timesteps                                default 2000
- *   -ny N -nz N  inlet plane resolution                   default 100 x 150
- *   -nprint N    report AND HDF5 frame interval           default 100
- *                (one knob: a step that reports also writes a frame;
- *                 <= 0 turns both off)
- *   -rst tbl|iso boundary-layer profile or isotropic       default tbl
- *   -rng mt19937|minstd|shared                            default minstd
- *   -seed N      realisation seed                         default 2893328493
+ * The README covers the mapping to oSEM's kernels, the run options, the
+ * re-injection change needed for migration, and the known hazards.
+ * UNDERSTANDING_oSEM.md explains the method itself.
  *
  * Build:  make influence_osem_dev_seq / _dev_mpi
  * Run:    ./influence_osem_dev_seq

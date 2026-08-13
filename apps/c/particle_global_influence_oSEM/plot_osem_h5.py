@@ -1,30 +1,12 @@
 """Plot the HDF5 output written by osem_io.h.
 
-Each osem_output_<step>.h5 holds the inlet fields under the block group, the
-complete id-ordered eddy list, and the run constants.
-
     python3 plot_osem_h5.py             # all frames -> frames/*.png + a GIF
     python3 plot_osem_h5.py --no-gif
 
-Four panels:
-
-  top three   u', v', w' on the inlet plane. The plane is long in z and thin in
-              y, so each is a wide strip. One shared diverging scale centred on
-              zero across all three components AND all frames -- a per-frame or
-              per-component autoscale would hide both the evolution and the
-              fact that the three are supposed to be statistically alike.
-
-  overlaid    on EACH panel, the eddies actually contributing to it: those
-              within one radius of the sampling plane, drawn at their true
-              radius and coloured by the sign that drives THAT component --
-              eps_x for u', eps_y for v', eps_z for w'. This is the mechanism
-              made visible: every blob is one of these circles, and its colour
-              matches. The three overlays use the same circles in the same
-              places and differ only in colour, which is itself the point --
-              the positions are shared, the signs are independent.
-
-  bottom      rms u', v', w' against time, with the target u0*TI. This is the
-              thing the scheme exists to reproduce.
+Each frame holds the inlet fields, the id-ordered eddy list and the run
+constants. Four panels: u', v', w' on one shared diverging scale with the
+contributing eddies overlaid and coloured by the sign driving that component,
+then rms against time with the target u0*TI. See the README.
 """
 
 import glob

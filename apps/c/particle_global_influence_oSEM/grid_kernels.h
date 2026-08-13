@@ -1,16 +1,10 @@
 /*
- * grid_kernels.h  --  the inlet plane
+ * grid_kernels.h -- the inlet plane. KerInitGrid / KerInitRST / KerComputeFluct
+ * correspond to oSEM's instantiate_grid / instantiate_RST / compute_fluct.
  *
- *   KerInitGrid     <- oSEM instantiate_grid
- *   KerInitRST      <- oSEM instantiate_RST
- *   KerComputeFluct <- oSEM compute_fluct     (the "influence" kernel)
- *
- * Ordinary OPS grid kernels; nothing particle-specific. The plane spans the
- * EDDY box, not just the physical inlet -- that is what oSEM's instantiate_grid
- * already does (it starts at z_min - r_max and runs to z_max + r_max), and it
- * matters here for a second reason: the bounding box that OPS derives from
- * this coordinate dat is what decides whether an eddy is inside the domain, so
- * it has to cover everywhere an eddy may legally be.
+ * The plane spans the EDDY box, not just the physical inlet: the bounding box
+ * OPS derives from this coordinate dat decides whether an eddy is in the
+ * domain, so it must cover everywhere an eddy may legally be.
  */
 
 #ifndef _GRID_KERNELS_H_
@@ -21,9 +15,8 @@ void KerInitGrid(ACC<double> &crd, const int *idx) {
   crd(1, 0, 0) = eddy_z_min + (eddy_z_max - eddy_z_min) * (double)idx[1] / (double)nz;
 }
 
-/* The Cholesky factor of the Reynolds stress tensor. oSEM also carries a
-   boundary-layer profile variant (instantiate_RST_TBL) driven by a tabulated
-   dataset; this is the isotropic one, which keeps the app self-contained. */
+/* Cholesky factor of the Reynolds stress tensor, isotropic variant. The
+   tabulated boundary-layer alternative is KerInitRST_TBL below. */
 void KerInitRST(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
                 ACC<double> &a31, ACC<double> &a32, ACC<double> &a33) {
   a11(0, 0) = u0ti;
@@ -34,50 +27,15 @@ void KerInitRST(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
   a33(0, 0) = u0ti;
 }
 
-/* ------------------------------------------------------------------ *
- * KerInitRST_TBL  <- oSEM instantiate_RST_TBL
- * ------------------------------------------------------------------ *
- * The realistic alternative to the isotropic RST above: Reynolds stresses read
- * from a tabulated boundary-layer profile (TBL_data.h, 260 points),
- * interpolated to each node's wall-normal position, then Cholesky factorised.
- *
- * Two things this buys over the isotropic version:
- *   - the stresses VARY WITH y, so the inlet has a real boundary-layer profile
- *     instead of uniform intensity
- *   - a21 != 0, so u' and v' become correlated -- the shear stress <u'v'>,
- *     which is what drives turbulence production downstream
- *
- * a31 = a32 = 0 encodes <u'w'> = <v'w'> = 0, correct for a 2-D boundary layer
- * with z spanwise. The 0.001 clamp on a11 guards the wall, where R11 -> 0 and
- * the division for a21 would blow up.
- *
- * A LATENT HAZARD, KEPT BECAUSE IT IS THE REFERENCE'S. The search below is
- * oSEM's, idx initialised to 0 included. If y lies beyond y_inp[ntbl-2] the
- * loop never breaks and idx stays 0, so the interpolation runs off the FIRST
- * two rows with a weight of w = y / 8.559e-6 -- thousands. That is not a
- * fallback to wall values, it is an unbounded extrapolation: R11 comes out at
- * 98351 for y = 0.01920 (the table's own peak is 5980) and grows without limit.
- *
- * It cannot trigger as shipped -- fall-through needs y >= 0.01912 and the grid
- * reaches eddy_y_max = 0.01187 -- but it would the moment anyone raised y_max
- * or r_max, and it would do so SILENTLY, producing a plausible-looking run
- * with a garbage freestream.
- *
- * Initialising idx to ntbl-2 instead makes the search saturate on the last
- * interval, which pushes the failure out to y ~ 0.027 and turns it into a NaN
- * (the last two tabulated points slope down, so the extrapolation eventually
- * goes negative and sqrt() fails) -- later and louder, but still not safe. The
- * actually-correct fix is to clamp w to [0,1] so values saturate at the last
- * tabulated point. Neither is used: parity with oSEM wins for now.
- *
- * If you raise y_max or r_max, fix this first.
- *
- * The driver's tbl_at() (influence_osem.cpp) mirrors this search exactly,
- * including the idx = 0 initialisation. It must: it builds the rms_target
- * dataset each frame carries, which the plot script draws against the computed
- * profile. If the two interpolated differently the plot would show a
- * discrepancy that is an artefact of the target, not of the flow.
- */
+/* oSEM's instantiate_RST_TBL: Reynolds stresses interpolated from a tabulated
+   boundary-layer profile, then Cholesky factorised. Unlike the isotropic
+   variant the stresses vary with y and a21 != 0, giving a real shear stress.
+   The 0.001 clamp on a11 guards the wall, where R11 -> 0.
+
+   CARRIES A LATENT EXTRAPOLATION HAZARD, kept for parity with oSEM. It cannot
+   trigger as shipped, but will if y_max or r_max is raised -- silently. Read
+   the README section before changing either. tbl_at() in the driver mirrors
+   this search exactly, idx = 0 included, and must. */
 void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
                     ACC<double> &a31, ACC<double> &a32, ACC<double> &a33,
                     const ACC<double> &crd, const double *ydata,
@@ -118,21 +76,10 @@ void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
   a33(0, 0) = sqrt(r33 - a31(0, 0) * a31(0, 0) - a32(0, 0) * a32(0, 0));
 }
 
-/* ------------------------------------------------------------------ *
- * compute_fluct -- the all-to-all
- * ------------------------------------------------------------------ *
- * Every inlet node sums a contribution from EVERY eddy in the domain. This is
- * the same shape of problem as the influence kernel in
- * particle_global_influence: an unrestricted sum over a globally gathered
- * array, here with the outer loop over grid points rather than particles.
- *
- * The body is oSEM's, unchanged apart from reading one interleaved buffer
- * instead of seven separate arrays. The Gaussian shape function, the r^2
- * rejection test, the normalisation constant and the a_ij * eps_j assembly are
- * all as they were.
- *
- * `all` arrives from ops_reduction_result and holds every eddy, on every rank.
- */
+/* compute_fluct: every inlet node sums a contribution from every eddy in the
+   domain. Body is oSEM's, unchanged apart from reading one interleaved buffer
+   instead of seven arrays. `all` comes from ops_reduction_result and holds
+   every eddy, on every rank. */
 void KerComputeFluct(ACC<double> &uprime, ACC<double> &vprime,
                      ACC<double> &wprime, const ACC<double> &crd,
                      const ACC<double> &a11, const ACC<double> &a21,
