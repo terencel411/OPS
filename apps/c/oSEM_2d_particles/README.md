@@ -5,11 +5,11 @@ are **OPS particles** rather than grid dats on a second block, structured like
 [`../particle_global_influence`](../particle_global_influence).
 
 ```
-make influence_osem_dev_seq
-./influence_osem_dev_seq -niter 400
+make osem_2d_particles_dev_seq
+./osem_2d_particles_dev_seq -niter 400
 
-make influence_osem_dev_mpi
-OMP_NUM_THREADS=1 mpirun -np 2 ./influence_osem_dev_mpi -niter 150
+make osem_2d_particles_dev_mpi
+OMP_NUM_THREADS=1 mpirun -np 2 ./osem_2d_particles_dev_mpi -niter 150
 ```
 
 | flag | default | |
@@ -362,7 +362,7 @@ watch for it when keeping several runs around.
 | `ops_particle_random.h` | `ops_fill_random_uniform_particle()` — the RNG fill |
 | `particle_kernels.h` | init / convect / publish / count — the eddies |
 | `grid_kernels.h` | grid, RST, `compute_fluct` — the inlet plane |
-| `influence_osem.cpp` | driver |
+| `osem_2d_particles.cpp` | driver |
 | `osem_io.h` | per-step HDF5 frames, written to `h5files/` |
 | `UNDERSTANDING_oSEM.md` | the method explained, and how this app differs |
 

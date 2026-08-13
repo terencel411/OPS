@@ -7,9 +7,9 @@ USE_HDF5=1
 #   OPS_COMPILER       e.g. gnu
 #
 # Targets:
-#   make influence_osem_dev_seq   serial, compiled directly (NO translator)
-#   make influence_osem_dev_mpi   MPI,    compiled directly (NO translator)
-#   make influence_osem_mpi       MPI,    via the OPS translator
+#   make osem_2d_particles_dev_seq   serial, compiled directly (NO translator)
+#   make osem_2d_particles_dev_mpi   MPI,    compiled directly (NO translator)
+#   make osem_2d_particles_mpi       MPI,    via the OPS translator
 #
 
 
@@ -20,12 +20,12 @@ include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
 HEADERS=grid_kernels.h particle_kernels.h osem_common.h osem_constants.h osem_io.h ops_particle_random.h
 
-OPS_FILES=influence_osem.cpp
+OPS_FILES=osem_2d_particles.cpp
 
 OPS_GENERATED_SUFFIX=_ops
 
-APP=influence_osem
-MAIN_SRC=influence_osem
+APP=osem_2d_particles
+MAIN_SRC=osem_2d_particles
 
 # Particle kernels are resolved by C++ templates and compile host-side only,
 # so GPU targets are deliberately not offered here.

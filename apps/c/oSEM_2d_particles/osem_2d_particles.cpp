@@ -11,9 +11,9 @@
  * re-injection change needed for migration, and the known hazards.
  * UNDERSTANDING_oSEM.md explains the method itself.
  *
- * Build:  make influence_osem_dev_seq / _dev_mpi
- * Run:    ./influence_osem_dev_seq
- *         OMP_NUM_THREADS=1 mpirun -np 4 ./influence_osem_dev_mpi
+ * Build:  make osem_2d_particles_dev_seq / _dev_mpi
+ * Run:    ./osem_2d_particles_dev_seq
+ *         OMP_NUM_THREADS=1 mpirun -np 4 ./osem_2d_particles_dev_mpi
  */
 
 #include <cmath>

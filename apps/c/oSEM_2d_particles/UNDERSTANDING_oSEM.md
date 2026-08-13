@@ -1,6 +1,6 @@
 # Understanding oSEM, and how this app differs
 
-Background reading for [`influence_osem.cpp`](./influence_osem.cpp). The first
+Background reading for [`osem_2d_particles.cpp`](./osem_2d_particles.cpp). The first
 half explains the method as [`../oSEM`](../oSEM) implements it; the second half
 sets out what changes when the eddies become OPS particles.
 
@@ -554,11 +554,11 @@ is never registered: no error, no warning, exit 0. It shows up in the generated
 driver as the only call site left untouched —
 
 ```
-influence_osem_ops.cpp:106   void ops_par_loop_KerInitGrid(...)
-influence_osem_ops.cpp:108   void ops_par_loop_KerInitRST_TBL(...)
-influence_osem_ops.cpp:110   void ops_par_loop_KerInitRST(...)
-influence_osem_ops.cpp:112   void ops_par_loop_KerFluctStats(...)
-influence_osem_ops.cpp:562   ops_par_loop(KerComputeFluct, "KerComputeFluct", ...)   <- templated
+osem_2d_particles_ops.cpp:106   void ops_par_loop_KerInitGrid(...)
+osem_2d_particles_ops.cpp:108   void ops_par_loop_KerInitRST_TBL(...)
+osem_2d_particles_ops.cpp:110   void ops_par_loop_KerInitRST(...)
+osem_2d_particles_ops.cpp:112   void ops_par_loop_KerFluctStats(...)
+osem_2d_particles_ops.cpp:562   ops_par_loop(KerComputeFluct, "KerComputeFluct", ...)   <- templated
 ```
 
 The mechanism is in `parseLoops` (`parser.py:88`): it calls `parseCall` only on

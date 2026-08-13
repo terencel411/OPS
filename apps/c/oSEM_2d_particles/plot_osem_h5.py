@@ -228,7 +228,7 @@ def main():
         # `rms` above is a plane average over every node, so the comparable
         # target is the target PROFILE collapsed the same way: rows are equally
         # weighted, targ holds sqrt(R), hence sqrt of its mean square. Matches
-        # what influence_osem.cpp now prints. The honest comparison is per-y --
+        # what osem_2d_particles.cpp now prints. The honest comparison is per-y --
         # that is the bottom panel, and the reason this line ends in a pointer.
         tgt = np.sqrt((meta0["targ"] ** 2).mean(axis=0))
         print("rms at the end: u' %.4f  v' %.4f  w' %.4f" % tuple(end))
