@@ -13,7 +13,7 @@ Four panels:
   3. the (x, y) side view, showing how thin the slab is: two eddy radii in x;
   4. the wall-normal distribution, which should be flat across the box.
 
-    ./oSEM_3d_particles_dev_seq
+    ./oSEM_3d_particles_old_dev_seq
     python3 plot_osem3d_h5.py
 """
 

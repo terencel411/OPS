@@ -26,8 +26,8 @@
  *  As particles, an eddy is simply owned by the rank whose subdomain it occupies.
  *
  *  Build and run:
- *      make oSEM_3d_particles_dev_seq && ./oSEM_3d_particles_dev_seq
- *      make oSEM_3d_particles_dev_mpi && mpirun -np 4 ./oSEM_3d_particles_dev_mpi
+ *      make oSEM_3d_particles_old_dev_seq && ./oSEM_3d_particles_old_dev_seq
+ *      make oSEM_3d_particles_old_dev_mpi && mpirun -np 4 ./oSEM_3d_particles_old_dev_mpi
  *      python3 plot_osem3d_h5.py     # frames/*.png
  *      python3 make_xdmf.py          # osem3d_eddies.xmf, for ParaView
  *

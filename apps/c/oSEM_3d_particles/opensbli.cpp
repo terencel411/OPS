@@ -1,5 +1,5 @@
 /*
- * oSEM_3d_particles_v1 -- ../oSEM_3d with the eddies as OPS particles and the
+ * oSEM_3d_particles -- ../oSEM_3d with the eddies as OPS particles and the
  * MPI_Allgatherv replaced by an OPS reduction. Everything else is ../oSEM_3d's.
  * The README explains the workflow, the constraints and the deviations.
  */
