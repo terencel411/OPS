@@ -1,8 +1,8 @@
 #ifndef OPENSBLIBLOCK00_KERNEL_H
 #define OPENSBLIBLOCK00_KERNEL_H
 
-// `red` packs the four Cholesky factors per y as 4*idx[1]+0..3, and is the same
-// OPS_INC allgather uinterp_kernel uses -- see the note there.
+// `red` packs the four Cholesky factors per y as 4*idx[1]+0..3 -- the OPS_INC
+// allgather that replaces ../oSEM_3d's ops_dat_fetch_data.
 void interp_RST(const ACC<double>& x1_B0, ACC<double>& a11, ACC<double>& a21, ACC<double>& a22, ACC<double>& a33, const double* ydata, const double* uudata, const double* uvdata, const double* vvdata, const double* wwdata, double* red, const int* idx){
   // assumes zero uw and vw terms
 
@@ -42,15 +42,17 @@ void interp_RST(const ACC<double>& x1_B0, ACC<double>& a11, ACC<double>& a21, AC
   red[4*idx[1] + 3] += a33(0,0,0);
 }
 
-// instantiate_eddies and convect_eddies are gone from this file: the eddies
-// are OPS particles now, so they are ops_particle_par_loop kernels living in
-// eddy_kernels.h.
+// Smallest density in the interior, reported every step: density going
+// non-physical is what precedes the NaN check firing.
+void KerRhoMin(const ACC<double>& rho_B0, double* m) {
+  if (rho_B0(0,0,0) < *m) *m = rho_B0(0,0,0);
+}
 
-// `red` is the same allgather the eddies use, on the grid instead of on
-// particles: this loop visits each y exactly once across all ranks, so an
-// OPS_INC reduction into slot idx[1] reassembles the whole profile everywhere.
-// ../oSEM_3d instead fetches the dat and ops_update_const's it, which under MPI
-// gives every rank only its own slice written at offset 0.
+// instantiate_eddies and convect_eddies now live in eddy_kernels.h as
+// ops_particle_par_loop kernels.
+
+// This loop visits each y exactly once across all ranks, so an OPS_INC
+// reduction into slot idx[1] reassembles the profile on every rank.
 void uinterp_kernel(ACC<double>& d_uinterp, const ACC<double>& x1_B0, double* red, const int* idx){
   double w1;
   double w2;
@@ -294,11 +296,8 @@ void opensbliblock00Kernel046(const ACC<double> &D11_B0, ACC<double> &SD111_B0, 
 
    if(x1d < 1.0 && x1d > 0.0){
      for (int i{0}; i < eddies; i++){
-       // The only change from ../oSEM_3d: one packed buffer indexed by global
-       // eddy id, instead of seven arrays filled by an MPI_Allgatherv.
-       // Layout is osem3d_common.h's, spelled out because the translator
-       // inlines this body into a file that includes no app header:
-       //   e[0..6] = x, y, z, r, eps_x, eps_y, eps_z
+       // One packed buffer indexed by global eddy id, in place of seven
+       // gathered arrays. e[0..6] = x, y, z, r, eps_x, eps_y, eps_z
        const double* e = eddy_all + 7*i;
        xtildesq = (e[0])*(e[0])/(e[3]*e[3]);
        ytildesq = (e[1]-x1_B0(0,0,0))*(e[1]-x1_B0(0,0,0))/(e[3]*e[3]);
@@ -338,6 +337,10 @@ void opensbliblock00Kernel046(const ACC<double> &D11_B0, ACC<double> &SD111_B0, 
      }
    }
    
+   up *= fluct_scale[0];
+   vp *= fluct_scale[1];
+   wp *= fluct_scale[2];
+
    up = (std::abs(up) < 0.2) ? up : std::abs(up)/up * 0.2;
    vp = (std::abs(vp) < 0.2) ? vp : std::abs(vp)/vp * 0.2;
    wp = (std::abs(wp) < 0.2) ? wp : std::abs(wp)/wp * 0.2;

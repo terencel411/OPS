@@ -62,12 +62,14 @@ double eddy_z_max;
 double eddy_vol;
 int eddies;
 
-// Per-step streamwise convection distance. oSEM_3d carries this as a per-eddy
-// dat written to 1.0*dt by instantiate_eddies; it is the same for every eddy.
+// Per-step convection distance. A per-eddy dat in oSEM_3d; identical for all.
 double increment;
 
 unsigned int seed_gbl;
 
-// The gather buffer that replaces oSEM_3d's seven eddy_*_gbl host arrays and
-// the MPI_Allgatherv that filled them. See osem3d_common.h for the layout.
+// The gather buffer replacing oSEM_3d's seven eddy_*_gbl arrays. Layout in
+// osem3d_common.h.
 double* eddy_all;
+
+// Diagnostic: per-component scale on the inlet fluctuation (-fluct A B C).
+double fluct_scale[3];

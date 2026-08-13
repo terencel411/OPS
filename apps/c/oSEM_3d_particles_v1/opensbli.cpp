@@ -1,21 +1,7 @@
 /*
- * oSEM_3d_particles_v1 -- ../oSEM_3d with the synthetic eddies as OPS particles
- *
- * What changed, and nothing else did:
- *
- *   1. The ten eddy ops_dats on the fluid block are gone. An eddy is an OPS
- *      particle on a block of its own that spans exactly the eddy box.
- *   2. The hand-rolled MPI_Allgatherv over raw MPI_COMM_WORLD that fed
- *      Kernel030 (../oSEM_3d/opensbli.cpp:416-491, every timestep) is gone.
- *      Kernel030 now reads one buffer filled by an array-valued ops_reduction
- *      indexed by global eddy id, which is an allgather.
- *   3. The uinterp and a11..a33 profiles are gathered the same way. ../oSEM_3d
- *      builds them with ops_dat_fetch_data, which returns only this rank's
- *      slice written at offset 0, so they are wrong under MPI for the same
- *      reason the eddies were.
- *
- * The RK3 solver, the boundary conditions, the metrics, the averaging and the
- * HDF5 output are ../oSEM_3d's, untouched.
+ * oSEM_3d_particles_v1 -- ../oSEM_3d with the eddies as OPS particles and the
+ * MPI_Allgatherv replaced by an OPS reduction. Everything else is ../oSEM_3d's.
+ * The README explains the workflow, the constraints and the deviations.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -39,28 +25,26 @@
 
 typedef double Real;
 
-/* The two ops_arg_reduce calls below spell their dimension as a bare literal,
-   because the translator's parseIntLiteral (ops-translator/cpp/parser.py:188)
-   wants a single token and rejects a macro. These keep the two in step. */
+/* Diagnostic only (-degenerate-rng): u -> 0.5 + 0.5u reproduces ../oSEM_3d's
+   broken draw -- upper half of every range, and every sign +1. */
+static int opt_degen = 0;
+
+static void degrade_rnd(ops_particle particle, ops_dat rnd) {
+  double *d = (double *)rnd->data;
+  const long n = (long)particle->no_particles * rnd->dim;
+  for (long i = 0; i < n; i++) d[i] = 0.5 + 0.5 * d[i];
+}
+
+/* The reduction dims below are bare literals because the translator's
+   parseIntLiteral wants a single token. These keep them in step. */
 static_assert(UINTERP_CAP == 4096, "literal in the ops_arg_reduce call must match");
 static_assert(RST_CAP == 600, "literal in the ops_arg_reduce call must match");
 
 /*
- * Place the eddies, give each one a global id, and decide who owns it.
- *
- * On the host, because the particle count has to be set there. Every rank walks
- * the same id sequence from the same seed and keeps the eddies its own
- * subdomain owns, so the ids are dense in [0, eddies) and every eddy is owned
- * exactly once. The test is half-open at the top because OPS rank boundaries
- * land on shared grid nodes -- partitionBoundingBox extends each rank's xmax to
- * its neighbour's xmin (ops_particle_box_mpi_funcs.h:152), so the local boxes
- * tile with no gap -- and a closed test would let two ranks claim one eddy.
- *
- * `pos` is the eddy's true position CLAMPED into the block, not the eddy's
- * position: the eddy box overhangs the fluid domain on all three low faces and
- * is wider than it in z, so a true position would often be outside every rank's
- * box, and outside means owned by nobody. The true coordinates go to `ecrd`,
- * which is what the physics reads. See the header note in eddy_kernels.h.
+ * Place the eddies, give each a global id, and decide who owns it. Host code:
+ * a kernel cannot set the particle count, and ownership is decided by position.
+ * `pos` is the position clamped into the block -- an ownership handle only; the
+ * eddy's real coordinates go to `ecrd`. Half-open test, since boxes share faces.
  */
 static void seed_eddies(ops_particle particle, ops_dat pos, ops_dat ecrd,
                         ops_dat gid, int neddy, unsigned int seed) {
@@ -83,10 +67,15 @@ static void seed_eddies(ops_particle particle, ops_dat pos, ops_dat ecrd,
 
   int n = 0;
   for (int i = 0; i < neddy; i++) {
+    Real u[3] = {ops_prandom_uniform(seed, i, 0u, 0),
+                 ops_prandom_uniform(seed, i, 0u, 1),
+                 ops_prandom_uniform(seed, i, 0u, 2)};
+    if (opt_degen) for (int d = 0; d < 3; d++) u[d] = 0.5 + 0.5 * u[d];
+
     Real e[3];
-    e[0] = eddy_x_min + (eddy_x_max - eddy_x_min) * ops_prandom_uniform(seed, i, 0u, 0);
-    e[1] = eddy_y_min + (eddy_y_max - eddy_y_min) * ops_prandom_uniform(seed, i, 0u, 1);
-    e[2] = eddy_z_min + (eddy_z_max - eddy_z_min) * ops_prandom_uniform(seed, i, 0u, 2);
+    e[0] = eddy_x_min + (eddy_x_max - eddy_x_min) * u[0];
+    e[1] = eddy_y_min + (eddy_y_max - eddy_y_min) * u[1];
+    e[2] = eddy_z_min + (eddy_z_max - eddy_z_min) * u[2];
 
     /* The ownership handle: nearest point of the block to the eddy. */
     Real q[3];
@@ -128,6 +117,14 @@ block0np0 = 150;
 block0np1 = 50;
 block0np2 = 30;
 int    opt_niter = 100;
+// -neddies overrides the count the eddy box implies. 0 runs the solver with no
+// synthetic turbulence at all, which is the control for "is a blow-up the eddy
+// path or the grid".
+int    opt_neddies = -1;
+// -pad-below-wall restores ../oSEM_3d's eddy_y_min = -radius, which seeds
+// eddies under a solid wall. Default here is 0.0, as in the 2-D reference.
+int    opt_padwall = 0;
+fluct_scale[0] = fluct_scale[1] = fluct_scale[2] = 1.0;
 int    opt_nout  = 10;
 seed_gbl = 182383739u;
 
@@ -141,6 +138,17 @@ for (int i = 1; i < argc; i++) {
     opt_niter = atoi(argv[++i]);
   } else if (!strcmp(argv[i], "-nout") && i + 1 < argc) {
     opt_nout = atoi(argv[++i]);
+  } else if (!strcmp(argv[i], "-fluct") && i + 3 < argc) {
+    fluct_scale[0] = atof(argv[i+1]);
+    fluct_scale[1] = atof(argv[i+2]);
+    fluct_scale[2] = atof(argv[i+3]);
+    i += 3;
+  } else if (!strcmp(argv[i], "-pad-below-wall")) {
+    opt_padwall = 1;
+  } else if (!strcmp(argv[i], "-degenerate-rng")) {
+    opt_degen = 1;
+  } else if (!strcmp(argv[i], "-neddies") && i + 1 < argc) {
+    opt_neddies = atoi(argv[++i]);
   } else if (!strcmp(argv[i], "-seed") && i + 1 < argc) {
     seed_gbl = (unsigned int)strtoul(argv[++i], NULL, 10);
   }
@@ -196,16 +204,20 @@ delta = 11.6973525411;
 radius = 0.2 * delta;
 eddy_x_min = -radius;
 eddy_x_max = radius;
-eddy_y_min = 0.0 - radius;
+eddy_y_min = opt_padwall ? (0.0 - radius) : 0.0;   // see opt_padwall above
 eddy_y_max = delta + radius;
 eddy_z_min = -radius;
 eddy_z_max = 40.0 + radius;
 eddy_vol = std::abs((eddy_x_max - eddy_x_min) * (eddy_y_max - eddy_y_min) * (eddy_z_max - eddy_z_min));
 eddies = trunc(eddy_vol/(radius*radius*radius));
+if (opt_neddies >= 0) eddies = opt_neddies;
+// The reduction always carries at least one slot, so -neddies 0 does not have
+// to be special-cased through the gather.
+const int nred = (eddies > 0 ? eddies : 1) * NCOMP;
 increment = 1.0 * dt;
 
 // The gather buffer, in place of ../oSEM_3d's seven eddy_*_gbl host arrays.
-eddy_all = (double*)malloc(eddies * NCOMP * sizeof(double));
+eddy_all = (double*)malloc(nred * sizeof(double));
 
 if (ny > UINTERP_CAP) {
   ops_printf("ny = %d exceeds UINTERP_CAP = %d; raise it in osem3d_common.h\n", ny, UINTERP_CAP);
@@ -268,6 +280,7 @@ ops_decl_const("radius", 1, "double", &radius);
 ops_decl_const("eddy_vol", 1, "double", &eddy_vol);
 ops_decl_const("eddies", 1, "int", &eddies);
 ops_decl_const("increment", 1, "double", &increment);
+ops_decl_const("fluct_scale", 3, "double", fluct_scale);
 
 ops_decl_const("eddy_x_min", 1, "double", &eddy_x_min);
 ops_decl_const("eddy_x_max", 1, "double", &eddy_x_max);
@@ -288,17 +301,10 @@ ops_block opensbliblock00 = ops_decl_block(3, "opensbliblock00");
 #include "bc_exchanges.h"
 
 // ----------------------------- the eddy particles ---------------------------
-//
-// On the fluid block, not one of their own. OPS partitions the RANKS between
-// blocks -- ops_mpi_partition.cpp:152-154 gives each block nproc/nblocks of
-// them and sets sb->comm to MPI_COMM_NULL on the rest -- so a dedicated eddy
-// block would take half the ranks away from the solver and crash the bounding
-// box setup on the ranks it did not get.
-//
-// d_coords is the fluid grid packed into one 3-component dat, which is the
-// shape ops_create_bounding_box and ops_decl_mapping want. It is filled from
-// x0_B0/x1_B0/x2_B0 after the grid kernels run and before the box is
-// partitioned.
+// On the fluid block, not one of their own: OPS partitions the RANKS between
+// blocks, so a second block would halve the solver's parallelism (README).
+// d_coords is the grid packed into one dim-3 dat, which is what the bounding
+// box and the mapping require.
 ops_dat d_coords;
 {
 int halo_p[] = {1, 1, 1};
@@ -319,10 +325,10 @@ for (int k = -1; k <= 1; k++)
 ops_stencil S3D_27pt = ops_decl_stencil(3, 27, s3d_27, "eddy_27pt");
 
 // h_eddy is the allgather that replaces the MPI_Allgatherv; h_uinterp and h_rst
-// do the same for the two inlet profiles, which ../oSEM_3d builds with
-// ops_dat_fetch_data and so also gets wrong under MPI.
-ops_reduction h_eddy    = ops_decl_reduction_handle(eddies * NCOMP * sizeof(double), "double", "eddy_all");
+// do the same for the two inlet profiles, which ../oSEM_3d also gets wrong.
+ops_reduction h_eddy    = ops_decl_reduction_handle(nred * sizeof(double), "double", "eddy_all");
 ops_reduction h_cnt     = ops_decl_reduction_handle(sizeof(int), "int", "eddy_count");
+ops_reduction h_rhomin  = ops_decl_reduction_handle(sizeof(double), "double", "rho_min");
 ops_reduction h_uinterp = ops_decl_reduction_handle(UINTERP_CAP * sizeof(double), "double", "uinterp_all");
 ops_reduction h_rst     = ops_decl_reduction_handle(RST_CAP * sizeof(double), "double", "rst_all");
 
@@ -351,9 +357,8 @@ ops_particle_mapping map = ops_decl_mapping(eddy_parts, d_coords, S3D_27pt,
 ops_dat dat_border[] = {p_pos, p_e, p_r, p_eps, p_id};
 const int nborder = sizeof(dat_border)/sizeof(dat_border[0]);
 
-// Not a loop bound, despite the shape: ops_particle_par_loop reads this only
-// for OPS_PARTICLE_ITERATE_RANDOM, and every loop here is ITERATE_LOCAL, which
-// takes its count from particle->no_particles (ops_particle_seq.h:858-865).
+// Not a loop bound: only ITERATE_RANDOM reads this, and every loop here is
+// ITERATE_LOCAL, which takes its count from particle->no_particles.
 double eddy_region[] = {eddy_x_min, eddy_x_max, eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max};
 // Init OPS partition
 double partition_start0, elapsed_partition_start0, partition_end0, elapsed_partition_end0;
@@ -472,6 +477,7 @@ ops_particle_setup_maps_with_dats(eddy_parts, dat_border, nborder);
 
 // The position is already placed by seed_eddies; this writes the rest.
 ops_fill_random_uniform_particle(eddy_parts, p_rnd, p_id, seed_gbl, 1u, OPS_PRNG_MINSTD);
+if (opt_degen) degrade_rnd(eddy_parts, p_rnd);
 
 ops_particle_par_loop(KerInitEddy, "instantiate_eddies", eddy_parts, 3,
 OPS_PARTICLE_ITERATE_LOCAL, eddy_region, map,
@@ -524,9 +530,14 @@ ops_decl_const("a33", y_cutoff, "double", a33);
 
 ops_printf("eddies: %i. Eddy volume: %f \n", eddies, eddy_vol);
 ops_printf("xmax: %f, xmin: %f \n", eddy_x_max, eddy_x_min);
-ops_printf("ymax: %f, ymin: %f \n", eddy_y_max, eddy_y_min);
+ops_printf("ymax: %f, ymin: %f %s\n", eddy_y_max, eddy_y_min,
+           opt_padwall ? "(-pad-below-wall: ../oSEM_3d's box, extends under the wall)"
+                       : "(no padding below the wall)");
 ops_printf("zmax: %f, zmin: %f \n", eddy_z_max, eddy_z_min);
 ops_printf("gather buffer: %d x %d doubles per step\n", eddies, NCOMP);
+ops_printf("fluctuation scale (u,v,w): %.2f %.2f %.2f\n", fluct_scale[0], fluct_scale[1], fluct_scale[2]);
+if (opt_degen)
+  ops_printf("*** -degenerate-rng: emulating ../oSEM_3d's broken draw ***\n");
 
 for (int i{0}; i < y_cutoff; i++){
   ops_printf("a11: %f, a21: %f, a22: %f, a33: %f \n", a11[i], a21[i], a22[i], a33[i]);
@@ -549,22 +560,24 @@ if(fmod(iter+1, 1) == 0){
         ops_timers(&inner_end, &elapsed_inner_end);
         ops_printf("Iteration: %d. Time-step: %.3e. Simulation time: %.5f. Time/iteration: %lf.\n", iter+1, dt, simulation_time, (elapsed_inner_end - elapsed_inner_start)/1);
         ops_NaNcheck(rho_B0);
+        {
+        int rmin_range[] = {0, block0np0, 0, block0np1, 0, block0np2};
+        double rmin = 0.0;
+        ops_par_loop(KerRhoMin, "KerRhoMin", opensbliblock00, 3, rmin_range,
+        ops_arg_dat(rho_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
+        ops_arg_reduce(h_rhomin, 1, "double", OPS_MIN));
+        ops_reduction_result(h_rhomin, &rmin);
+        ops_printf("   rho_min %.6f%s\n", rmin, rmin <= 0.0 ? "   <-- NON-PHYSICAL" : "");
+        }
         ops_timers(&inner_start, &elapsed_inner_start);
 }
 
-// ------------------------ eddy convection -----------------------------------------------
-//
+// ------------------------ eddy convection -----------------------------------
 // ../oSEM_3d's two lines per step -- refill the random dat, run convect_eddies
-// -- and then the gather that replaces its MPI_Allgatherv.
-//
-// There is no migration call. Ownership was fixed at seeding and is by eddy id:
-// convect_eddies teleports a recycled eddy to an arbitrary point in the box,
-// which OPS particle migration cannot express as a neighbour exchange, and
-// nothing here needs ownership to track position. The reduction sums by global
-// id, so the gathered list stays complete and exact whatever the positions do.
-
+// -- then the gather. No migration: ownership is by eddy id, fixed at seeding.
 ops_fill_random_uniform_particle(eddy_parts, p_rnd, p_id, seed_gbl,
                                  (unsigned int)(iter - start_iter) + 2u, OPS_PRNG_MINSTD);
+if (opt_degen) degrade_rnd(eddy_parts, p_rnd);
 
 ops_particle_par_loop(KerConvectEddies, "convect_eddies", eddy_parts, 3,
 OPS_PARTICLE_ITERATE_LOCAL, eddy_region, map,
@@ -572,22 +585,19 @@ ops_arg_dat_particle(p_e, 3, "double", eddy_parts, map, OPS_RW),
 ops_arg_dat_particle(p_eps, 3, "double", eddy_parts, map, OPS_RW),
 ops_arg_dat_particle(p_rnd, 6, "double", eddy_parts, map, OPS_READ));
 
-// Every eddy adds itself into the slot its global id picks out, every other
-// rank contributes 0.0 there, so the MPI_Allreduce inside ops_reduction_result
-// hands every rank the complete list in id order.
+// The gather: OPS_INC by global id, so the MPI_Allreduce inside
+// ops_reduction_result hands every rank the complete list in id order.
 ops_particle_par_loop(KerPublishEddy, "publish_eddies", eddy_parts, 3,
 OPS_PARTICLE_ITERATE_LOCAL, eddy_region, map,
 ops_arg_dat_particle(p_e, 3, "double", eddy_parts, map, OPS_READ),
 ops_arg_dat_particle(p_r, 1, "double", eddy_parts, map, OPS_READ),
 ops_arg_dat_particle(p_eps, 3, "double", eddy_parts, map, OPS_READ),
 ops_arg_dat_particle(p_id, 1, "int", eddy_parts, map, OPS_READ),
-ops_arg_reduce(h_eddy, eddies * NCOMP, "double", OPS_INC));
+ops_arg_reduce(h_eddy, nred, "double", OPS_INC));
 ops_reduction_result(h_eddy, eddy_all);
 
-// A probe on the gather alone. These sums are over the whole eddy list in id
-// order, so they must not depend on the rank count -- unlike the flow field,
-// which is not rank-invariant in ../oSEM_3d either. A zero radius means a slot
-// no rank wrote, i.e. a lost eddy.
+// A probe on the gather alone: sums over the whole list in id order, so they
+// must not depend on rank count. Zero radius means a slot no rank wrote.
 if (fmod(1 + iter, write_output_file) == 0 || iter == 0) {
   double sx = 0.0, sy = 0.0, sz = 0.0, seps = 0.0;
   int missing = 0;
