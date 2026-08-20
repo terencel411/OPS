@@ -337,10 +337,6 @@ void opensbliblock00Kernel046(const ACC<double> &D11_B0, ACC<double> &SD111_B0, 
      }
    }
    
-   up *= fluct_scale[0];
-   vp *= fluct_scale[1];
-   wp *= fluct_scale[2];
-
    up = (std::abs(up) < 0.2) ? up : std::abs(up)/up * 0.2;
    vp = (std::abs(vp) < 0.2) ? vp : std::abs(vp)/vp * 0.2;
    wp = (std::abs(wp) < 0.2) ? wp : std::abs(wp)/wp * 0.2;

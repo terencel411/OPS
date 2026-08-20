@@ -71,5 +71,3 @@ unsigned int seed_gbl;
 // osem3d_common.h.
 double* eddy_all;
 
-// Diagnostic: per-component scale on the inlet fluctuation (-fluct A B C).
-double fluct_scale[3];

@@ -17,9 +17,4 @@
 #define E_SY 5 /* eps_y */
 #define E_SZ 6 /* eps_z */
 
-// Fixed capacities for the two inlet-profile gathers. The translator needs a
-// literal reduction dim, and ny / y_cutoff are runtime -- see the README.
-#define UINTERP_CAP 4096
-#define RST_CAP 600
-
 #endif /* _OSEM3D_COMMON_H_ */

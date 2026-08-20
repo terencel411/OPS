@@ -661,3 +661,12 @@ int base[] = {0, 0, 0};
 double* value = NULL;
 d_a33 = ops_decl_dat(opensbliblock00, 1, size, base, halo_m, halo_p, value, "double", "d_a33");
 }
+ops_dat d_grid;
+{
+int halo_p[] = {1, 1, 1};
+int halo_m[] = {-1, -1, -1};
+int size[] = {block0np0, block0np1, block0np2};
+int base[] = {0, 0, 0};
+double* value = NULL;
+d_grid = ops_decl_dat(opensbliblock00, 3, size, base, halo_m, halo_p, value, "double", "d_grid");
+}

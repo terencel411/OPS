@@ -1,12 +1,7 @@
 /*
- * ops_particle_random.h -- uniform fill for PARTICLE dats, in the style of
- * ops_fill_random_uniform(). Kept in the app; written to be liftable into ops/.
- *
- * ops_fill_random_uniform cannot do this: it throws on a particle dat, and its
- * stream is keyed on storage SLOT, which changes when a particle migrates or
- * the list is compacted. These are keyed on the particle's GLOBAL ID instead,
- * which is what makes a run reproduce at any rank count. Counter-based, so
- * there is no stream state to get wrong. See the app README.
+ * ops_particle_random.h -- uniform fill for PARTICLE dats. ops_fill_random_uniform
+ * throws on a particle dat and keys on storage slot; these key on the global id,
+ * which is what makes a run reproduce at any rank count. See the README.
  */
 
 #ifndef _OPS_PARTICLE_RANDOM_H_
