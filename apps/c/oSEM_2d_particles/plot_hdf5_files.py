@@ -52,13 +52,9 @@ for file_path in h5_files:
         v_raw = np.squeeze(f["/osem_block/vprime"][:])
         w_raw = np.squeeze(f["/osem_block/wprime"][:])
     
-    # Calculate and strip halo/ghost cells dynamically.
-    #
-    # NY and NZ are grid INTERVALS, so the plane has ny+1 by nz+1 NODES -- the
-    # dats are 103 x 153 for the default 100 x 150, i.e. (ny+1)+2 by (nz+1)+2
-    # with a halo of 1. Slicing ny by nz instead drops the last node in each
-    # direction, and the dropped y row is the one at eddy_y_max, where the
-    # edge deficit is strongest.
+    # Strip the halo. NY and NZ are grid intervals, so the plane has ny+1 by
+    # nz+1 nodes and the dats are (ny+1)+2 by (nz+1)+2. Slicing ny by nz instead
+    # would drop the row at eddy_y_max, where the edge deficit is strongest.
     nny, nnz = ny + 1, nz + 1
 
     def strip(a, g0, n0, g1, n1):

@@ -5,10 +5,9 @@
     python3 plot_structure.py --full           # whole plane, not a zoom window
     python3 plot_structure.py h5files_iso/*.h5 --stats   # aggregate, no maps
 
-Answers "is the STRUCTURE right", where plot_osem_h5.py answers "is the
-AMPLITUDE right". Every panel is a derivative, so it needs >= 8 cells per eddy
-radius -- the script warns below that. --outdir avoids overwriting between
-runs. See the README.
+Answers "is the structure right", where plot_osem_h5.py answers "is the
+amplitude right". Every panel is a derivative, so it needs >= 8 cells per eddy
+radius; the script warns below that.
 """
 
 import glob
@@ -28,13 +27,10 @@ H5DIR = "h5files"          # OSEM_OUTDIR in osem_io.h
 OUTDIR = "structure"
 GIF = os.path.join(OUTDIR, "structure.gif")
 
-# rms(in-plane divergence) / rms(omega_x) for INCOMPRESSIBLE ISOTROPIC
-# turbulence. Continuity forces dv/dy + dw/dz = -du/dx, so with the isotropic
-# relations <(du/dx)^2> = A, <(dw/dy)^2> = 2A and <(dw/dy)(dv/dz)> = -A:
-#     <div^2>     = A
-#     <omega_x^2> = 2A + 2A - 2(-A) = 6A
-# hence the ratio is 1/sqrt(6). A field built from blobs that each point in one
-# fixed direction has no reason to satisfy this and does not.
+# rms(in-plane divergence) / rms(omega_x) for incompressible isotropic
+# turbulence: continuity plus the isotropic relations give <div^2> = A and
+# <omega_x^2> = 6A, hence 1/sqrt(6). A field of one-directional blobs need not
+# satisfy this, and does not.
 INCOMPRESSIBLE_RATIO = 1.0 / np.sqrt(6.0)
 
 
@@ -206,16 +202,10 @@ def plot_frame(d, path, full, clim, outdir):
     ax.quiver(zz[::st, ::st], yy[::st, ::st], w[::st, ::st], v[::st, ::st],
               width=0.0022, alpha=0.85)
 
-    # The eddies that actually reach the plane. Each ring of vorticity above
-    # should sit on one of these circles: curl of (constant vector) x (blob)
-    # peaks where the blob's gradient does, i.e. at the edge, and vanishes at
-    # the centre.
-    #
-    # Only the eddies whose centres are NEAREST the plane are drawn. Every
-    # eddy within a radius contributes something, but near the top of the box
-    # they overlap into a thicket of circles over a field that is almost zero
-    # there (the tabulated stresses die off in the freestream), which hides the
-    # one thing the overlay exists to show.
+    # The eddies that reach the plane. Each ring of vorticity above should sit
+    # on one of these circles, since the curl peaks at the blob's edge. Only the
+    # nearest centres are drawn: further ones overlap into a thicket of circles
+    # over a field that is almost zero there.
     near = np.abs(d["ex"] - d["xplane"]) < 0.5 * d["er"]
     for i in np.nonzero(near)[0]:
         if z[j0] - d["er"][i] < d["ez"][i] < z[j1 - 1] + d["er"][i]:

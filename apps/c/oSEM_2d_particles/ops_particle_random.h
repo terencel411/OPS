@@ -1,12 +1,9 @@
 /*
- * ops_particle_random.h -- uniform fill for PARTICLE dats, in the style of
- * ops_fill_random_uniform(). Kept in the app; written to be liftable into ops/.
- *
- * ops_fill_random_uniform cannot do this: it throws on a particle dat, and its
- * stream is keyed on storage SLOT, which changes when a particle migrates or
- * the list is compacted. These are keyed on the particle's GLOBAL ID instead,
- * which is what makes a run reproduce at any rank count. Counter-based, so
- * there is no stream state to get wrong. See the app README.
+ * ops_particle_random.h -- uniform fill for particle dats, in the style of
+ * ops_fill_random_uniform(), which cannot do this: it throws on a particle dat,
+ * and its stream is keyed on storage slot, which changes when the list is
+ * compacted. These are keyed on the particle's global id and are counter-based,
+ * which is what makes a run reproduce at any rank count.
  */
 
 #ifndef _OPS_PARTICLE_RANDOM_H_
@@ -15,9 +12,8 @@
 #include <cstdint>
 #include <random>
 
-/* Engine choice, measured rather than argued: mt19937 costs 10.99 ms/fill,
-   minstd_rand 0.08 ms, and their position/sign correlations are
-   indistinguishable at 10^6 draws. minstd_rand is the default. */
+// Measured, not argued: mt19937 costs 10.99 ms/fill, minstd_rand 0.08 ms, and
+// their position/sign correlations are indistinguishable at 10^6 draws.
 enum ops_particle_rng_method {
   OPS_PRNG_MT19937 = 0,  /* per particle, gid-keyed. Strongest, slowest.   */
   OPS_PRNG_MINSTD = 1,   /* per particle, gid-keyed. Tiny state, so fast.  */
@@ -25,7 +21,7 @@ enum ops_particle_rng_method {
                             Mirrors ops_fill_random_uniform exactly.       */
 };
 
-/* Per-particle engine seeded from (seed, gid, counter) via std::seed_seq. */
+// Per-particle engine seeded from (seed, gid, counter) via std::seed_seq.
 template <typename Engine>
 static inline Engine ops_prandom_engine_t(unsigned int seed, int gid,
                                           unsigned int counter) {
@@ -35,8 +31,8 @@ static inline Engine ops_prandom_engine_t(unsigned int seed, int gid,
   return Engine(seq);
 }
 
-/* Shared engine, seeded as ops_randomgen_init_host does: seed + rank*2654435761u
-   above one rank, or every rank would draw the same sequence. */
+// Shared engine, seeded as ops_randomgen_init_host does: seed + rank*2654435761u
+// above one rank, or every rank would draw the same sequence.
 inline std::mt19937 &ops_prandom_shared_engine() {
   static std::mt19937 gen;
   return gen;
@@ -52,7 +48,7 @@ inline void ops_prandom_shared_init(unsigned int seed) {
 #endif
 }
 
-/* A single draw, uniform in [0,1), keyed on gid. Used by the host seeding pass. */
+// A single draw, uniform in [0,1), keyed on gid. Used by the host seeding pass.
 static inline double ops_prandom_uniform(unsigned int seed, int gid,
                                          unsigned int counter, int component) {
   std::mt19937 gen = ops_prandom_engine_t<std::mt19937>(seed, gid, counter);
@@ -61,8 +57,8 @@ static inline double ops_prandom_uniform(unsigned int seed, int gid,
   return distribution(gen);
 }
 
-/* Fill a particle dat with uniform [0,1) values. Owned particles only: ghosts
-   are refreshed from their owner by the border exchange. */
+// Fill a particle dat with uniform [0,1) values. Owned particles only: ghosts
+// are refreshed from their owner by the border exchange.
 inline void ops_fill_random_uniform_particle(ops_particle particle, ops_dat dat,
                                              ops_dat gid_dat, unsigned int seed,
                                              unsigned int counter,
@@ -76,7 +72,7 @@ inline void ops_fill_random_uniform_particle(ops_particle particle, ops_dat dat,
   std::uniform_real_distribution<double> distribution(0.0, 1.0);
 
   if (method == OPS_PRNG_SHARED) {
-    /* Keyed on storage slot, so a draw changes when the list is compacted. */
+    // Keyed on storage slot, so a draw changes when the list is compacted.
     std::mt19937 &gen = ops_prandom_shared_engine();
     const int total = n * d;
     for (int i = 0; i < total; i++) out[i] = distribution(gen);

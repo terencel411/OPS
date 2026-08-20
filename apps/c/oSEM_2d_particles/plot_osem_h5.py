@@ -5,8 +5,7 @@
 
 Each frame holds the inlet fields, the id-ordered eddy list and the run
 constants. Four panels: u', v', w' on one shared diverging scale with the
-contributing eddies overlaid and coloured by the sign driving that component,
-then rms against time with the target u0*TI. See the README.
+contributing eddies overlaid, then rms against time with the target.
 """
 
 import glob
@@ -56,20 +55,14 @@ def read_frame(path):
             "xplane": float(f["x_plane"][0]),
             "box": f["box"][:],
             "use_tbl": int(f["use_tbl"][0]),
-            # Plane rms, computed here rather than written by the app -- same
-            # reasoning as `prof` below. Matched the app's KerFluctStats
-            # reduction to 4.5e-15 relative over 50 frames (summation order),
-            # and dropping it took a kernel launch and an Allreduce out of the
-            # app's output path.
+            # Plane rms, computed here rather than written by the app. Matched
+            # its KerFluctStats reduction to 4.5e-15 relative over 50 frames.
             "rms": np.array(
                 [np.sqrt((fields[n] ** 2).mean())
                  for n in ("uprime", "vprime", "wprime")]),
-            # Per-row rms, computed here rather than written by the app. The
-            # fields above already carry everything needed -- row i of `fields`
-            # is one wall-normal station, so the mean over z is the row rms.
-            # This reproduces the app's old rms_profile dataset exactly (checked
-            # bit-for-bit), and dropping it let the app lose a kernel, an
-            # MPI reduction and its ny <= 100 restriction.
+            # Per-row rms, likewise: row i of `fields` is one wall-normal
+            # station, so the mean over z is the row rms. Reproduces the app's
+            # old rms_profile dataset bit for bit.
             "prof": np.stack(
                 [np.sqrt((fields[n] ** 2).mean(axis=1))
                  for n in ("uprime", "vprime", "wprime")], axis=1),
@@ -222,14 +215,9 @@ def main():
     end = history[1][-1]
     print("field range   : +/- %.4g" % clim)
     if meta0["use_tbl"]:
-        # u0*TI is NOT the target under the tabulated profile -- it governs
-        # nothing there (only the isotropic KerInitRST reads it), and printing
-        # it here said the same misleading thing the app's own report used to.
-        # `rms` above is a plane average over every node, so the comparable
-        # target is the target PROFILE collapsed the same way: rows are equally
-        # weighted, targ holds sqrt(R), hence sqrt of its mean square. Matches
-        # what osem_2d_particles.cpp now prints. The honest comparison is per-y --
-        # that is the bottom panel, and the reason this line ends in a pointer.
+        # u0*TI governs nothing under the tabulated profile. `rms` is a plane
+        # average, so the comparable target is targ collapsed the same way.
+        # The honest comparison is per-y, which is the bottom panel.
         tgt = np.sqrt((meta0["targ"] ** 2).mean(axis=0))
         print("rms at the end: u' %.4f  v' %.4f  w' %.4f" % tuple(end))
         print("tabulated tgt : u' %.4f  v' %.4f  w' %.4f"

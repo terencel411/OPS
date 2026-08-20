@@ -1,91 +1,77 @@
 /*
- * particle_kernels.h -- the eddies, as ops_particle_par_loop kernels using
- * ACCP<T>&. Counterparts of oSEM's instantiate_eddies and convect_eddies, plus
- * the publish/count pair the gather needs.
- *
- * The particle POSITION is (y, z), the inlet plane, which is also what OPS
- * decomposes. The streamwise x rides as an ordinary particle dat: nothing is
- * decomposed along it and no neighbour search uses it.
+ * particle_kernels.h -- the eddies, as ops_particle_par_loop kernels. The
+ * particle position is (y, z), the inlet plane, which is also what OPS
+ * decomposes; the streamwise x rides as an ordinary particle dat.
  */
 
 #ifndef _PARTICLE_KERNELS_H_
 #define _PARTICLE_KERNELS_H_
 
-/* instantiate_eddies. Positions (y,z) are seeded on the host, since the
-   particle count has to be set there; everything else is drawn here from six
-   pre-filled uniforms. Each component is a separate hash of
-   (seed, gid, counter, component), not successive states of one stream -- see
-   the position/sign correlation bug in the README. */
-void KerInitEddy(ACCP<double> &px, ACCP<double> &pr, ACCP<double> &peps,
-                 ACCP<double> &pvt, const ACCP<double> &rnd) {
+// instantiate_eddies, minus the (y,z) position, which seed_eddies has already
+// set on the host. Each uniform is a separate hash of (seed, gid, counter,
+// component), not successive states of one stream -- see the README.
+void KerInitEddy(ACCP<double> &eddy_x, ACCP<double> &eddy_r, ACCP<double> &eddy_eps,
+                 ACCP<double> &eddy_vt, const ACCP<double> &eddy_rng) {
 
-  px(0) = x_min + rnd(0) * (x_max - x_min);
-  pr(0) = eddy_radius;
+  eddy_x(0) = x_min + eddy_rng(0) * (x_max - x_min);
+  eddy_r(0) = eddy_radius;
 
-  /* Transverse velocity, drawn once and kept: this is what replaces oSEM's
-     re-randomisation, so the eddy drifts to a new (y,z) instead of jumping. */
-  pvt(0) = vt_y * (2.0 * rnd(1) - 1.0);
-  pvt(1) = vt_z * (2.0 * rnd(2) - 1.0);
+  // Transverse velocity, drawn once and kept: this replaces oSEM's
+  // re-randomisation, so the eddy drifts to a new (y,z) instead of jumping.
+  eddy_vt(0) = vt_y * (2.0 * eddy_rng(1) - 1.0);
+  eddy_vt(1) = vt_z * (2.0 * eddy_rng(2) - 1.0);
 
-  peps(0) = (rnd(3) < 0.5) ? -1.0 : 1.0;
-  peps(1) = (rnd(4) < 0.5) ? -1.0 : 1.0;
-  peps(2) = (rnd(5) < 0.5) ? -1.0 : 1.0;
+  eddy_eps(0) = (eddy_rng(3) < 0.5) ? -1.0 : 1.0;
+  eddy_eps(1) = (eddy_rng(4) < 0.5) ? -1.0 : 1.0;
+  eddy_eps(2) = (eddy_rng(5) < 0.5) ? -1.0 : 1.0;
 }
 
-/* convect_eddies: one step of streamwise convection, plus the recycle when the
-   eddy leaves the downstream face.
+// convect_eddies, with continuous re-injection in place of oSEM's jump to a new
+// random (y,z), which OPS migration cannot express. The eddy drifts and reflects
+// off the box faces; the signs are still re-drawn on recycle. README has the why.
+void KerConvectEddies(ACCP<double> &eddy_pos, ACCP<double> &eddy_x, ACCP<double> &eddy_r,
+                      ACCP<double> &eddy_eps, ACCP<double> &eddy_vt,
+                      const ACCP<double> &eddy_rng) {
 
-   CONTINUOUS RE-INJECTION, a deliberate change from oSEM. It recycles by
-   assigning a new random (y,z); that is a jump to an arbitrary point, and OPS
-   migration only reaches a neighbouring rank. Here the eddy drifts on a
-   transverse velocity and reflects off the box faces instead. The SIGNS are
-   still re-drawn on every recycle, which is what refreshes the statistics.
-   README has the measurements. */
-void KerConvectEddies(ACCP<double> &pos, ACCP<double> &px, ACCP<double> &pr,
-                      ACCP<double> &peps, ACCP<double> &pvt,
-                      const ACCP<double> &rnd) {
+  eddy_x(0) += increment;
 
-  px(0) += increment;
+  // Transverse drift, reflected at the box faces: a small local correction,
+  // never a jump.
+  eddy_pos(0) += eddy_vt(0);
+  eddy_pos(1) += eddy_vt(1);
 
-  /* Continuous transverse drift, with reflection off the box faces. A
-     reflection is a small local correction, never a jump. */
-  pos(0) += pvt(0);
-  pos(1) += pvt(1);
+  if (eddy_pos(0) < eddy_y_min) { eddy_pos(0) = 2.0 * eddy_y_min - eddy_pos(0); eddy_vt(0) = -eddy_vt(0); }
+  if (eddy_pos(0) > eddy_y_max) { eddy_pos(0) = 2.0 * eddy_y_max - eddy_pos(0); eddy_vt(0) = -eddy_vt(0); }
+  if (eddy_pos(1) < eddy_z_min) { eddy_pos(1) = 2.0 * eddy_z_min - eddy_pos(1); eddy_vt(1) = -eddy_vt(1); }
+  if (eddy_pos(1) > eddy_z_max) { eddy_pos(1) = 2.0 * eddy_z_max - eddy_pos(1); eddy_vt(1) = -eddy_vt(1); }
 
-  if (pos(0) < eddy_y_min) { pos(0) = 2.0 * eddy_y_min - pos(0); pvt(0) = -pvt(0); }
-  if (pos(0) > eddy_y_max) { pos(0) = 2.0 * eddy_y_max - pos(0); pvt(0) = -pvt(0); }
-  if (pos(1) < eddy_z_min) { pos(1) = 2.0 * eddy_z_min - pos(1); pvt(1) = -pvt(1); }
-  if (pos(1) > eddy_z_max) { pos(1) = 2.0 * eddy_z_max - pos(1); pvt(1) = -pvt(1); }
-
-  if (px(0) > x_max) {
-    px(0) = x_min;
-    peps(0) = (rnd(3) < 0.5) ? -1.0 : 1.0;
-    peps(1) = (rnd(4) < 0.5) ? -1.0 : 1.0;
-    peps(2) = (rnd(5) < 0.5) ? -1.0 : 1.0;
-    pr(0) = eddy_radius;
+  if (eddy_x(0) > x_max) {
+    eddy_x(0) = x_min;
+    eddy_eps(0) = (eddy_rng(3) < 0.5) ? -1.0 : 1.0;
+    eddy_eps(1) = (eddy_rng(4) < 0.5) ? -1.0 : 1.0;
+    eddy_eps(2) = (eddy_rng(5) < 0.5) ? -1.0 : 1.0;
+    eddy_r(0) = eddy_radius;
   }
 }
 
-/* The gather, in place of oSEM's seven ops_dat_fetch_data calls. OPS_INC into
-   the slot the global id names; every other rank contributes 0.0, so the
-   MPI_Allreduce is an allgather. Must be ITERATE_LOCAL: a ghost eddy carries
-   its owner's id and would be added twice. */
-void KerPublishEddy(const ACCP<double> &pos, const ACCP<double> &px,
-                    const ACCP<double> &pr, const ACCP<double> &peps,
-                    const ACCP<int> &gid, double *all) {
-  const int s = NCOMP * gid(0);
-  all[s + E_X] += px(0);
-  all[s + E_Y] += pos(0);
-  all[s + E_Z] += pos(1);
-  all[s + E_R] += pr(0);
-  all[s + E_SX] += peps(0);
-  all[s + E_SY] += peps(1);
-  all[s + E_SZ] += peps(2);
+// The gather, in place of oSEM's seven ops_dat_fetch_data calls. Must be
+// ITERATE_LOCAL: a ghost eddy carries its owner's id and would be added twice.
+void KerGatherEddies(const ACCP<double> &eddy_pos, const ACCP<double> &eddy_x,
+                    const ACCP<double> &eddy_r, const ACCP<double> &eddy_eps,
+                    const ACCP<int> &eddy_id, double *eddy_all) {
+  const int s = NCOMP * eddy_id(0);
+  eddy_all[s + E_X] += eddy_x(0);
+  eddy_all[s + E_Y] += eddy_pos(0);
+  eddy_all[s + E_Z] += eddy_pos(1);
+  eddy_all[s + E_R] += eddy_r(0);
+  eddy_all[s + E_SX] += eddy_eps(0);
+  eddy_all[s + E_SY] += eddy_eps(1);
+  eddy_all[s + E_SZ] += eddy_eps(2);
 }
 
-/* Population check: eddies recycle but are never created or destroyed. */
-void KerCountEddies(const ACCP<int> &gid, int *count) {
-  (void)gid;
+// Population check: eddies recycle but are never created or destroyed.
+void KerCountEddies(const ACCP<int> &eddy_id, int *count) {
+  (void)eddy_id;
   *count += 1;
 }
 

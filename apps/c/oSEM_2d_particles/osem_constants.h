@@ -1,6 +1,5 @@
-/* osem_constants.h -- every constant and run option, in the oSEM style 
-   DEFINITIONS, not declarations. Include this from the driver translation 
-   unit ONLY. */
+/* osem_constants.h -- every constant and run option, in the oSEM style.
+   These are definitions, not declarations: include from the driver only. */
 
 #ifndef _OSEM_CONSTANTS_H_
 #define _OSEM_CONSTANTS_H_
@@ -14,10 +13,9 @@ double dt;
 double delta;           /* boundary-layer thickness -- sets every length    */
 double ti;              /* turbulence intensity                             */
 
-/* ---- 2. inlet plane ----------------------------------------------- *
- * The 2-D (y,z) face at x = x_plane where the fluctuations are wanted.
- * These are the PHYSICAL bounds, before the eddy box pads them by r_max.
- */
+/* ---- 2. inlet plane ------------------------------------------------
+   The (y,z) face at x = x_plane where the fluctuations are wanted. Physical
+   bounds, before the eddy box pads them by r_max. */
 
 double y_min;
 double y_max;
@@ -28,8 +26,7 @@ double x_plane;         /* where the plane sits in x; 0                     */
 int ny;                 /* grid INTERVALS, not a physical size              */
 int nz;
 
-/* ---- 3. eddy box --------------------------------------------------- * 
-   The 3-D slab the eddies live in. */
+/* ---- 3. eddy box: the 3-D slab the eddies live in ------------------ */
 
 double r_max;           /* 0.41 * delta -- the eddy search radius           */
 
@@ -55,17 +52,13 @@ int eddies;             /* = vol / eddy_radius^3, one per cube of that side */
 double u0ti;            /* u0 * ti -- the diagonal of the Cholesky RST       */
 double shape_norm;      /* 1/1.5829045, so the raw signal has unit variance */
 
-/* The rms each component should have at each of the ny+1 wall-normal 
-   stations, interleaved u,v,w -- sqrt of the tabulated diagonal Reynolds 
-   stresses, zero under -rst iso. Sized and filled in main once ny is known, 
-   then never written again, which is what lets it live here: it is derived 
-   from the table, but it is as fixed for a run as anything else in this 
-   file. */
+/* The rms each component should have at each of the ny+1 wall-normal stations,
+   interleaved u,v,w -- sqrt of the tabulated diagonal stresses, zero under
+   -rst iso. Sized and filled in main once ny is known, then never rewritten. */
 std::vector<double> targ;
 
-/* ---- 6. run options -------------------------------------------------- * 
-   Driver only -- no kernel reads these, so none is registered with 
-   ops_decl_const. */
+/* ---- 6. run options -------------------------------------------------
+   Driver only: no kernel reads these, so none is ops_decl_const'd. */
 
 unsigned int seed_gbl;  /* changing it changes the whole realisation        */
 int niter;

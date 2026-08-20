@@ -4,10 +4,9 @@
     python3 plot_correlation.py --yref 0.0045
     python3 plot_correlation.py h5files_tbl/*.h5 --split    # has it converged?
 
-Answers "does the field contain structures of the size I asked for", as an
-ensemble statistic over many frames. An exact analytic prediction is drawn with
-the measurement; --split separates drift from sampling noise. Frames must be
->= 1 flow-through apart. See the README.
+Answers "does the field contain structures of the size I asked for", over many
+frames. An exact analytic prediction is drawn with the measurement; --split
+separates drift from sampling noise. Frames must be >= 1 flow-through apart.
 """
 
 import glob
@@ -127,10 +126,8 @@ def combine(par, idx, iref, nz_used, maxlag):
         # that difference is far below the sampling noise.
         cov = Ps / npair[None, :] - mu[iref] * mu[:, None]
 
-        # The wall row is exactly zero -- a11 = sqrt(R11) and the table takes
-        # R11 to 0 at y = 0, so u' vanishes there identically and the
-        # normalisation is 0/0. Leave those rows undefined rather than let a
-        # warning through; the contour plot simply omits them.
+        # The wall row is exactly zero: R11 -> 0 there, so u' vanishes and the
+        # normalisation is 0/0. Left undefined; the contour plot omits it.
         den = np.sqrt(np.maximum(var[iref] * var, 0.0))
         good = den > 1e-12 * max(den.max(), 1e-30)
         R[n] = np.full_like(cov, np.nan)
@@ -148,11 +145,9 @@ def scales_of(par, idx, iref, nz_used, maxlag, sep_z, half):
 
 
 def jackknife_se(par, iref, nz_used, maxlag, sep_z, half, comp="uprime"):
-    """Leave-one-frame-out standard error of L. The half-split SE that came
-    before used ONE difference of two numbers, so the error bar itself carried
-    ~100% uncertainty -- enough that 0.042 and 0.035 from two runs an order of
-    magnitude apart in length were not distinguishable, which is no basis for
-    a decision."""
+    """Leave-one-frame-out standard error of L. The half-split SE it replaced
+    used one difference of two numbers, so the error bar itself carried ~100%
+    uncertainty."""
     F = len(par[0][COMPS[0]])
     allidx = np.arange(F)
     L = np.empty(F)
@@ -208,10 +203,9 @@ def main():
     dy, dz = y[1] - y[0], z[1] - z[0]
     er = m["er"]
 
-    # Trim the padded strips off both z ends. The grid spans the EDDY box, so
-    # the outermost r_max in z has eddies on one side only and a variance
-    # deficit to match (Defect 2 in UNDERSTANDING_oSEM.md). Correlations from
-    # there are of the deficit, not of the flow.
+    # Trim the padded strips off both z ends: the grid spans the eddy box, so
+    # the outermost r_max has eddies on one side only and a variance deficit to
+    # match (Defect 2 in UNDERSTANDING_oSEM.md).
     ntrim = int(np.ceil(trim * er / dz))
     j0, j1 = ntrim, m["nz"] + 1 - ntrim
     if j1 - j0 < 32:
@@ -253,11 +247,9 @@ def main():
               % (LABEL[n], mean[n][iref], rms[n][iref],
                  abs(mean[n][iref]) / max(rms[n][iref], 1e-30)))
 
-    # R must be even in dz: no direction in z is special. Tested one radius
-    # OFF the reference row, not on it -- a row's correlation with ITSELF is
-    # exactly even by construction (sum_z a[z]a[z+l] is the same sum as
-    # sum_z a[z]a[z-l]), so measuring it there always returns 0 and tests
-    # nothing. Off-row it is a real statement about the sample count.
+    # R must be even in dz. Tested one radius off the reference row, not on it:
+    # a row's correlation with itself is even by construction, so measuring it
+    # there always returns 0 and tests nothing.
     half = maxlag
     isym = min(iref + max(1, int(er / dy)), m["ny"])
     asym = max(float(np.nanmax(np.abs(R[n][isym, :half][::-1]
@@ -279,12 +271,9 @@ def main():
               integral_scale(sep_z[half:], cut) / er))
     print("   analytic (shape function autocorrelation)")
     print("       L = %.6f  = %.3f eddy radii" % (L_an, L_an / er))
-    # The measurement integrates a curve sampled only at the grid's lags, by
-    # trapezoid, to the first zero. Resampling the analytic curve exactly the
-    # same way separates "the field is wrong" from "the grid is coarse". At
-    # 3.8 cells per radius the bias is +0.3%, so it settles the question
-    # rather than raising one -- but it is cheap and it would matter on a
-    # coarser grid.
+    # The measurement integrates a curve sampled at the grid's lags only.
+    # Resampling the analytic curve the same way separates "the field is wrong"
+    # from "the grid is coarse". At 3.8 cells per radius the bias is +0.3%.
     L_an_g = integral_scale(sep_z[half:],
                             np.interp(sep_z[half:] / er, sep_an, R_an,
                                       right=0.0))
@@ -333,10 +322,9 @@ def main():
                 print("   %-4s %8.4f %8.4f %6.4f  %8.4f %8.4f %6.4f"
                       % (LABEL[n], a1, b1, dch[-1], a2, b2, din[-1]))
 
-            # The error bar comes from the jackknife, NOT from the half-split
-            # above. A half-split SE is one difference of two numbers and is
-            # itself ~100% uncertain; the table is kept only because the
-            # chronological/interleaved COMPARISON is what detects drift.
+            # The error bar comes from the jackknife, not the half-split above:
+            # a half-split SE is one difference and is itself ~100% uncertain.
+            # The split table is kept because its comparison detects drift.
             se, Ljk = jackknife_se(par, iref, nz_used, maxlag, sep_z, half)
             Lfull = integral_scale(sep_z[half:], R["uprime"][iref, half:])
             print("\n   jackknife SE(L)  = %.4f radii  (%d leave-one-out"
@@ -354,12 +342,9 @@ def main():
             print("\n   drift indicator = chronological/interleaved = %.2f"
                   % ratio)
 
-            # Both halves have to contain enough DECORRELATED realisations for
-            # either difference to mean anything, and the indicator is a ratio
-            # of two noisy numbers, so it degrades faster than either. With too
-            # few, it lands anywhere -- including below 1, which no real drift
-            # can produce and which is therefore a tell that the test is
-            # under-sampled rather than a finding.
+            # Both halves need enough decorrelated realisations, and this is a
+            # ratio of two noisy numbers, so it degrades faster than either.
+            # Under-sampled it lands anywhere, including below 1.
             span = max(steps) - min(steps)
             nind_half = span / 2.0 / 348.0
             if nind_half < 8.0:
@@ -381,11 +366,9 @@ def main():
                 print("   1/sqrt(frames): %dx the frames -> %.4f radii."
                       % (10, se / er / np.sqrt(10.0)))
 
-            # u' and v' are NOT independent estimators -- both carry the same
-            # sign-sum P (u' = a11*P, v' = a21*P + a22*Q), so the spread across
-            # the three components understates the noise. w' is built from an
-            # independent sign field, so u' vs w' is the honest pairing. The
-            # split-half number above avoids the issue entirely.
+            # u' and v' are not independent estimators: both carry the sign-sum
+            # P, so the three-component spread understates the noise. w' uses an
+            # independent sign field, so u' vs w' is the honest pairing.
             print("   (u' and v' share the P sign-sum, so the u/v/w spread is")
             print("    not an independent noise estimate; this one is.)")
 

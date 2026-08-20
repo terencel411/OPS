@@ -1,22 +1,20 @@
 /*
  * grid_kernels.h -- the inlet plane. KerInitGrid / KerInitRST / KerComputeFluct
- * correspond to oSEM's instantiate_grid / instantiate_RST / compute_fluct.
- *
- * The plane spans the EDDY box, not just the physical inlet: the bounding box
- * OPS derives from this coordinate dat decides whether an eddy is in the
- * domain, so it must cover everywhere an eddy may legally be.
+ * correspond to oSEM's instantiate_grid / instantiate_RST / compute_fluct. The
+ * plane spans the eddy box, not just the physical inlet, because the bounding
+ * box OPS derives from this coordinate dat is what decides eddy ownership.
  */
 
 #ifndef _GRID_KERNELS_H_
 #define _GRID_KERNELS_H_
 
-void KerInitGrid(ACC<double> &crd, const int *idx) {
-  crd(0, 0, 0) = eddy_y_min + (eddy_y_max - eddy_y_min) * (double)idx[0] / (double)ny;
-  crd(1, 0, 0) = eddy_z_min + (eddy_z_max - eddy_z_min) * (double)idx[1] / (double)nz;
+void KerInitGrid(ACC<double> &grid, const int *idx) {
+  grid(0, 0, 0) = eddy_y_min + (eddy_y_max - eddy_y_min) * (double)idx[0] / (double)ny;
+  grid(1, 0, 0) = eddy_z_min + (eddy_z_max - eddy_z_min) * (double)idx[1] / (double)nz;
 }
 
-/* Cholesky factor of the Reynolds stress tensor, isotropic variant. The
-   tabulated boundary-layer alternative is KerInitRST_TBL below. */
+// Cholesky factor of the Reynolds stress tensor, isotropic variant. The
+// tabulated boundary-layer alternative is KerInitRST_TBL below.
 void KerInitRST(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
                 ACC<double> &a31, ACC<double> &a32, ACC<double> &a33) {
   a11(0, 0) = u0ti;
@@ -27,34 +25,25 @@ void KerInitRST(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
   a33(0, 0) = u0ti;
 }
 
-/* oSEM's instantiate_RST_TBL: Reynolds stresses interpolated from a tabulated
-   boundary-layer profile, then Cholesky factorised. Unlike the isotropic
-   variant the stresses vary with y and a21 != 0, giving a real shear stress.
-   The 0.001 clamp on a11 guards the wall, where R11 -> 0.
-
-   CARRIES A LATENT EXTRAPOLATION HAZARD, kept for parity with oSEM. It cannot
-   trigger as shipped, but will if y_max or r_max is raised -- silently. Read
-   the README section before changing either. tbl_at() in the driver mirrors
-   this search exactly, idx = 0 included, and must. */
+// oSEM's instantiate_RST_TBL: stresses interpolated from a tabulated profile,
+// then Cholesky factorised. The 0.001 clamp on a11 guards the wall, where
+// R11 -> 0. The idx = 0 search carries a latent extrapolation hazard that fires
+// if y_max or r_max is raised -- read the README section before changing either.
 void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
                     ACC<double> &a31, ACC<double> &a32, ACC<double> &a33,
-                    const ACC<double> &crd, const double *ydata,
+                    const ACC<double> &grid, const double *ydata,
                     const double *r11data, const double *r21data,
                     const double *r22data, const double *r33data) {
 
-  const double y = crd(0, 0, 0);
+  const double y = grid(0, 0, 0);
 
-  int idx = 0;                           /* oSEM's; see the hazard note above */
+  int idx = 0;                           // oSEM's; see the hazard note above
   for (int i = 1; i < ntbl - 1; i++) {
     if ((y - ydata[i]) < 0) { idx = i - 1; break; }
   }
 
-  /* Written in oSEM's exact form -- slope first, then multiply by (y - y0) --
-     rather than the tidier "compute the weight once and share it". The two are
-     the same interpolation, but (a/b)*c and (c/b)*a do not round identically,
-     so the shared-weight version differed from the reference in the last bit
-     (measured: 1.1e-16 relative, worst case, on vv and uv). Harmless, and
-     still not worth diverging for. */
+  // oSEM's exact form, slope first. The shared-weight version is the same
+  // interpolation but rounds differently in the last bit (1.1e-16 relative).
   const double r11 = (r11data[idx + 1] - r11data[idx]) /
                      (ydata[idx + 1] - ydata[idx]) * (y - ydata[idx]) + r11data[idx];
   const double r21 = (r21data[idx + 1] - r21data[idx]) /
@@ -78,25 +67,25 @@ void KerInitRST_TBL(ACC<double> &a11, ACC<double> &a21, ACC<double> &a22,
 
 /* compute_fluct: every inlet node sums a contribution from every eddy in the
    domain. Body is oSEM's, unchanged apart from reading one interleaved buffer
-   instead of seven arrays. `all` comes from ops_reduction_result and holds
+   instead of seven arrays. `eddy_all` comes from ops_reduction_result and holds
    every eddy, on every rank. */
 void KerComputeFluct(ACC<double> &uprime, ACC<double> &vprime,
-                     ACC<double> &wprime, const ACC<double> &crd,
+                     ACC<double> &wprime, const ACC<double> &grid,
                      const ACC<double> &a11, const ACC<double> &a21,
                      const ACC<double> &a22, const ACC<double> &a31,
                      const ACC<double> &a32, const ACC<double> &a33,
-                     const double *all) {
+                     const double *eddy_all) {
 
-  const double y = crd(0, 0, 0);
-  const double z = crd(1, 0, 0);
+  const double y = grid(0, 0, 0);
+  const double z = grid(1, 0, 0);
 
   double u = 0.0, v = 0.0, w = 0.0;
 
   for (int i = 0; i < eddies; i++) {
-    const double ex = all[NCOMP * i + E_X];
-    const double ey = all[NCOMP * i + E_Y];
-    const double ez = all[NCOMP * i + E_Z];
-    const double er = all[NCOMP * i + E_R];
+    const double ex = eddy_all[NCOMP * i + E_X];
+    const double ey = eddy_all[NCOMP * i + E_Y];
+    const double ez = eddy_all[NCOMP * i + E_Z];
+    const double er = eddy_all[NCOMP * i + E_R];
 
     const double dy = ey - y;
     const double dz = ez - z;
@@ -111,9 +100,9 @@ void KerComputeFluct(ACC<double> &uprime, ACC<double> &vprime,
       shape *= exp(-0.5 * dy * dy / (er * er));
       shape *= exp(-0.5 * dz * dz / (er * er));
 
-      const double sx = all[NCOMP * i + E_SX];
-      const double sy = all[NCOMP * i + E_SY];
-      const double sz = all[NCOMP * i + E_SZ];
+      const double sx = eddy_all[NCOMP * i + E_SX];
+      const double sy = eddy_all[NCOMP * i + E_SY];
+      const double sz = eddy_all[NCOMP * i + E_SZ];
 
       u += a11(0, 0) * sx * shape;
       v += a21(0, 0) * sx * shape + a22(0, 0) * sy * shape;
@@ -127,7 +116,7 @@ void KerComputeFluct(ACC<double> &uprime, ACC<double> &vprime,
   wprime(0, 0) = w;
 }
 
-/* Sum of squares over the plane, for the turbulence-intensity check. */
+// Sum of squares over the plane, for the turbulence-intensity check.
 void KerFluctStats(const ACC<double> &uprime, const ACC<double> &vprime,
                    const ACC<double> &wprime, double *acc) {
   acc[0] += uprime(0, 0) * uprime(0, 0);
