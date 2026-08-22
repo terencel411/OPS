@@ -21,12 +21,12 @@
 // For some reason ops_arg_reduce does not accept vars for size of var (for ops_par_loop)
 // Variables can be given for ops_arg_reduce for ops_particle_par_loop
 // Check ops library for the fix
-#define UINTERP_CAP 4096
+#define UINTERP_CAP 150
 #define RST_CAP 600
 
 typedef double Real;
 
-static_assert(UINTERP_CAP == 4096, "must match the literal in ops_arg_reduce(h_uinterp, ...)");
+static_assert(UINTERP_CAP == 150, "must match the literal in ops_arg_reduce(h_uinterp, ...)");
 static_assert(RST_CAP == 600, "must match the literal in ops_arg_reduce(h_rst, ...)");
 
 // Place the eddies and give each eddy an id i.e and decide which rank owns it
@@ -95,14 +95,14 @@ restart = 0;
 // User defined constant values
 Lx1 = 100.0;
 
-// block0np0 = 750;
-// block0np1 = 250;
-// block0np2 = 150;
-block0np0 = 150;
-block0np1 = 50;
-block0np2 = 30;
-niter = 1000;
-write_output_file = 200;
+block0np0 = 750;
+block0np1 = 250;
+block0np2 = 150;
+// block0np0 = 150;
+// block0np1 = 50;
+// block0np2 = 30;
+niter = 100;
+write_output_file = 10;
 seed_gbl = 182383739u;
 
 // override (1) grid size, (2) no of iterations, (3) write_hdf5_file, (4) seed
@@ -390,7 +390,7 @@ int iteration_range_uinterp[] = {0, 1, 0, ny, 0, 1};
 ops_par_loop(uinterp_kernel, "uinterp_kernel", opensbliblock00, 3, iteration_range_uinterp,
 ops_arg_dat(d_uinterp, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
-ops_arg_reduce(h_uinterp, 4096, "double", OPS_INC),   /* == UINTERP_CAP */
+ops_arg_reduce(h_uinterp, 150, "double", OPS_INC),   /* == UINTERP_CAP */
 ops_arg_idx());
 
 {
@@ -490,8 +490,15 @@ ops_timers(&cpu_start0, &elapsed_start0);
 double inner_start, elapsed_inner_start;
 double inner_end, elapsed_inner_end;
 ops_timers(&inner_start, &elapsed_inner_start);
+
+// Per-iteration breakdown. t_cpu is the cpu-time slot ops_timers insists on
+// and which we ignore; every figure below is wall clock.
+double t_cpu;
+double pre_gather_start, gather_start, post_gather_start;
+double pre_gather_end, gather_end, post_gather_end;
 for(iter=start_iter; iter<=start_iter+niter - 1; iter++)
 {
+ops_timers(&t_cpu, &pre_gather_start);
 simulation_time = tstart + dt*((iter - start_iter)+1);
 ops_update_const("simulation_time", 1, "double", &simulation_time);
 if(fmod(iter+1, 1) == 0){
@@ -520,6 +527,10 @@ ops_arg_dat_particle(eddy_particle_e_xyz, 3, "double", eddy_particle, map, OPS_R
 ops_arg_dat_particle(eddy_particle_eps_xyz, 3, "double", eddy_particle, map, OPS_RW),
 ops_arg_dat_particle(eddy_particle_rng, 6, "double", eddy_particle, map, OPS_READ));
 
+// One timestamp closes pre_gather and opens gather, so no time falls between them.
+ops_timers(&t_cpu, &pre_gather_end);
+gather_start = pre_gather_end;
+
 // collects all eddies, which is then passed to kernel030 to be used to calculate u/v/w prime
 ops_particle_par_loop(KerGatherEddies, "gather_eddies", eddy_particle, 3,
 OPS_PARTICLE_ITERATE_LOCAL, eddy_region, map,
@@ -529,6 +540,11 @@ ops_arg_dat_particle(eddy_particle_eps_xyz, 3, "double", eddy_particle, map, OPS
 ops_arg_dat_particle(eddy_particle_id, 1, "int", eddy_particle, map, OPS_READ),
 ops_arg_reduce(h_eddy, eddies * NCOMP, "double", OPS_INC));
 ops_reduction_result(h_eddy, eddy_all);
+
+// The MPI_Allreduce inside ops_reduction_result is what actually gathers the
+// eddies, so the boundary sits after it, not after the par_loop.
+ops_timers(&t_cpu, &gather_end);
+post_gather_start = gather_end;
 
 // A probe on the gather alone: sums over the whole list in id order, so they
 // must not depend on rank count. Zero radius means a slot no rank wrote.
@@ -867,6 +883,17 @@ if (fmod(1 + iter,write_output_file) == 0 || iter == 0){
 HDF5_IO_Write_0_opensbliblock00_dynamic(opensbliblock00, iter, rho_B0, rhou0_B0, rhou1_B0, rhou2_B0, rhoE_B0, x0_B0, x1_B0, x2_B0, D11_B0, T_B0, mu_B0, p_B0, HDF5_timing);
 }
 
+// Every rank prints its own line, so plain printf rather than ops_printf, which
+// only emits on rank 0. Lines from different ranks interleave arbitrarily.
+// no_particles is this rank's owned count, read straight off the host struct.
+ops_timers(&t_cpu, &post_gather_end);
+printf("[rank %3d] iter %6d  owned %6zu  pre_gather %.6e  gather %.6e  post_gather %.6e\n",
+       ops_get_proc(), iter + 1, eddy_particle->no_particles,
+       pre_gather_end  - pre_gather_start,
+       gather_end      - gather_start,
+       post_gather_end - post_gather_start);
+fflush(NULL);
+
 }
 ops_timers(&cpu_end0, &elapsed_end0);
 ops_printf("\nTimings are:\n");
@@ -903,6 +930,10 @@ ops_arg_dat(utau_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW));
 HDF5_IO_Write_0_opensbliblock00(opensbliblock00, rho_B0, rhou0_B0, rhou1_B0, rhou2_B0, rhoE_B0, x0_B0, x1_B0, x2_B0, D11_B0, T_B0, mu_B0, p_B0, HDF5_timing);
 HDF5_IO_Write_1_opensbliblock00(opensbliblock00, rho_mean_B0, rhou0_mean_B0, rhou1_mean_B0, rhou2_mean_B0, rhoE_mean_B0, rhou0u0_mean_B0, rhou1u1_mean_B0, rhou2u2_mean_B0, rhou0u1_mean_B0, rhou1u2_mean_B0, rhou0u2_mean_B0, rhou0u0_mean_B0, taux0x1_mean_B0, l_mean_B0, du0dx1_mean_B0, mu_mean_B0, u0_mean_B0, u1_mean_B0, u2_mean_B0, u0u0_mean_B0, u1u1_mean_B0, u2u2_mean_B0, u0u1_mean_B0, utau_mean_B0, HDF5_timing);
 
+
+// Per-kernel time and MPI-time, mean and stddev across ranks. Gated on
+// OPS_diags > 1, so run with OPS_DIAGS=2 or this prints nothing.
+ops_timing_output_stdout();
 
 ops_exit();
 //Main program end 
