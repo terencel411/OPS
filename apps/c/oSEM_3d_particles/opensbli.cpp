@@ -887,12 +887,14 @@ HDF5_IO_Write_0_opensbliblock00_dynamic(opensbliblock00, iter, rho_B0, rhou0_B0,
 // only emits on rank 0. Lines from different ranks interleave arbitrarily.
 // no_particles is this rank's owned count, read straight off the host struct.
 ops_timers(&t_cpu, &post_gather_end);
+if(fmod(iter+1, write_output_file) == 0){
 printf("[rank %3d] iter %6d  owned %6zu  pre_gather %.6e  gather %.6e  post_gather %.6e\n",
        ops_get_proc(), iter + 1, eddy_particle->no_particles,
        pre_gather_end  - pre_gather_start,
        gather_end      - gather_start,
        post_gather_end - post_gather_start);
-fflush(NULL);
+       fflush(NULL);
+}
 
 }
 ops_timers(&cpu_end0, &elapsed_end0);
