@@ -470,12 +470,17 @@ ops_dat_fetch_data(eddy_eps_z, 0, (char*) eddy_eps_z_gbl);
 
 // ops_get_num_procs();
 
+// The eddy decomposition is fixed for the run, so dump it once rather than every step.
+const bool eddy_debug = (iter == start_iter);
+
 int disp[3], size[3];
 ops_dat_get_extents(eddy_x, 0, disp, size);
-printf("[rank %d] disp0=%d size0=%d  npart=%d\n",
-        ops_get_proc(), disp[0], size[0],
-        ops_dat_get_local_npartitions(eddy_x));
-fflush(stdout);
+if (eddy_debug) {
+  printf("[rank %d] disp0=%d size0=%d  npart=%d\n",
+          ops_get_proc(), disp[0], size[0],
+          ops_dat_get_local_npartitions(eddy_x));
+  fflush(stdout);
+}
 
 if (use_gather)
 {
@@ -496,10 +501,12 @@ if (use_gather)
     int* all_disp = (int*)malloc(nranks * sizeof(int));
     MPI_Allgather(&local_disp, 1, MPI_INT, all_disp, 1, MPI_INT, MPI_COMM_WORLD);
 
-    printf("[Rank %d] all displacements:", myrank);
-    for (int i = 0; i < nranks; i++) printf(" %d", all_disp[i]);
-    printf("\n");
-    fflush(stdout);
+    if (eddy_debug) {
+      printf("[Rank %d] all displacements:", myrank);
+      for (int i = 0; i < nranks; i++) printf(" %d", all_disp[i]);
+      printf("\n");
+      fflush(stdout);
+    }
 
     int is_rep = 1;
     for (int r = 0; r < myrank; r++)
@@ -507,9 +514,11 @@ if (use_gather)
 
     int send_n = is_rep ? local_n : 0;    // duplicates send nothing
     
-    printf("[Rank %d] send_n=%d (local_disp=%d local_n=%d is_rep=%d)\n",
-          myrank, send_n, local_disp, local_n, is_rep);
-    fflush(stdout);
+    if (eddy_debug) {
+      printf("[Rank %d] send_n=%d (local_disp=%d local_n=%d is_rep=%d)\n",
+            myrank, send_n, local_disp, local_n, is_rep);
+      fflush(stdout);
+    }
 
     int* counts = (int*)malloc(nranks * sizeof(int));
     int* displs = (int*)malloc(nranks * sizeof(int));
