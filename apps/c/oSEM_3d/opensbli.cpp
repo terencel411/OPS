@@ -23,9 +23,6 @@ Lx1 = 100.0;
 block0np0 = 750;//1100;
 block0np1 = 250;
 block0np2 = 150;
-Delta0block0 = 375.0/(block0np0-1);
-Delta1block0 = 100.0/(block0np1-1);
-Delta2block0 = 40.0/(block0np2);
 niter = 55000;
 niter = 100;
 double rkB[] = {(1.0/3.0), (15.0/16.0), (8.0/15.0)};
@@ -33,6 +30,30 @@ double rkA[] = {0, (-5.0/9.0), (-153.0/128.0)};
 dt = 0.025;
 write_output_file = 5000;
 write_output_file = 10;
+seed_gbl = 182383739;
+use_gather = 1;   // 0 disables the eddy allgather; eddy_*_gbl then holds only the rank-local slice
+
+// override (1) grid size, (2) no of iterations, (3) write_hdf5_file, (4) seed, (5) eddy allgather
+for (int i = 1; i < argc; i++) {
+  if (!strcmp(argv[i], "-ngrid") && i + 3 < argc) {
+    block0np0 = atoi(argv[i+1]);
+    block0np1 = atoi(argv[i+2]);
+    block0np2 = atoi(argv[i+3]);
+    i += 3;
+  } else if (!strcmp(argv[i], "-niter") && i + 1 < argc) {
+    niter = atoi(argv[++i]);
+  } else if (!strcmp(argv[i], "-nout") && i + 1 < argc) {
+    write_output_file = atoi(argv[++i]);
+  } else if (!strcmp(argv[i], "-seed") && i + 1 < argc) {
+    seed_gbl = (unsigned int)strtoul(argv[++i], NULL, 10);
+  } else if (!strcmp(argv[i], "-use_gather") && i + 1 < argc) {
+    use_gather = atoi(argv[++i]);
+  }
+}
+
+Delta0block0 = 375.0/(block0np0-1);
+Delta1block0 = 100.0/(block0np1-1);
+Delta2block0 = 40.0/(block0np2);
 HDF5_timing = 0;
 Pr = 0.72;
 Minf = 2.0;
@@ -56,14 +77,14 @@ invRe = 1.0/(Re);
 invRefT = 1.0/(RefT);
 inv_gamma_m1 = 1.0/((-1 + gama));
 // start_averaging = 25000;
-start_averaging = 50;
+start_averaging = 0.5 * niter;
 invniter = 1.0/(niter - start_averaging);
 
 ny = (int)trunc(block0np1 * 0.6);
 uinterp = (double*)malloc(ny * sizeof(double));
 
 //------------------- eddy variables---------------------------
-y_cutoff = 150;
+y_cutoff = (block0np1 < 150) ? block0np1 : 150;
 ndata = 121;
 a11 = (double*)malloc(y_cutoff * sizeof(double));
 a21 = (double*)malloc(y_cutoff * sizeof(double));
@@ -92,9 +113,9 @@ eddy_eps_z_gbl = (int*)malloc(eddiesm2 * sizeof(int));
 a = 5;
 c = 3;
 m = pow(2, 29);
-seed_gbl = 182383739;
 
 ops_printf("\neddies = %d\n", eddies);
+ops_printf("use_gather = %d\n", use_gather);
 //-------------------------------------------------------------
 
 ops_decl_const("Delta0block0" , 1, "double", &Delta0block0);
@@ -317,10 +338,10 @@ ops_dat_fetch_data(d_a21, 0, (char*)a21);
 ops_dat_fetch_data(d_a22, 0, (char*)a22);
 ops_dat_fetch_data(d_a33, 0, (char*)a33);
 
-ops_decl_const("a11", ndata, "double", &a11[0]);
-ops_decl_const("a21", ndata, "double", &a21[0]);
-ops_decl_const("a22", ndata, "double", &a22[0]);
-ops_decl_const("a33", ndata, "double", &a33[0]);
+ops_decl_const("a11", y_cutoff, "double", &a11[0]);
+ops_decl_const("a21", y_cutoff, "double", &a21[0]);
+ops_decl_const("a22", y_cutoff, "double", &a22[0]);
+ops_decl_const("a33", y_cutoff, "double", &a33[0]);
 
 ops_printf("eddies: %i. Eddy volume: %f \n", eddies, eddy_vol);
 ops_printf("xmax: %f, xmin: %f \n", eddy_x_max, eddy_x_min);
@@ -333,6 +354,8 @@ for (int i{0}; i < y_cutoff; i++){
 
 
 //--------------------------------------------------------------------
+
+ops_reduction h_rhomin = ops_decl_reduction_handle(sizeof(double), "double", "rho_min");
 
 // Initialize loop timers
 double cpu_start0, elapsed_start0, cpu_end0, elapsed_end0;
@@ -348,6 +371,15 @@ if(fmod(iter+1, 1) == 0){
         ops_timers(&inner_end, &elapsed_inner_end);
         ops_printf("Iteration: %d. Time-step: %.3e. Simulation time: %.5f. Time/iteration: %lf.\n", iter+1, dt, simulation_time, (elapsed_inner_end - elapsed_inner_start)/1);
         ops_NaNcheck(rho_B0);
+        {
+        int rmin_range[] = {0, block0np0, 0, block0np1, 0, block0np2};
+        double rmin = 0.0;
+        ops_par_loop(KerRhoMin, "KerRhoMin", opensbliblock00, 3, rmin_range,
+        ops_arg_dat(rho_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
+        ops_arg_reduce(h_rhomin, 1, "double", OPS_MIN));
+        ops_reduction_result(h_rhomin, &rmin);
+        ops_printf("   rho_min %.6f%s\n", rmin, rmin <= 0.0 ? "   <-- NON-PHYSICAL" : "");
+        }
         ops_timers(&inner_start, &elapsed_inner_start);
 }
 
@@ -374,6 +406,7 @@ ops_dat_fetch_data(eddy_x, 0, (char*) eddy_x_gbl);
 ops_dat_fetch_data(eddy_y, 0, (char*) eddy_y_gbl);
 ops_dat_fetch_data(eddy_z, 0, (char*) eddy_z_gbl);
 ops_dat_fetch_data(eddy_r, 0, (char*) eddy_r_gbl);
+ops_dat_fetch_data(eddy_increment, 0, (char*) eddy_increment_gbl);
 ops_dat_fetch_data(eddy_eps_x, 0, (char*) eddy_eps_x_gbl);
 ops_dat_fetch_data(eddy_eps_y, 0, (char*) eddy_eps_y_gbl);
 ops_dat_fetch_data(eddy_eps_z, 0, (char*) eddy_eps_z_gbl);
@@ -413,6 +446,7 @@ printf("[rank %d] disp0=%d size0=%d  npart=%d\n",
         ops_dat_get_local_npartitions(eddy_x));
 fflush(stdout);
 
+if (use_gather)
 {
     int nranks, myrank;
     MPI_Comm_size(MPI_COMM_WORLD, &nranks);

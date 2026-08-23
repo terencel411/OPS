@@ -11,6 +11,9 @@ include $(OPS_INSTALL_PATH)/../makefiles/Makefile.mpi
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.cuda
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
+# Matched to oSEM_3d_particles so the two are compared under identical arithmetic.
+CXXFLAGS := -O3 -march=native -fPIC -Wall -g -std=c++11 -fopenmp
+
 
 
 HEADERS = opensbliblock00_kernels.h defdec_data_set.h

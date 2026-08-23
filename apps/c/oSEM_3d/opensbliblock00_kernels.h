@@ -36,6 +36,12 @@ void interp_RST(const ACC<double>& x1_B0, ACC<double>& a11, ACC<double>& a21, AC
   }
 }
 
+// Smallest density in the interior, reported every step: density going
+// non-physical is what precedes the NaN check firing.
+void KerRhoMin(const ACC<double>& rho_B0, double* m) {
+  if (rho_B0(0,0,0) < *m) *m = rho_B0(0,0,0);
+}
+
 void instantiate_eddies(ACC<double>& eddy_x, ACC<double>& eddy_y, ACC<double>& eddy_z, ACC<double>& eddy_r, ACC<double>& eddy_increment, ACC<int>& eddy_eps_x, ACC<int>& eddy_eps_y, ACC<int>& eddy_eps_z, const ACC<int>& eddy_x_rng, const ACC<int>& eddy_bulk_rng){
   eddy_x(0,0,0) = eddy_x_min + (eddy_x_rng(0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_x_max - eddy_x_min);
   eddy_y(0,0,0) = eddy_y_min + (eddy_bulk_rng(0,0,0,0) + 2147483648.0) / (4294967295.0) * (eddy_y_max - eddy_y_min);
