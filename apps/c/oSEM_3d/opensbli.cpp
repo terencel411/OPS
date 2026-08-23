@@ -1,9 +1,15 @@
 #include <stdlib.h> 
 #include <string.h> 
 #include <math.h> 
+#include <vector>
 #include "constants.h"
 #include "Pir_data.h"
 #include "TBL_data.h"
+#define RST_CAP 600
+#define UINTERP_CAP 150
+static_assert(UINTERP_CAP == 150, "must match the literal in ops_arg_reduce(h_uinterp, ...)");
+static_assert(RST_CAP == 600, "must match the literal in ops_arg_reduce(h_rst, ...)");
+
 #define OPS_3D
 #define OPS_API 2
 #include "ops_seq.h"
@@ -82,9 +88,19 @@ invniter = 1.0/(niter - start_averaging);
 
 ny = (int)trunc(block0np1 * 0.6);
 uinterp = (double*)malloc(ny * sizeof(double));
+if (ny > UINTERP_CAP) {
+  ops_printf("ny = %d exceeds UINTERP_CAP = %d; increase the value\n", ny, UINTERP_CAP);
+  ops_exit();
+  exit(1);
+}
 
 //------------------- eddy variables---------------------------
 y_cutoff = (block0np1 < 150) ? block0np1 : 150;
+if (4 * y_cutoff > RST_CAP) {
+  ops_printf("4*y_cutoff = %d exceeds RST_CAP = %d; increase the value\n", 4 * y_cutoff, RST_CAP);
+  ops_exit();
+  exit(1);
+}
 ndata = 121;
 a11 = (double*)malloc(y_cutoff * sizeof(double));
 a21 = (double*)malloc(y_cutoff * sizeof(double));
@@ -269,13 +285,20 @@ ops_arg_dat(SD111_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_idx());
 
 // velocity profile initialisation
+ops_reduction h_uinterp = ops_decl_reduction_handle(UINTERP_CAP * sizeof(double), "double", "uinterp_all");
 int iteration_range_uinterp[] = {0, 1, 0, ny, 0, 1};
 ops_par_loop(uinterp_kernel, "uinterp_kernel", opensbliblock00, 3, iteration_range_uinterp,
 ops_arg_dat(d_uinterp, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
+ops_arg_reduce(h_uinterp, 150, "double", OPS_INC),   /* == UINTERP_CAP */
 ops_arg_idx());
 
-ops_dat_fetch_data(d_uinterp, 0, (char*)uinterp);
+// d_uinterp is decomposed in y as well, so the same index-keyed reduction applies.
+{
+std::vector<double> buf(UINTERP_CAP, 0.0);
+ops_reduction_result(h_uinterp, buf.data());
+for (int j = 0; j < ny; j++) uinterp[j] = buf[j];
+}
 ops_update_const("uinterp", ny, "double", &uinterp[0]);
 
 for(int i{0}; i < ny; i++){
@@ -319,6 +342,7 @@ ops_printf("instantiate eddies [rank %d]: %g %g %g %g %g %g %g %g %g %g\n",
   ops_get_proc(), eddy_x_gbl[0], eddy_x_gbl[5], eddy_x_gbl[10], eddy_x_gbl[15], eddy_x_gbl[20],
   eddy_x_gbl[eddies-1], eddy_x_gbl[eddies-1-5], eddy_x_gbl[eddies-1-10], eddy_x_gbl[eddies-1-15], eddy_x_gbl[eddies-1-20]);
 
+ops_reduction h_rst = ops_decl_reduction_handle(RST_CAP * sizeof(double), "double", "rst_all");
 int interp_iter_range[] = {0, 1, 0, y_cutoff, 0, 1};
 ops_par_loop(interp_RST, "interp_RST", opensbliblock00, 3, interp_iter_range,
 ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
@@ -330,13 +354,20 @@ ops_arg_gbl(ydata, ndata, "double", OPS_READ),
 ops_arg_gbl(uudata, ndata, "double", OPS_READ),
 ops_arg_gbl(uvdata, ndata, "double", OPS_READ),
 ops_arg_gbl(vvdata, ndata, "double", OPS_READ),
-ops_arg_gbl(wwdata, ndata, "double", OPS_READ));
+ops_arg_gbl(wwdata, ndata, "double", OPS_READ),
+ops_arg_reduce(h_rst, 600, "double", OPS_INC),   /* == RST_CAP */
+ops_arg_idx());
 
-// a11, a12, a22, a33 not used in the code after this
-ops_dat_fetch_data(d_a11, 0, (char*)a11);
-ops_dat_fetch_data(d_a21, 0, (char*)a21);
-ops_dat_fetch_data(d_a22, 0, (char*)a22);
-ops_dat_fetch_data(d_a33, 0, (char*)a33);
+// d_a11..d_a33 are decomposed in y, so a per-rank fetch gives only a local slice.
+// The reduction is indexed by the global y, so every rank gets the whole profile.
+{
+std::vector<double> rst(RST_CAP, 0.0);
+ops_reduction_result(h_rst, rst.data());
+for (int j = 0; j < y_cutoff; j++) {
+  a11[j] = rst[4*j+0]; a21[j] = rst[4*j+1];
+  a22[j] = rst[4*j+2]; a33[j] = rst[4*j+3];
+}
+}
 
 ops_decl_const("a11", y_cutoff, "double", &a11[0]);
 ops_decl_const("a21", y_cutoff, "double", &a21[0]);

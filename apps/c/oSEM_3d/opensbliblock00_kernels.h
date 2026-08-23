@@ -1,7 +1,7 @@
 #ifndef OPENSBLIBLOCK00_KERNEL_H
 #define OPENSBLIBLOCK00_KERNEL_H
 
-void interp_RST(const ACC<double>& x1_B0, ACC<double>& a11, ACC<double>& a21, ACC<double>& a22, ACC<double>& a33, const double* ydata, const double* uudata, const double* uvdata, const double* vvdata, const double* wwdata){
+void interp_RST(const ACC<double>& x1_B0, ACC<double>& a11, ACC<double>& a21, ACC<double>& a22, ACC<double>& a33, const double* ydata, const double* uudata, const double* uvdata, const double* vvdata, const double* wwdata, double* red, const int* idx){
   // assumes zero uw and vw terms
 
   double y = 0.08548942989301017 * x1_B0(0,0,0);
@@ -34,6 +34,10 @@ void interp_RST(const ACC<double>& x1_B0, ACC<double>& a11, ACC<double>& a21, AC
       }
     }
   }
+  red[4*idx[1] + 0] += a11(0,0,0);
+  red[4*idx[1] + 1] += a21(0,0,0);
+  red[4*idx[1] + 2] += a22(0,0,0);
+  red[4*idx[1] + 3] += a33(0,0,0);
 }
 
 // Smallest density in the interior, reported every step: density going
@@ -66,7 +70,7 @@ void convect_eddies(ACC<double>& eddy_x, ACC<double>& eddy_y, ACC<double>& eddy_
   }
 }
 
-void uinterp_kernel(ACC<double>& d_uinterp, const ACC<double>& x1_B0, const int* idx){
+void uinterp_kernel(ACC<double>& d_uinterp, const ACC<double>& x1_B0, double* red, const int* idx){
   double w1;
   double w2;
   if(x1_B0(0,0,0) >= yprofdata[sizeof(yprofdata)/sizeof(double)-1]){
@@ -82,6 +86,7 @@ void uinterp_kernel(ACC<double>& d_uinterp, const ACC<double>& x1_B0, const int*
       }
     }
   }
+  red[idx[1]] += d_uinterp(0,0,0);
 }
 
  void opensbliblock00Kernel036(ACC<double> &rhoE_B0, ACC<double> &rhou0_B0, ACC<double> &rhou1_B0, ACC<double>
