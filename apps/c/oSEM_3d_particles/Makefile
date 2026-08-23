@@ -18,6 +18,8 @@ include $(OPS_INSTALL_PATH)/../makefiles/Makefile.common
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.mpi
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
+CXXFLAGS := -O3 -march=native -fPIC -Wall -g -std=c++11 -fopenmp
+
 HEADERS = opensbliblock00_kernels.h eddy_kernels.h defdec_data_set.h \
           constants.h stencils.h bc_exchanges.h io.h \
           osem3d_common.h ops_particle_random.h Pir_data.h TBL_data.h
