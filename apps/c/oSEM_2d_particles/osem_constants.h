@@ -1,70 +1,42 @@
-/* osem_constants.h -- every constant and run option, in the oSEM style.
-   These are definitions, not declarations: include from the driver only. */
-
 #ifndef _OSEM_CONSTANTS_H_
 #define _OSEM_CONSTANTS_H_
 
-#include <vector>       /* for targ, group 5 below                          */
-
-/* ---- 1. flow ------------------------------------------------------ */
-
-double u0;              /* convection speed; eddies are swept past at this  */
+double u0;
 double dt;
-double delta;           /* boundary-layer thickness -- sets every length    */
-double ti;              /* turbulence intensity                             */
-
-/* ---- 2. inlet plane ------------------------------------------------
-   The (y,z) face at x = x_plane where the fluctuations are wanted. Physical
-   bounds, before the eddy box pads them by r_max. */
+double delta;
+double ti;
 
 double y_min;
 double y_max;
 double z_min;
 double z_max;
-double x_plane;         /* where the plane sits in x; 0                     */
+double x_plane;
 
-int ny;                 /* grid INTERVALS, not a physical size              */
+int ny;
 int nz;
 
-/* ---- 3. eddy box: the 3-D slab the eddies live in ------------------ */
+double r_max;
 
-double r_max;           /* 0.41 * delta -- the eddy search radius           */
+double x_min;
+double x_max;
 
-double x_min;           /* = -r_max                                         */
-double x_max;           /* = +r_max                                         */
+double eddy_y_min;
+double eddy_y_max;
+double eddy_z_min;
+double eddy_z_max;
 
-double eddy_y_min;      /* = y_min                                          */
-double eddy_y_max;      /* = y_max + r_max                                  */
-double eddy_z_min;      /* = z_min - r_max                                  */
-double eddy_z_max;      /* = z_max + r_max                                  */
+double eddy_radius;
+double increment;
 
-/* ---- 4. eddy properties -------------------------------------------- */
+double vol;
+int eddies;
+double u0ti;
 
-double eddy_radius;     /* 0.2 * delta                                      */
-double increment;       /* u0 * dt -- streamwise distance moved per step     */
-double vt_y;            /* transverse drift scale, see KerConvectEddies     */
-double vt_z;
-
-/* ---- 5. derived ----------------------------------------------------- */
-
-double vol;             /* eddy box volume                                  */
-int eddies;             /* = vol / eddy_radius^3, one per cube of that side */
-double u0ti;            /* u0 * ti -- the diagonal of the Cholesky RST       */
-double shape_norm;      /* 1/1.5829045, so the raw signal has unit variance */
-
-/* The rms each component should have at each of the ny+1 wall-normal stations,
-   interleaved u,v,w -- sqrt of the tabulated diagonal stresses, zero under
-   -rst iso. Sized and filled in main once ny is known, then never rewritten. */
-std::vector<double> targ;
-
-/* ---- 6. run options -------------------------------------------------
-   Driver only: no kernel reads these, so none is ops_decl_const'd. */
-
-unsigned int seed_gbl;  /* changing it changes the whole realisation        */
+unsigned int seed_gbl;
 int niter;
-int nprint;             /* report + HDF5 frame interval; <= 0 = both off    */
-int rng_method;         /* one of ops_particle_rng_method                    */
-int ntbl;               /* points in the tabulated RST profile (TBL_data.h) */
-int use_tbl;            /* 1 = boundary-layer profile, 0 = isotropic        */
+int nprint;
+int rng_method;
+int ntbl;
+int use_tbl;
 
 #endif /* _OSEM_CONSTANTS_H_ */
