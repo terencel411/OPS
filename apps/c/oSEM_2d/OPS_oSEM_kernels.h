@@ -1,30 +1,3 @@
-/*
- * MAPPING ops_fill_random_uniform() OUTPUT
- * ----------------------------------------
- * ops_fill_random_uniform() fills an "int" ops_dat using
- *     std::uniform_int_distribution<int> distribution(0, INT_MAX);
- * (ops/c/src/core/ops_lib_core.cpp:2604).  The values are NON-NEGATIVE,
- * spanning [0, 2^31).  They are NOT full-range signed ints.
- *
- * The kernels below originally assumed a full signed range, which caused two
- * bugs, both measurable with `./OPS_oSEM_mpi -niter 1 -checkeddy`:
- *
- *   ((double)r + 2147483648.0) / 4294967295.0   ->  [0.5, 1.0), not [0, 1)
- *       => eddies were confined to the UPPER HALF of the y and z boxes
- *          (measured coverage 49.9% and 50.0% of the intended range)
- *
- *   (r < 0) ? -1 : 1                            ->  always +1
- *       => the SEM random signs were absent; all 1718 eddies carried
- *          eps_x = eps_y = eps_z = +1, so the fluctuation field had a large
- *          non-zero mean rather than being zero-mean.
- *
- * Correct mappings for a [0, 2^31) source, written inline below because the
- * translator-generated kernel files see only ops_decl_const variables, not
- * this header's macros or helper functions:
- *     unit  in [0, 1) :  (double)r / 2147483648.0
- *     sign  in {-1,+1}:  ((r) & 1) ? 1 : -1
- */
-
 void print_arr_2D(ACC<double>& var){
     printf("%f \n", var(0, 0));
 }
@@ -93,11 +66,11 @@ void convect_eddies(ACC<double>& x, ACC<double>& y, ACC<double>& z, ACC<double>&
     x(0, 0) += increment(0, 0);
     if(x(0, 0) > x_max){
         x(0, 0) = x_min;
-        y(0, 0) = eddy_y_min + (eddy_y_max - eddy_y_min) * ((double)y_rng(0, 0) / 2147483648.0);
-        z(0, 0) = eddy_z_min + (eddy_z_max - eddy_z_min) * ((double)z_rng(0, 0) / 2147483648.0);
-        eps_x(0, 0) = ((eps_x_rng(0, 0) & 1) ? 1 : -1);
-        eps_y(0, 0) = ((eps_y_rng(0, 0) & 1) ? 1 : -1);
-        eps_z(0, 0) = ((eps_z_rng(0, 0) & 1) ? 1 : -1);
+        y(0, 0) = eddy_y_min + (eddy_y_max - eddy_y_min) * (((double)y_rng(0, 0) + 2147483648.0) / (4294967295.0));
+        z(0, 0) = eddy_z_min + (eddy_z_max - eddy_z_min) * (((double)z_rng(0, 0) + 2147483648.0) / (4294967295.0));
+        eps_x(0, 0) = ((eps_x_rng(0, 0) < 0) ? -1 : 1);
+        eps_y(0, 0) = ((eps_y_rng(0, 0) < 0) ? -1 : 1);
+        eps_z(0, 0) = ((eps_z_rng(0, 0) < 0) ? -1 : 1);
         radius(0, 0) = 0.2 * delta;
     }
 }
@@ -105,14 +78,14 @@ void convect_eddies(ACC<double>& x, ACC<double>& y, ACC<double>& z, ACC<double>&
 void instantiate_eddies(ACC<double>& x, ACC<double>& y, ACC<double>& z, ACC<double>& radius, ACC<double>& increment,
     ACC<int>& eps_x, ACC<int>& eps_y, ACC<int>& eps_z, const ACC<int>& x_rng, const ACC<int>& y_rng, const ACC<int>& z_rng, 
     const ACC<int>& eps_x_rng, const ACC<int>& eps_y_rng, const ACC<int>& eps_z_rng){
-    x(0, 0) = x_min + ((double)x_rng(0, 0) / 2147483648.0) * (x_max - x_min);
-    y(0, 0) = eddy_y_min + ((double)y_rng(0, 0) / 2147483648.0) * (eddy_y_max - eddy_y_min);
-    z(0, 0) = eddy_z_min + ((double)z_rng(0, 0) / 2147483648.0) * (eddy_z_max - eddy_z_min);
+    x(0, 0) = x_min + ((double)x_rng(0, 0) + 2147483648.0) / (4294967295.0) * (x_max - x_min);
+    y(0, 0) = eddy_y_min + ((double)y_rng(0, 0) + 2147483648.0) / (4294967295.0) * (eddy_y_max - eddy_y_min);
+    z(0, 0) = eddy_z_min + ((double)z_rng(0, 0) + 2147483648.0) / (4294967295.0) * (eddy_z_max - eddy_z_min);
     radius(0, 0) = 0.2*delta;
     increment(0, 0) = u0 * dt;
-    eps_x(0, 0) = ((eps_x_rng(0, 0) & 1) ? 1 : -1);
-    eps_y(0, 0) = ((eps_y_rng(0, 0) & 1) ? 1 : -1);
-    eps_z(0, 0) = ((eps_z_rng(0, 0) & 1) ? 1 : -1);
+    eps_x(0, 0) = ((eps_x_rng(0, 0) < 0) ? -1 : 1);
+    eps_y(0, 0) = ((eps_y_rng(0, 0) < 0) ? -1 : 1);
+    eps_z(0, 0) = ((eps_z_rng(0, 0) < 0) ? -1 : 1);
 }
 
 void compute_fluct(const ACC<double>& y, const ACC<double>& z, const ACC<double>& a11, const ACC<double>& a21, const ACC<double>& a22, const ACC<double>& a31, const ACC<double>& a32, const ACC<double>& a33, 
