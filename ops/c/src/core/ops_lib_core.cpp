@@ -2602,7 +2602,7 @@ void ops_fill_random_uniform_host(ops_dat dat, std::mt19937 &ops_rand_gen) {
   }
   else if (strcmp(type, "int") == 0 || strcmp(type, "int(4)") == 0 || strcmp(type, "integer") == 0 ||
              strcmp(type, "integer(4)") == 0 || strcmp(type, "integer(kind=4)") == 0) {
-    std::uniform_int_distribution<int> distribution(0, INT_MAX);
+    std::uniform_int_distribution<int> distribution(INT_MIN, INT_MAX);
     for (int i =0 ; i < cumsize; i++) {
       ((int *)dat->data)[i] = distribution(ops_rand_gen);
     }

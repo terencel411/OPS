@@ -1602,13 +1602,6 @@ void _ops_particle_mapping_virtual_from_halo(ops_particle_mapping map,ops_partic
 
   char *xpos =  particle->particle_pos_dat->data;
   char *xold =  map->pos_old->data;
-
-  /* Redundant once _ops_coord_to_bin() bounds its index, but this is the site
-     that corrupted the heap: a virtual particle arriving from a halo can be
-     outside this rank's binning box, and binhead[address] is a write. */
-  int nbins = 1;
-  for (int d = 0; d < dim; d++) nbins *= map->binhead->size[d];
-
   for (int i = ifirst; i < ifirst + n_to_map; i++) {
 
     int address;
@@ -1627,7 +1620,7 @@ void _ops_particle_mapping_virtual_from_halo(ops_particle_mapping map,ops_partic
        break;
     }
 
-    if (address < 0 || address >= nbins) continue;
+    if (address < 0) continue;
     bin2grid[i] = address;
 
     bins[i] = binhead[address];
