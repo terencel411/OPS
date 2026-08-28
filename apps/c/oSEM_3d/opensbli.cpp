@@ -5,17 +5,15 @@
 #include "constants.h"
 #include "Pir_data.h"
 #include "TBL_data.h"
-#define RST_CAP 600
-#define UINTERP_CAP 150
-static_assert(UINTERP_CAP == 150, "must match the literal in ops_arg_reduce(h_uinterp, ...)");
-static_assert(RST_CAP == 600, "must match the literal in ops_arg_reduce(h_rst, ...)");
 
 #define OPS_3D
 #define OPS_API 2
 #include "ops_seq.h"
 #include "opensbliblock00_kernels.h"
 #include "io.h"
+#ifdef OPS_MPI
 #include <mpi.h>
+#endif
 
 
 int main(int argc, char **argv) 
@@ -26,7 +24,7 @@ ops_init(argc,argv,1);
 restart = 0;
 // User defined constant values
 Lx1 = 100.0;
-block0np0 = 750;//1100;
+block0np0 = 750;
 block0np1 = 250;
 block0np2 = 150;
 niter = 55000;
@@ -38,24 +36,7 @@ write_output_file = 5000;
 write_output_file = 10;
 seed_gbl = 182383739;
 use_gather = 1;   // 0 disables the eddy allgather; eddy_*_gbl then holds only the rank-local slice
-
-// override (1) grid size, (2) no of iterations, (3) write_hdf5_file, (4) seed, (5) eddy allgather
-for (int i = 1; i < argc; i++) {
-  if (!strcmp(argv[i], "-ngrid") && i + 3 < argc) {
-    block0np0 = atoi(argv[i+1]);
-    block0np1 = atoi(argv[i+2]);
-    block0np2 = atoi(argv[i+3]);
-    i += 3;
-  } else if (!strcmp(argv[i], "-niter") && i + 1 < argc) {
-    niter = atoi(argv[++i]);
-  } else if (!strcmp(argv[i], "-nout") && i + 1 < argc) {
-    write_output_file = atoi(argv[++i]);
-  } else if (!strcmp(argv[i], "-seed") && i + 1 < argc) {
-    seed_gbl = (unsigned int)strtoul(argv[++i], NULL, 10);
-  } else if (!strcmp(argv[i], "-use_gather") && i + 1 < argc) {
-    use_gather = atoi(argv[++i]);
-  }
-}
+write_convection_data_to_text = 1; // 0 disables writing debug eddy data to text
 
 Delta0block0 = 375.0/(block0np0-1);
 Delta1block0 = 100.0/(block0np1-1);
@@ -88,19 +69,27 @@ invniter = 1.0/(niter - start_averaging);
 
 ny = (int)trunc(block0np1 * 0.6);
 uinterp = (double*)malloc(ny * sizeof(double));
-if (ny > UINTERP_CAP) {
-  ops_printf("ny = %d exceeds UINTERP_CAP = %d; increase the value\n", ny, UINTERP_CAP);
+
+// block0np1 * 0.6 = 150
+if (ny > 150) {
+  ops_printf("ny = %d exceeds the size of the reduction handle used for uinterp kernel\n", ny);
+  ops_exit();
+  exit(1);
+}
+
+y_cutoff = (block0np1 < 150) ? block0np1 : 150;
+
+// a11, a21, a22, a33 of size y_cutoff
+// 4 * y_cutoff = 4 * 150 = 600
+if (4 * y_cutoff > 600) {
+  ops_printf("4*y_cutoff = %d exceeds the size of the reduction handle used for RST kernel\n", 
+    4 * y_cutoff);
   ops_exit();
   exit(1);
 }
 
 //------------------- eddy variables---------------------------
-y_cutoff = (block0np1 < 150) ? block0np1 : 150;
-if (4 * y_cutoff > RST_CAP) {
-  ops_printf("4*y_cutoff = %d exceeds RST_CAP = %d; increase the value\n", 4 * y_cutoff, RST_CAP);
-  ops_exit();
-  exit(1);
-}
+
 ndata = 121;
 a11 = (double*)malloc(y_cutoff * sizeof(double));
 a21 = (double*)malloc(y_cutoff * sizeof(double));
@@ -285,17 +274,16 @@ ops_arg_dat(SD111_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_idx());
 
 // velocity profile initialisation
-ops_reduction h_uinterp = ops_decl_reduction_handle(UINTERP_CAP * sizeof(double), "double", "uinterp_all");
+ops_reduction h_uinterp = ops_decl_reduction_handle(ny * sizeof(double), "double", "uinterp_all");
 int iteration_range_uinterp[] = {0, 1, 0, ny, 0, 1};
 ops_par_loop(uinterp_kernel, "uinterp_kernel", opensbliblock00, 3, iteration_range_uinterp,
 ops_arg_dat(d_uinterp, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
-ops_arg_reduce(h_uinterp, 150, "double", OPS_INC),   /* == UINTERP_CAP */
+ops_arg_reduce(h_uinterp, 150, "double", OPS_INC),
 ops_arg_idx());
 
-// d_uinterp is decomposed in y as well, so the same index-keyed reduction applies.
 {
-std::vector<double> buf(UINTERP_CAP, 0.0);
+std::vector<double> buf(ny, 0.0);
 ops_reduction_result(h_uinterp, buf.data());
 for (int j = 0; j < ny; j++) uinterp[j] = buf[j];
 }
@@ -333,7 +321,7 @@ ops_dat_fetch_data(eddy_r, 0, (char*)eddy_r_gbl);
 ops_dat_fetch_data(eddy_eps_x, 0, (char*)eddy_eps_x_gbl);
 ops_dat_fetch_data(eddy_eps_y, 0, (char*)eddy_eps_y_gbl);
 ops_dat_fetch_data(eddy_eps_z, 0, (char*)eddy_eps_z_gbl);
-
+ 
 char fname[64];
 sprintf(fname, "convect_eddies_rank%d.txt", ops_get_proc());
 FILE* eddy_f = fopen(fname, "w");
@@ -342,7 +330,7 @@ ops_printf("instantiate eddies [rank %d]: %g %g %g %g %g %g %g %g %g %g\n",
   ops_get_proc(), eddy_x_gbl[0], eddy_x_gbl[5], eddy_x_gbl[10], eddy_x_gbl[15], eddy_x_gbl[20],
   eddy_x_gbl[eddies-1], eddy_x_gbl[eddies-1-5], eddy_x_gbl[eddies-1-10], eddy_x_gbl[eddies-1-15], eddy_x_gbl[eddies-1-20]);
 
-ops_reduction h_rst = ops_decl_reduction_handle(RST_CAP * sizeof(double), "double", "rst_all");
+ops_reduction h_rst = ops_decl_reduction_handle(4 * y_cutoff * sizeof(double), "double", "rst_all");
 int interp_iter_range[] = {0, 1, 0, y_cutoff, 0, 1};
 ops_par_loop(interp_RST, "interp_RST", opensbliblock00, 3, interp_iter_range,
 ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
@@ -355,13 +343,11 @@ ops_arg_gbl(uudata, ndata, "double", OPS_READ),
 ops_arg_gbl(uvdata, ndata, "double", OPS_READ),
 ops_arg_gbl(vvdata, ndata, "double", OPS_READ),
 ops_arg_gbl(wwdata, ndata, "double", OPS_READ),
-ops_arg_reduce(h_rst, 600, "double", OPS_INC),   /* == RST_CAP */
+ops_arg_reduce(h_rst, 600, "double", OPS_INC),
 ops_arg_idx());
 
-// d_a11..d_a33 are decomposed in y, so a per-rank fetch gives only a local slice.
-// The reduction is indexed by the global y, so every rank gets the whole profile.
 {
-std::vector<double> rst(RST_CAP, 0.0);
+std::vector<double> rst(4 * y_cutoff, 0.0);
 ops_reduction_result(h_rst, rst.data());
 for (int j = 0; j < y_cutoff; j++) {
   a11[j] = rst[4*j+0]; a21[j] = rst[4*j+1];
@@ -394,6 +380,10 @@ ops_timers(&cpu_start0, &elapsed_start0);
 double inner_start, elapsed_inner_start;
 double inner_end, elapsed_inner_end;
 ops_timers(&inner_start, &elapsed_inner_start);
+
+double t_cpu;
+double pre_gather_start, gather_start, post_gather_start;
+double pre_gather_end, gather_end, post_gather_end;
 for(iter=start_iter; iter<=start_iter+niter - 1; iter++)
 {
 simulation_time = tstart + dt*((iter - start_iter)+1);
@@ -402,6 +392,7 @@ if(fmod(iter+1, 1) == 0){
         ops_timers(&inner_end, &elapsed_inner_end);
         ops_printf("Iteration: %d. Time-step: %.3e. Simulation time: %.5f. Time/iteration: %lf.\n", iter+1, dt, simulation_time, (elapsed_inner_end - elapsed_inner_start)/1);
         ops_NaNcheck(rho_B0);
+
         {
         int rmin_range[] = {0, block0np0, 0, block0np1, 0, block0np2};
         double rmin = 0.0;
@@ -409,15 +400,16 @@ if(fmod(iter+1, 1) == 0){
         ops_arg_dat(rho_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
         ops_arg_reduce(h_rhomin, 1, "double", OPS_MIN));
         ops_reduction_result(h_rhomin, &rmin);
-        ops_printf("   rho_min %.6f%s\n", rmin, rmin <= 0.0 ? "   <-- NON-PHYSICAL" : "");
+        ops_printf("   rho_min %.6f\n", rmin);
         }
+
         ops_timers(&inner_start, &elapsed_inner_start);
 }
 
 // ------------------------ eddy convection -----------------------------------------------
 
 
-//-----------------------------------------------------------------------------------
+ops_timers(&t_cpu, &pre_gather_start);
 
 seed_gbl = (a*seed_gbl + c) % m;
 //ops_randomgen_init(seed_gbl, 0);
@@ -470,7 +462,6 @@ ops_dat_fetch_data(eddy_eps_z, 0, (char*) eddy_eps_z_gbl);
 
 // ops_get_num_procs();
 
-// The eddy decomposition is fixed for the run, so dump it once rather than every step.
 const bool eddy_debug = (iter == start_iter);
 
 int disp[3], size[3];
@@ -482,6 +473,13 @@ if (eddy_debug) {
   fflush(stdout);
 }
 
+ops_timers(&t_cpu, &pre_gather_end);
+gather_start = pre_gather_end;
+
+#ifdef OPS_MPI
+/* Assembles eddy_*_gbl from every rank's slice. Serially the
+   unconditional ops_dat_fetch_data calls above already leave these
+   arrays complete, so the whole block is MPI-only. */
 if (use_gather)
 {
     int nranks, myrank;
@@ -563,25 +561,30 @@ if (use_gather)
     #undef GATHER_I
     free(tmp_d); free(tmp_i); free(counts); free(displs); free(all_disp);
 }
+#endif
 
-fprintf(eddy_f, "rank %d  eddies = %d\n\n", ops_get_proc(), eddies);
-fprintf(eddy_f, "%4s  %14s %14s %14s %14s %14s %6s %6s %6s\n",
+ops_timers(&t_cpu, &gather_end);
+post_gather_start = gather_end;
+if (write_convection_data_to_text) {
+  fprintf(eddy_f, "rank %d  eddies = %d\n\n", ops_get_proc(), eddies);
+  fprintf(eddy_f, "%4s  %14s %14s %14s %14s %14s %6s %6s %6s\n",
         "iter", "x", "y", "z", "r", "incr", "epx", "epy", "epz");
 
-fprintf(eddy_f, "--- (iter %d) first 5 ---\n", iter);
-for (int j = 0; j < 5; j++) {
-    fprintf(eddy_f, "%4d  %14.6e %14.6e %14.6e %14.6e %14.6e %6d %6d %6d\n",
-            j, eddy_x_gbl[j], eddy_y_gbl[j], eddy_z_gbl[j],
-            eddy_r_gbl[j], eddy_increment_gbl[j],
-            eddy_eps_x_gbl[j], eddy_eps_y_gbl[j], eddy_eps_z_gbl[j]);
-}
+  fprintf(eddy_f, "--- (iter %d) first 5 ---\n", iter);
+  for (int j = 0; j < 5; j++) {
+      fprintf(eddy_f, "%4d  %14.6e %14.6e %14.6e %14.6e %14.6e %6d %6d %6d\n",
+              j, eddy_x_gbl[j], eddy_y_gbl[j], eddy_z_gbl[j],
+              eddy_r_gbl[j], eddy_increment_gbl[j],
+              eddy_eps_x_gbl[j], eddy_eps_y_gbl[j], eddy_eps_z_gbl[j]);
+  }
 
-fprintf(eddy_f, "\n--- last 5 ---\n");
-for (int j = eddies - 5; j < eddies; j++) {
-    fprintf(eddy_f, "%4d  %14.6e %14.6e %14.6e %14.6e %14.6e %6d %6d %6d\n",
-            j, eddy_x_gbl[j], eddy_y_gbl[j], eddy_z_gbl[j],
-            eddy_r_gbl[j], eddy_increment_gbl[j],
-            eddy_eps_x_gbl[j], eddy_eps_y_gbl[j], eddy_eps_z_gbl[j]);
+  fprintf(eddy_f, "\n--- last 5 ---\n");
+  for (int j = eddies - 5; j < eddies; j++) {
+      fprintf(eddy_f, "%4d  %14.6e %14.6e %14.6e %14.6e %14.6e %6d %6d %6d\n",
+              j, eddy_x_gbl[j], eddy_y_gbl[j], eddy_z_gbl[j],
+              eddy_r_gbl[j], eddy_increment_gbl[j],
+              eddy_eps_x_gbl[j], eddy_eps_y_gbl[j], eddy_eps_z_gbl[j]);
+  }
 }
 
 int iteration_range_30_block0[] = {-2, 1, -2, block0np1 + 2, -2, block0np2 + 2};
@@ -904,6 +907,16 @@ if (fmod(1 + iter,write_output_file) == 0 || iter == 0){
 HDF5_IO_Write_0_opensbliblock00_dynamic(opensbliblock00, iter, rho_B0, rhou0_B0, rhou1_B0, rhou2_B0, rhoE_B0, x0_B0, x1_B0, x2_B0, D11_B0, T_B0, mu_B0, p_B0, HDF5_timing);
 }
 
+ops_timers(&t_cpu, &post_gather_end);
+if(fmod(iter+1, write_output_file) == 0){
+printf("iter %6d  pre_gather %.6e  gather %.6e  post_gather %.6e\n",
+       iter + 1,
+       pre_gather_end  - pre_gather_start,
+       gather_end      - gather_start,
+       post_gather_end - post_gather_start);
+       fflush(NULL);
+}
+
 }
 ops_timers(&cpu_end0, &elapsed_end0);
 ops_printf("\nTimings are:\n");
@@ -941,6 +954,9 @@ HDF5_IO_Write_0_opensbliblock00(opensbliblock00, rho_B0, rhou0_B0, rhou1_B0, rho
 HDF5_IO_Write_1_opensbliblock00(opensbliblock00, rho_mean_B0, rhou0_mean_B0, rhou1_mean_B0, rhou2_mean_B0, rhoE_mean_B0, rhou0u0_mean_B0, rhou1u1_mean_B0, rhou2u2_mean_B0, rhou0u1_mean_B0, rhou1u2_mean_B0, rhou0u2_mean_B0, rhou0u0_mean_B0, taux0x1_mean_B0, l_mean_B0, du0dx1_mean_B0, mu_mean_B0, u0_mean_B0, u1_mean_B0, u2_mean_B0, u0u0_mean_B0, u1u1_mean_B0, u2u2_mean_B0, u0u1_mean_B0, utau_mean_B0, HDF5_timing);
 
 fclose(eddy_f);
+
+// run with OPS_DIAGS=2 or this function will have no output
+ops_timing_output_stdout();
 
 ops_exit();
 //Main program end 
