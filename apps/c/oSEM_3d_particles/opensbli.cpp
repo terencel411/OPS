@@ -12,22 +12,18 @@
 #include <ops_seq_v2.h>
 #include <ops_particle_seq.h>
 
-#include "osem3d_common.h"
+#include "common.h"
 #include "opensbliblock00_kernels.h"
 #include "eddy_kernels.h"
 #include "ops_particle_random.h"
 #include "io.h"
 
-// For some reason ops_arg_reduce does not accept vars for size of var (for ops_par_loop)
-// Variables can be given for ops_arg_reduce for ops_particle_par_loop
-// Check ops library for the fix
-#define UINTERP_CAP 150
-#define RST_CAP 600
+// things to check:
+// For some reason ops_arg_reduce() does not accept vars for size of var (in ops_par_loop)
+// variables can be given for ops_arg_reduce for ops_particle_par_loop
+// check ops library for the fix
 
 typedef double Real;
-
-static_assert(UINTERP_CAP == 150, "must match the literal in ops_arg_reduce(h_uinterp, ...)");
-static_assert(RST_CAP == 600, "must match the literal in ops_arg_reduce(h_rst, ...)");
 
 // Place the eddies and give each eddy an id i.e and decide which rank owns it
 static void seed_eddies(ops_particle particle, ops_dat pos, ops_dat e_xyz,
@@ -61,15 +57,15 @@ static void seed_eddies(ops_particle particle, ops_dat pos, ops_dat e_xyz,
     e[1] = eddy_y_min + (eddy_y_max - eddy_y_min) * u[1];
     e[2] = eddy_z_min + (eddy_z_max - eddy_z_min) * u[2];
 
-    /* The ownership handle: nearest point of the block to the eddy. */
+    // The ownership handle, nearest point of the block to the eddy
     Real q[3];
     int outside = 0;
     for (int d = 0; d < 3; d++) {
       q[d] = e[d] < glo[d] ? glo[d] : (e[d] > ghi[d] ? ghi[d] : e[d]);
       if (q[d] < lo[d] || q[d] >= hi[d]) outside = 1;
     }
-    /* The global top face belongs to the rank that ends there, or no rank
-       would claim an eddy clamped exactly onto it. */
+    // The global top face belongs to the rank that ends there, or no rank
+    // would take an eddy clamped exactly onto it
     if (outside) {
       outside = 0;
       for (int d = 0; d < 3; d++)
@@ -98,28 +94,9 @@ Lx1 = 100.0;
 block0np0 = 750;
 block0np1 = 250;
 block0np2 = 150;
-// block0np0 = 150;
-// block0np1 = 50;
-// block0np2 = 30;
 niter = 100;
 write_output_file = 10;
 seed_gbl = 182383739u;
-
-// override (1) grid size, (2) no of iterations, (3) write_hdf5_file, (4) seed
-for (int i = 1; i < argc; i++) {
-  if (!strcmp(argv[i], "-ngrid") && i + 3 < argc) {
-    block0np0 = atoi(argv[i+1]);
-    block0np1 = atoi(argv[i+2]);
-    block0np2 = atoi(argv[i+3]);
-    i += 3;
-  } else if (!strcmp(argv[i], "-niter") && i + 1 < argc) {
-    niter = atoi(argv[++i]);
-  } else if (!strcmp(argv[i], "-nout") && i + 1 < argc) {
-    write_output_file = atoi(argv[++i]);
-  } else if (!strcmp(argv[i], "-seed") && i + 1 < argc) {
-    seed_gbl = (unsigned int)strtoul(argv[++i], NULL, 10);
-  }
-}
 
 Delta0block0 = 375.0/(block0np0-1);
 Delta1block0 = 100.0/(block0np1-1);
@@ -178,20 +155,19 @@ increment = 1.0 * dt;
 // The gather buffer for the eddies
 eddy_all = (double*)malloc(eddies * NCOMP * sizeof(double));
 
-// uinterp is of size ny
-// check if the buffer size (h_uinterp) is large enough
-if (ny > UINTERP_CAP) {
-  ops_printf("ny = %d exceeds UINTERP_CAP = %d; increase the value\n", ny, UINTERP_CAP);
-  ops_exit(); 
+// block0np1 * 0.6 = 150
+if (ny > 150) {
+  ops_printf("ny = %d exceeds the size of the reduction handle used for uinterp kernel\n", ny);
+  ops_exit();
   exit(1);
 }
 
-// a11, a21, a22, and a33 - all are of size y_cutoff so (4 * y_cutoff)
-// check if the buffer size (h_rst) is large enough
-if (4 * y_cutoff > RST_CAP) {
-  ops_printf("4*y_cutoff = %d exceeds RST_CAP = %d; increase the value\n",
-             4 * y_cutoff, RST_CAP);
-  ops_exit(); 
+// a11, a21, a22, a33 of size y_cutoff
+// 4 * y_cutoff = 4 * 150 = 600
+if (4 * y_cutoff > 600) {
+  ops_printf("4*y_cutoff = %d exceeds the size of the reduction handle used for RST kernel\n", 
+    4 * y_cutoff);
+  ops_exit();
   exit(1);
 }
 
@@ -271,16 +247,14 @@ ops_block opensbliblock00 = ops_decl_block(3, "opensbliblock00");
 #include "bc_exchanges.h"
 
 // ----------------------------- the eddy particles ---------------------------
-// OPS partitions the RANKS between blocks. d_grid is the
-// grid packed into a single dim-3 dat (box and mapping require the saem)
-
 
 // buffer vars to transfer data to host
 ops_reduction h_eddy    = ops_decl_reduction_handle(eddies * NCOMP * sizeof(double), "double", "eddy_all");
-ops_reduction h_count     = ops_decl_reduction_handle(sizeof(int), "int", "eddy_count");
+ops_reduction h_count   = ops_decl_reduction_handle(sizeof(int), "int", "eddy_count");
 ops_reduction h_rhomin  = ops_decl_reduction_handle(sizeof(double), "double", "rho_min");
-ops_reduction h_uinterp = ops_decl_reduction_handle(UINTERP_CAP * sizeof(double), "double", "uinterp_all");
-ops_reduction h_rst     = ops_decl_reduction_handle(RST_CAP * sizeof(double), "double", "rst_all");
+
+ops_reduction h_uinterp = ops_decl_reduction_handle(ny * sizeof(double), "double", "uinterp_all");
+ops_reduction h_rst     = ops_decl_reduction_handle(4 * y_cutoff * sizeof(double), "double", "rst_all");
 
 double dx_box[] = {0.0, 0.0, 0.0};
 BoundingBox<Real> *box = ops_create_bounding_box(opensbliblock00, d_grid, 3, dx_box);
@@ -290,7 +264,7 @@ int p_base[] = {0, 0, 0};
 double *null_dbl = NULL;
 int *null_int = NULL;
 
-// eddy_particle_pos is the ownership handle only; 
+// eddy_particle_pos is the ownership handle only
 // eddy_particle_e_xyz carries the eddy's coordinates.
 ops_dat eddy_particle_pos = ops_decl_particle_pos_dat(eddy_particle, 3, p_base, null_dbl, "double", "position");
 ops_dat eddy_particle_e_xyz   = ops_decl_particle_dat(eddy_particle, 3, p_base, null_dbl, "double", "eddy_xyz");
@@ -390,11 +364,11 @@ int iteration_range_uinterp[] = {0, 1, 0, ny, 0, 1};
 ops_par_loop(uinterp_kernel, "uinterp_kernel", opensbliblock00, 3, iteration_range_uinterp,
 ops_arg_dat(d_uinterp, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
-ops_arg_reduce(h_uinterp, 150, "double", OPS_INC),   /* == UINTERP_CAP */
+ops_arg_reduce(h_uinterp, 150, "double", OPS_INC),
 ops_arg_idx());
 
 {
-std::vector<double> buf(UINTERP_CAP, 0.0);
+std::vector<double> buf(ny, 0.0);
 ops_reduction_result(h_uinterp, buf.data());
 for (int j = 0; j < ny; j++) uinterp[j] = buf[j];
 }
@@ -420,7 +394,7 @@ ops_particle_setup_partition();
 seed_eddies(eddy_particle, eddy_particle_pos, eddy_particle_e_xyz, eddy_particle_id, eddies, seed_gbl);
 ops_particle_setup_maps_with_dats(eddy_particle, dat_border, nborder);
 
-// The position is already placed by seed_eddies; this writes the rest.
+// perform the random fill for eddy_particle_rng
 ops_fill_random_uniform_particle(eddy_particle, eddy_particle_rng, eddy_particle_id, seed_gbl, 1u, OPS_PRNG_MINSTD);
 
 ops_particle_par_loop(KerInitEddy, "instantiate_eddies", eddy_particle, 3,
@@ -429,8 +403,6 @@ ops_arg_dat_particle(eddy_particle_r, 1, "double", eddy_particle, map, OPS_WRITE
 ops_arg_dat_particle(eddy_particle_eps_xyz, 3, "double", eddy_particle, map, OPS_WRITE),
 ops_arg_dat_particle(eddy_particle_rng, 6, "double", eddy_particle, map, OPS_READ));
 
-// Is every eddy owned exactly once? Seeding is a half-open box test, so this
-// is the check that the per-rank boxes really do tile the eddy box.
 {
 int count = 0;
 ops_particle_par_loop(KerCountEddies, "count_eddies", eddy_particle, 3,
@@ -454,11 +426,11 @@ ops_arg_gbl(uudata, ndata, "double", OPS_READ),
 ops_arg_gbl(uvdata, ndata, "double", OPS_READ),
 ops_arg_gbl(vvdata, ndata, "double", OPS_READ),
 ops_arg_gbl(wwdata, ndata, "double", OPS_READ),
-ops_arg_reduce(h_rst, 600, "double", OPS_INC),   /* == RST_CAP */
+ops_arg_reduce(h_rst, 600, "double", OPS_INC),
 ops_arg_idx());
 
 {
-std::vector<double> rst(RST_CAP, 0.0);
+std::vector<double> rst(4 * y_cutoff, 0.0);
 ops_reduction_result(h_rst, rst.data());
 for (int j = 0; j < y_cutoff; j++) {
   a11[j] = rst[4*j+0]; a21[j] = rst[4*j+1];
@@ -475,7 +447,6 @@ ops_printf("eddies: %i. Eddy volume: %f \n", eddies, eddy_vol);
 ops_printf("xmax: %f, xmin: %f \n", eddy_x_max, eddy_x_min);
 ops_printf("ymax: %f, ymin: %f \n", eddy_y_max, eddy_y_min);
 ops_printf("zmax: %f, zmin: %f \n", eddy_z_max, eddy_z_min);
-ops_printf("gather buffer: %d x %d doubles per step\n", eddies, NCOMP);
 
 for (int i{0}; i < y_cutoff; i++){
   ops_printf("a11: %f, a21: %f, a22: %f, a33: %f \n", a11[i], a21[i], a22[i], a33[i]);
@@ -491,20 +462,19 @@ double inner_start, elapsed_inner_start;
 double inner_end, elapsed_inner_end;
 ops_timers(&inner_start, &elapsed_inner_start);
 
-// Per-iteration breakdown. t_cpu is the cpu-time slot ops_timers insists on
-// and which we ignore; every figure below is wall clock.
 double t_cpu;
 double pre_gather_start, gather_start, post_gather_start;
 double pre_gather_end, gather_end, post_gather_end;
 for(iter=start_iter; iter<=start_iter+niter - 1; iter++)
 {
-ops_timers(&t_cpu, &pre_gather_start);
+
 simulation_time = tstart + dt*((iter - start_iter)+1);
 ops_update_const("simulation_time", 1, "double", &simulation_time);
 if(fmod(iter+1, 1) == 0){
         ops_timers(&inner_end, &elapsed_inner_end);
         ops_printf("Iteration: %d. Time-step: %.3e. Simulation time: %.5f. Time/iteration: %lf.\n", iter+1, dt, simulation_time, (elapsed_inner_end - elapsed_inner_start)/1);
         ops_NaNcheck(rho_B0);
+
         {
         int rmin_range[] = {0, block0np0, 0, block0np1, 0, block0np2};
         double rmin = 0.0;
@@ -512,11 +482,13 @@ if(fmod(iter+1, 1) == 0){
         ops_arg_dat(rho_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
         ops_arg_reduce(h_rhomin, 1, "double", OPS_MIN));
         ops_reduction_result(h_rhomin, &rmin);
-        ops_printf("   rho_min %.6f%s\n", rmin, rmin <= 0.0 ? "   <-- NON-PHYSICAL" : "");
+        ops_printf("   rho_min %.6f\n", rmin);
         }
+
         ops_timers(&inner_start, &elapsed_inner_start);
 }
 
+ops_timers(&t_cpu, &pre_gather_start);
 // ------------------------ eddy convection -----------------------------------
 ops_fill_random_uniform_particle(eddy_particle, eddy_particle_rng, eddy_particle_id, seed_gbl,
                                  (unsigned int)(iter - start_iter) + 2u, OPS_PRNG_MINSTD);
@@ -527,7 +499,6 @@ ops_arg_dat_particle(eddy_particle_e_xyz, 3, "double", eddy_particle, map, OPS_R
 ops_arg_dat_particle(eddy_particle_eps_xyz, 3, "double", eddy_particle, map, OPS_RW),
 ops_arg_dat_particle(eddy_particle_rng, 6, "double", eddy_particle, map, OPS_READ));
 
-// One timestamp closes pre_gather and opens gather, so no time falls between them.
 ops_timers(&t_cpu, &pre_gather_end);
 gather_start = pre_gather_end;
 
@@ -541,8 +512,6 @@ ops_arg_dat_particle(eddy_particle_id, 1, "int", eddy_particle, map, OPS_READ),
 ops_arg_reduce(h_eddy, eddies * NCOMP, "double", OPS_INC));
 ops_reduction_result(h_eddy, eddy_all);
 
-// The MPI_Allreduce inside ops_reduction_result is what actually gathers the
-// eddies, so the boundary sits after it, not after the par_loop.
 ops_timers(&t_cpu, &gather_end);
 post_gather_start = gather_end;
 
@@ -883,9 +852,6 @@ if (fmod(1 + iter,write_output_file) == 0 || iter == 0){
 HDF5_IO_Write_0_opensbliblock00_dynamic(opensbliblock00, iter, rho_B0, rhou0_B0, rhou1_B0, rhou2_B0, rhoE_B0, x0_B0, x1_B0, x2_B0, D11_B0, T_B0, mu_B0, p_B0, HDF5_timing);
 }
 
-// Every rank prints its own line, so plain printf rather than ops_printf, which
-// only emits on rank 0. Lines from different ranks interleave arbitrarily.
-// no_particles is this rank's owned count, read straight off the host struct.
 ops_timers(&t_cpu, &post_gather_end);
 if(fmod(iter+1, write_output_file) == 0){
 printf("[rank %3d] iter %6d  owned %6zu  pre_gather %.6e  gather %.6e  post_gather %.6e\n",
@@ -933,8 +899,7 @@ HDF5_IO_Write_0_opensbliblock00(opensbliblock00, rho_B0, rhou0_B0, rhou1_B0, rho
 HDF5_IO_Write_1_opensbliblock00(opensbliblock00, rho_mean_B0, rhou0_mean_B0, rhou1_mean_B0, rhou2_mean_B0, rhoE_mean_B0, rhou0u0_mean_B0, rhou1u1_mean_B0, rhou2u2_mean_B0, rhou0u1_mean_B0, rhou1u2_mean_B0, rhou0u2_mean_B0, rhou0u0_mean_B0, taux0x1_mean_B0, l_mean_B0, du0dx1_mean_B0, mu_mean_B0, u0_mean_B0, u1_mean_B0, u2_mean_B0, u0u0_mean_B0, u1u1_mean_B0, u2u2_mean_B0, u0u1_mean_B0, utau_mean_B0, HDF5_timing);
 
 
-// Per-kernel time and MPI-time, mean and stddev across ranks. Gated on
-// OPS_diags > 1, so run with OPS_DIAGS=2 or this prints nothing.
+// run with OPS_DIAGS=2 or this function will have no output
 ops_timing_output_stdout();
 
 ops_exit();

@@ -1,7 +1,7 @@
 #ifndef _EDDY_KERNELS_H_
 #define _EDDY_KERNELS_H_
 
-// Initialise the 3d for eddies
+// initialise the 3d grid for eddies
 void KerInitGrid(ACC<double> &grid, const ACC<double> &x0, const ACC<double> &x1,
                    const ACC<double> &x2) {
   grid(0, 0, 0, 0) = x0(0, 0, 0);
@@ -18,7 +18,7 @@ void KerInitEddy(ACCP<double> &eddy_r, ACCP<double> &eddy_eps, const ACCP<double
   eddy_eps(2) = (eddy_rng(5) < 0.5) ? -1.0 : 1.0;
 }
 
-// convect_eddies: advance the eddy, on leaving the box put it back at the inlet with fresh y, z and signs.
+// convect_eddies
 void KerConvectEddies(ACCP<double> &eddy, ACCP<double> &eddy_eps,
                       const ACCP<double> &eddy_rng) {
 
@@ -35,7 +35,7 @@ void KerConvectEddies(ACCP<double> &eddy, ACCP<double> &eddy_eps,
   }
 }
 
-// each eddy adds itself into the slot its global id names.
+// each eddy adds itself into the slot its global id names
 void KerGatherEddies(const ACCP<double> &eddy, const ACCP<double> &eddy_r,
                     const ACCP<double> &eddy_eps, const ACCP<int> &eddy_id, double *eddy_all) {
   const int s = NCOMP * eddy_id(0);
@@ -48,7 +48,7 @@ void KerGatherEddies(const ACCP<double> &eddy, const ACCP<double> &eddy_r,
   eddy_all[s + E_SZ] += eddy_eps(2);
 }
 
-// Eddy count check
+// eddy count check
 void KerCountEddies(const ACCP<int> &eddy_id, int *count) {
   (void)eddy_id;
   *count += 1;

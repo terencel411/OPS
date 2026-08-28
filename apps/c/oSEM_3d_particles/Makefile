@@ -1,38 +1,27 @@
 #
-# oSEM_3d_particles -- oSEM_3d with the eddies as OPS particles
+# The following environment variables should be predefined:
 #
-# Requires in the environment (source ../../../configure_env_vars.sh):
-#   OPS_INSTALL_PATH
-#   OPS_COMPILER   (gnu, intel, ...)
-#
-# Targets:
-#   make opensbli_dev_seq    serial, compiled directly (NO translator)
-#   make opensbli_dev_mpi    MPI,    compiled directly (NO translator)
-#   make opensbli_seq        serial, via the OPS translator
-#   make opensbli_mpi        MPI,    via the OPS translator
+# OPS_INSTALL_PATH
+# OPS_COMPILER (gnu,intel,etc)
 #
 
 USE_HDF5=1
-
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.common
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.mpi
+include $(OPS_INSTALL_PATH)/../makefiles/Makefile.cuda
 include $(OPS_INSTALL_PATH)/../makefiles/Makefile.hdf5
 
+# Matched to oSEM_3d_particles so the two are compared under identical arithmetic.
 CXXFLAGS := -O3 -march=native -fPIC -Wall -g -std=c++11 -fopenmp
 
-HEADERS = opensbliblock00_kernels.h eddy_kernels.h defdec_data_set.h \
-          constants.h stencils.h bc_exchanges.h io.h \
-          osem3d_common.h ops_particle_random.h Pir_data.h TBL_data.h
+HEADERS = opensbliblock00_kernels.h defdec_data_set.h
 
-OPS_FILES = opensbli.cpp
+OTHER_FILES = 
+OPS_GENERATED = opensbli_ops.cpp 
+OPS_FILES = opensbli.cpp 
 
-OPS_GENERATED_SUFFIX = _ops
 
-APP = opensbli
-MAIN_SRC = opensbli
+APP=opensbli
+MAIN_SRC=opensbli
 
-# The particle kernels are resolved by C++ templates and compile host-side
-# only, so the GPU targets are deliberately not offered here.
-TARGETS = dev_seq dev_mpi seq openmp mpi mpi_openmp
-
-include $(OPS_INSTALL_PATH)/../makefiles/Makefile.c_app
+include $(OPS_INSTALL_PATH)/../makefiles/Makefile.c_app_legacy

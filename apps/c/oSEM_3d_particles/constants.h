@@ -62,12 +62,9 @@ double eddy_z_max;
 double eddy_vol;
 int eddies;
 
-// Per-step convection distance. A per-eddy dat in oSEM_3d; identical for all.
 double increment;
 
 unsigned int seed_gbl;
 
-// The gather buffer replacing oSEM_3d's seven eddy_*_gbl arrays. Layout in
-// osem3d_common.h.
 double* eddy_all;
 
