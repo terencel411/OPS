@@ -13,8 +13,8 @@
 
 #include <ops_seq_v2.h>
 #include <ops_particle_seq.h>
-#include <ops_grid_part_seq_v2.h>   /* grid-outer / particle-inner ops_par_loop */
-#include <ops_particle_grid_seq.h>  /* particle-outer / grid-inner */
+#include <ops_grid_part_seq_v2.h>
+#include <ops_particle_grid_seq.h>
 
 #include "osem_constants.h"
 #include "TBL_data.h"
@@ -188,7 +188,6 @@ int main(int argc, char **argv) {
 
   // eddy ids listed per rank at each print step; -1 lists all of them
   int nid_print = 12;
-  int deposit = 1;   /* 1 = particle-outer deposit, 0 = grid-outer gather */
 
   for (int a = 1; a < argc - 1; a++)
   {
@@ -196,7 +195,6 @@ int main(int argc, char **argv) {
     if (strcmp(argv[a], "-niter") == 0)  niter = atoi(argv[a + 1]);
     if (strcmp(argv[a], "-nprint") == 0) nprint = atoi(argv[a + 1]);
     if (strcmp(argv[a], "-nids") == 0)   nid_print = atoi(argv[a + 1]);
-    if (strcmp(argv[a], "-deposit") == 0) deposit = atoi(argv[a + 1]);
   }
 
   r_max = 0.41 * delta;
@@ -238,15 +236,15 @@ int main(int argc, char **argv) {
   int *ni = NULL;
 
   ops_dat d_grid = ops_decl_dat(block, 2, size, base, d_mg, d_pg, nd, "double", "d_grid");
-  ops_dat a11 = ops_decl_dat(block, 1, size, base, d_mg, d_pg, nd, "double", "a11");
-  ops_dat a21 = ops_decl_dat(block, 1, size, base, d_mg, d_pg, nd, "double", "a21");
-  ops_dat a22 = ops_decl_dat(block, 1, size, base, d_mg, d_pg, nd, "double", "a22");
-  ops_dat a31 = ops_decl_dat(block, 1, size, base, d_mg, d_pg, nd, "double", "a31");
-  ops_dat a32 = ops_decl_dat(block, 1, size, base, d_mg, d_pg, nd, "double", "a32");
-  ops_dat a33 = ops_decl_dat(block, 1, size, base, d_mg, d_pg, nd, "double", "a33");
-  ops_dat uprime = ops_decl_dat(block, 1, size, base, d_mg, d_pg, nd, "double", "uprime");
-  ops_dat vprime = ops_decl_dat(block, 1, size, base, d_mg, d_pg, nd, "double", "vprime");
-  ops_dat wprime = ops_decl_dat(block, 1, size, base, d_mg, d_pg, nd, "double", "wprime");
+  ops_dat a11 = ops_decl_dat(block, 1, size, base, d_m, d_p, nd, "double", "a11");
+  ops_dat a21 = ops_decl_dat(block, 1, size, base, d_m, d_p, nd, "double", "a21");
+  ops_dat a22 = ops_decl_dat(block, 1, size, base, d_m, d_p, nd, "double", "a22");
+  ops_dat a31 = ops_decl_dat(block, 1, size, base, d_m, d_p, nd, "double", "a31");
+  ops_dat a32 = ops_decl_dat(block, 1, size, base, d_m, d_p, nd, "double", "a32");
+  ops_dat a33 = ops_decl_dat(block, 1, size, base, d_m, d_p, nd, "double", "a33");
+  ops_dat uprime = ops_decl_dat(block, 1, size, base, d_m, d_p, nd, "double", "uprime");
+  ops_dat vprime = ops_decl_dat(block, 1, size, base, d_m, d_p, nd, "double", "vprime");
+  ops_dat wprime = ops_decl_dat(block, 1, size, base, d_m, d_p, nd, "double", "wprime");
 
   int s00[] = {0, 0};
   ops_stencil S2D_00 = ops_decl_stencil(2, 1, s00, "0,0");
@@ -364,9 +362,6 @@ int main(int argc, char **argv) {
   ops_printf("oSEM_2d_particles_grid_loop: %d eddies (decomposed by (y,z), "
              "positions frozen), grid %d x %d, %d steps\n",
              eddies, ny + 1, nz + 1, niter);
-  ops_printf("compute_fluct driven %s\n",
-             deposit ? "particle-outer (ops_par_particle_grid_loop, deposit)"
-                     : "grid-outer (ops_par_loop, gather)");
   ops_printf("search stencil %d bins (%d x %d rectangle culled to the "
              "eddy_radius ellipse; radius %.3e, bin %.3e x %.3e)\n",
              n_search, 2 * nb_y + 1, 2 * nb_z + 1, eddy_radius, dbin_y, dbin_z);
@@ -408,28 +403,8 @@ int main(int argc, char **argv) {
                  ops_arg_dat(vprime, 1, S2D_00, "double", OPS_WRITE),
                  ops_arg_dat(wprime, 1, S2D_00, "double", OPS_WRITE));
 
-    if (deposit)
-      // same kernel, outer over eddies. ITERATE_ALL is required- a ghost eddy
-      // still deposits onto this rank's interior nodes near the boundary
-      // ops_par_particle_grid_loop is used to write only in particle datsa
-      ops_par_particle_grid_loop(compute_fluct, "compute_fluct_deposit",
-                 eddy_particle, map, 2, OPS_PARTICLE_ITERATE_ALL, range_parts, S2D_SEARCH,
-                 ops_arg_dat(uprime, 1, S2D_SEARCH, "double", OPS_RW),
-                 ops_arg_dat(vprime, 1, S2D_SEARCH, "double", OPS_RW),
-                 ops_arg_dat(wprime, 1, S2D_SEARCH, "double", OPS_RW),
-                 ops_arg_dat(d_grid, 2, S2D_SEARCH, "double", OPS_READ),
-                 ops_arg_dat(a11, 1, S2D_SEARCH, "double", OPS_READ),
-                 ops_arg_dat(a21, 1, S2D_SEARCH, "double", OPS_READ),
-                 ops_arg_dat(a22, 1, S2D_SEARCH, "double", OPS_READ),
-                 ops_arg_dat(a31, 1, S2D_SEARCH, "double", OPS_READ),
-                 ops_arg_dat(a32, 1, S2D_SEARCH, "double", OPS_READ),
-                 ops_arg_dat(a33, 1, S2D_SEARCH, "double", OPS_READ),
-                 ops_arg_dat_particle(eddy_particle_pos, 2, "double", eddy_particle, map, OPS_READ),
-                 ops_arg_dat_particle(eddy_particle_x, 1, "double", eddy_particle, map, OPS_READ),
-                 ops_arg_dat_particle(eddy_particle_r, 1, "double", eddy_particle, map, OPS_READ),
-                 ops_arg_dat_particle(eddy_particle_eps, 3, "double", eddy_particle, map, OPS_READ));
-    else
-    // ops_par_loop is used to write from particle dats to normal dats (check seq_v2 header)
+    // grid-outer loop (ops_grid_part_seq_v2.h): the loop that writes grid dats from
+    // particle data. ops_par_particle_grid_loop only reads grid dats
     ops_par_loop(compute_fluct, "compute_fluct", eddy_particle, map, S2D_SEARCH,
                  2, grid_range,
                  ops_arg_dat(uprime, 1, S2D_00, "double", OPS_RW),
