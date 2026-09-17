@@ -176,6 +176,7 @@ int _ops_coord_to_bin(const int dim, const ops_point<T> xmin, const ops_point<T>
   else iz = 0; //Case Dim = 2
 
   if (ix < 0 || iy < 0 || iz < 0) return -1;
+  if (ix >= Ngrid[0] || iy >= Ngrid[1] || (dim == 3 && iz >= Ngrid[2])) return -1;
 
   return ix + iy * Ngrid[0] + iz * Ngrid[0] * Ngrid[1];
 }
@@ -187,7 +188,7 @@ int _ops_coord_to_bin(const int dim, const T *xmin, const T* xmax, const T* dx,
   T epsilon = std::numeric_limits<T>::epsilon();
 
 
-  int ix[3];
+  int ix[3] = {-1, -1, -1};  // was uninitialised for out-of-range coordinates
   int address = 0;
   int prd = 1;
   for (int i = 0; i < dim; i++) {
@@ -201,7 +202,7 @@ int _ops_coord_to_bin(const int dim, const T *xmin, const T* xmax, const T* dx,
       ix[i] = (int) ops_floor((xp[i] - xmin[i]) / dx[i] + epsilon);
     }
 
-    if (ix[i] < 0) return -1;
+    if (ix[i] < 0 || ix[i] >= Ngrid[i]) return -1;
 
     address += ix[i] * prd;
     prd *= Ngrid[i];

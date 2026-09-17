@@ -108,7 +108,7 @@ void _ops_particle_copy_mapping_data_to(ops_particle_mapping map, int to, int fr
 void _ops_particle_swap_mapping_data(ops_particle_mapping map, int from, int to);
 
 void _ops_particle_mapping_virtual_from_halo(ops_particle_mapping map,ops_particle particle,
-                                             int ifirst, int n_to_map);
+                                             int ifirst, int n_to_map, const int *skip_if_marked = nullptr);
 
 /*--------------------------------------------------------------------------------------*/
 /* Allocate temporary array for particle halos

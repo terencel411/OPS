@@ -902,7 +902,7 @@ void  _ops_particle_build_local_uniform(ops_particle_mapping map, ops_particle p
 //MPI Version exists
 //TODO: Stopped herein
 void _ops_particle_mapping_virtual_from_halo(ops_particle_mapping map,ops_particle particle,
-                                             int ifirst, int n_to_map) {
+                                             int ifirst, int n_to_map, const int *skip_if_marked) {
 
   map->nParticles = ifirst + n_to_map;
 
