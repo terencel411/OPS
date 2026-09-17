@@ -2411,7 +2411,6 @@ void _ops_particle_exchange(ops_particle particle) {
 
 
 //TODO: We have the same issue herein as well
-
 void _ops_particle_exchange_map_update(ops_particle particle) {
 
   sub_block *sb = OPS_sub_block_list[particle->block->index];
@@ -2423,16 +2422,7 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
 
   int *mark_deletion = particle->mark_deletion;
 
-  // repeats the axis sweep until the particle is in the rihgt box (or sent outside as intended/and removed)
-  // if 0, it is in the correct box
-  // if 1, it is outside of the box
-  // if 2/3, needs to be shifted to lower/upper rank (on the grid)
-  // if 4, sent to the correct box
-  int nsweep = 0;
-  for (;;) {
-  int nsent = 0;
   for (int idir = 0; idir < dim; idir++) {
-    mark_deletion = particle->mark_deletion;
     int nsend_recv[4];
 
     for (int i = 0; i < 4; i++)
@@ -2539,8 +2529,6 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
       }
     }
 
-
-    nsent += nsend_recv[0] + nsend_recv[1];
 
     //Packing data
     ops_dat pos_dat = particle->particle_pos_dat;
@@ -2745,20 +2733,10 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
     }
   }
 
-  nsweep++;
-  int loc[2] = {0, nsent}, glb[2];
-  for (size_t i = 0; i < particle->no_particles; i++)
-    if (particle->mark_deletion[i] == 1) loc[0]++;
-  MPI_Allreduce(loc, glb, 2, MPI_INT, MPI_SUM, sb->comm);
-  if (glb[0] == 0 || glb[1] == 0) break;
-  }
-  // if (nsweep > 1) ops_printf("SWEEPS %d\n", nsweep);
-
   for (int imap = 0; imap < particle->particle_map_index; imap++) {
     ops_particle_mapping map = particle->map_list[imap];
     _ops_particle_mapping_virtual_from_halo(map, particle, nlocal,
-                                            particle->no_particles - nlocal, //NEEDS CAUTION
-                                            particle->mark_deletion);
+                                            particle->no_particles - nlocal); //NEEDS CAUTION
   }
 
   //Remove particles with maps and flag

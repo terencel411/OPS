@@ -1563,7 +1563,7 @@ void _ops_particle_setup_map_virtual(ops_particle particle, ops_particle_mapping
 
 //TODO:
 void _ops_particle_mapping_virtual_from_halo(ops_particle_mapping map,ops_particle particle,
-                                             int ifirst, int n_to_map, const int *skip_if_marked) {
+                                             int ifirst, int n_to_map) {
 
   map->nParticles = ifirst + n_to_map;
 
@@ -1603,9 +1603,6 @@ void _ops_particle_mapping_virtual_from_halo(ops_particle_mapping map,ops_partic
   char *xpos =  particle->particle_pos_dat->data;
   char *xold =  map->pos_old->data;
   for (int i = ifirst; i < ifirst + n_to_map; i++) {
-    // a particle arriving flagged to leave is never linked, or its removal leaves a stale link
-    // segfaults here maybe
-    if (skip_if_marked != nullptr && skip_if_marked[i] != 0) { bin2grid[i] = -1; bins[i] = -1; continue; }
 
     int address;
     switch(particle->particle_pos_dat->type_size) {
@@ -1623,7 +1620,7 @@ void _ops_particle_mapping_virtual_from_halo(ops_particle_mapping map,ops_partic
        break;
     }
 
-    if (address < 0) { bin2grid[i] = -1; bins[i] = -1; continue; }
+    if (address < 0) continue;
     bin2grid[i] = address;
 
     bins[i] = binhead[address];
@@ -2274,20 +2271,17 @@ void _ops_particle_find_intra_box(ops_particle particle, ops_int_particle_halos 
   int nsend_neg = 0;
   int nsend_pos = 0;
 
-  // removed the continue after a negative match: the border regions overlap whenever a
-  // subdomain is narrower than twice the halo reach, and a particle in both must
-  // be counted in both totals. These counts size particle_send_neg/pos, which
-  // _ops_particle_set_intra_border_box fills without a continue- skipping one
-  // here made the fill overrun its buffer
   for (int ipart = ifirst; ipart < ilast; ipart++) {
     if (iswap < halo->nswap_neg && _particle_is_within(xpos, halo->region_bord_neg, ipart, dim ,
                                                        particle->particle_pos_dat->type_size)) {
       nsend_neg++;
+      continue;
     }
 
     if (iswap < halo->nswap_pos && _particle_is_within(xpos, halo->region_bord_pos, ipart, dim,
                                                        particle->particle_pos_dat->type_size)) {
       nsend_pos++;
+      continue;
     }
   }
 
