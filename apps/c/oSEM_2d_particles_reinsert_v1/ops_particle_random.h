@@ -71,13 +71,7 @@ inline std::mt19937 ops_prandom_gen;
 
 // set seed before performing the random fill
 inline void ops_prandom_init(unsigned int seed) {
-#ifdef OPS_MPI
-  int rank = 0;
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  ops_prandom_gen.seed(seed + (unsigned int)rank * 2654435761u);
-#else
-  ops_prandom_gen.seed(seed);
-#endif
+  ops_prandom_gen.seed(seed + (unsigned int)ops_get_proc() * 2654435761u);   // rank 0 in serial
 }
 
 inline void ops_fill_random_uniform_particle_v1(ops_particle particle,

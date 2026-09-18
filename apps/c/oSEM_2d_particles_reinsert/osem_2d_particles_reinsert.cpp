@@ -66,17 +66,18 @@ static void mark_and_gather_exits(ops_particle p, ops_dat exit_flag, ops_dat gid
   }
 
 #ifdef OPS_MPI
-  int nranks;
-  MPI_Comm_size(MPI_COMM_WORLD, &nranks);
+  sub_block_list sb = OPS_sub_block_list[p->block->index];
+  if (!sb->owned) { all.clear(); return; }
+  const int nranks = ops_num_procs();
   int nmine = (int)mine.size();
-  std::vector<int> cnt(nranks), disp(nranks);
-  MPI_Allgather(&nmine, 1, MPI_INT, cnt.data(), 1, MPI_INT, MPI_COMM_WORLD);
+  std::vector<int> cnt(nranks, 0), disp(nranks, 0);
+  MPI_Allgather(&nmine, 1, MPI_INT, cnt.data(), 1, MPI_INT, sb->comm);
   int total = 0;
   for (int r = 0; r < nranks; r++) { disp[r] = total; total += cnt[r]; }
   all.resize(total);
   if (total > 0)
     MPI_Allgatherv(mine.data(), nmine, MPI_INT, all.data(), cnt.data(), disp.data(),
-                   MPI_INT, MPI_COMM_WORLD);
+                   MPI_INT, sb->comm);
 #else
   all.swap(mine);
 #endif
