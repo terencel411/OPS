@@ -678,13 +678,13 @@ template<typename ParamT> struct particle_param_handler {
     return (ParamT) data;
   }
 
-  static void shift_arg(const ops_arg &arg, char *p, const int offs,
+  static void shift_arg(const ops_arg &arg, char *&p, const int offs,
                         OPS_instance *instance) {
     if (arg.argtype == OPS_ARG_IDP) {
       instance->arg_idp[0] += offs;
     }
     else if (arg.argtype == OPS_ARG_GBL_PARTICLE) {
-      p += offs * arg.elem_size;
+      p += offs * arg.dim * arg.elem_size;
     }
   }
 

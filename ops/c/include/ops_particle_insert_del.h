@@ -83,7 +83,7 @@ int find_offset(ops_arg arg, int *iprev, int elem, int insert_elem) {
   }
   else if ( arg.argtype == OPS_ARG_GBL_PARTICLE) {
     offs = (insert_elem - (*iprev));/// * arg.dim;
-    (*iprev) = elem; //TODO: Vrf that it must be elem
+    (*iprev) = insert_elem;
   }
 
   return offs;
@@ -105,7 +105,7 @@ void ops_particle_insert_impl(indices<J...>,
 #endif
   constexpr int N = sizeof...(OPSARG);
 //  int count[OPS_MAX_DIM] = {0};
-  BoundingBox *boxBlock = particle->box_block;
+  BoundingBox<double> *boxBlock = (BoundingBox<double> *)particle->box_block;
   double xmin[dim], xmax[dim];
   boxBlock->getLocalMaxMin(xmin, xmax);
 
@@ -168,7 +168,7 @@ void ops_particle_insert_impl(indices<J...>,
     _ops_particle_add_elem(dim, x_local, particle->particle_pos_dat, elem);
     elem++;
 
-    int offs[N] = {find_offset(arguments, &iprev[J], i, inserting_particles[i])...};
+    int offs[N] = {find_offset(arguments, &iprev[J], elem - 1, inserting_particles[i])...};
 
     //TODO: Rework it here as well
     (void) std::initializer_list<int>{(
