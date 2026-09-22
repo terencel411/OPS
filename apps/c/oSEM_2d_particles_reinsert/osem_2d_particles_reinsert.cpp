@@ -25,7 +25,8 @@
 typedef double Real;
 
 // insert the eddies and give each one an id, deciding which rank owns it.
-static void seed_eddies(ops_particle eddy_particle, ops_dat pos, ops_dat gid, int neddy) {
+static void seed_eddies(ops_particle eddy_particle, ops_dat pos, ops_dat x, ops_dat r,
+                        ops_dat eps, ops_dat gid, ops_dat exit_flag, int neddy) {
 
   BoundingBox<Real> *box = (BoundingBox<Real> *)eddy_particle->box_block;
   const Real lo[2] = {box->getLocalMin().x, box->getLocalMin().y};
@@ -33,18 +34,30 @@ static void seed_eddies(ops_particle eddy_particle, ops_dat pos, ops_dat gid, in
 
   if (neddy > (int)eddy_particle->Nmax) ops_particle_realloc_data(eddy_particle, neddy);
 
-  Real *xp = (Real *)pos->data;
+  Real *yz_pos = (Real *)pos->data;
+  Real *x_pos = (Real *)x->data;
+  Real *e_rad = (Real *)r->data;
+  Real *e_eps = (Real *)eps->data;
+  int *e_fl = (int *)exit_flag->data;
   int *ip = (int *)gid->data;
 
   int n = 0;
+  double v[6];
   for (int i = 0; i < neddy; i++) {
-    const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) * ops_prandom_uniform(seed_gbl, i, 0u, 0);
-    const Real z = eddy_z_min + (eddy_z_max - eddy_z_min) * ops_prandom_uniform(seed_gbl, i, 0u, 1);
+    ops_prandom_uniform_gid(seed_gbl, i, 1u, rng_method, 6, v);
+    const Real y = eddy_y_min + (eddy_y_max - eddy_y_min) * v[1];
+    const Real z = eddy_z_min + (eddy_z_max - eddy_z_min) * v[2];
 
     if (y < lo[0] || y >= hi[0] || z < lo[1] || z >= hi[1]) continue;
 
-    xp[2 * n] = y;
-    xp[2 * n + 1] = z;
+    yz_pos[2 * n] = y;
+    yz_pos[2 * n + 1] = z;
+    x_pos[n] = x_min + v[0] * (x_max - x_min);
+    e_rad[n] = eddy_radius;
+    e_eps[3 * n] = (v[3] < 0.5) ? -1.0 : 1.0;
+    e_eps[3 * n + 1] = (v[4] < 0.5) ? -1.0 : 1.0;
+    e_eps[3 * n + 2] = (v[5] < 0.5) ? -1.0 : 1.0;
+    e_fl[n] = 0;
     ip[n] = i;
     n++;
   }
@@ -55,38 +68,45 @@ static void seed_eddies(ops_particle eddy_particle, ops_dat pos, ops_dat gid, in
 // KerConvectEddies kernel marks eddies that exit the eddy domain (x > x_max)
 // those eddies are gathered from every rank 
 static void mark_and_gather_exits(ops_particle p, ops_dat exit_flag, ops_dat gid,
-                                  std::vector<int> &all) {
+                                  std::vector<int> &eddy_list) {
 
   const int *fl = (const int *)exit_flag->data;
   const int *ip = (const int *)gid->data;
-  std::vector<int> mine;
+  std::vector<int> curr_rank_eddies;
   for (size_t i = 0; i < p->no_particles; i++) {
     p->mark_deletion[i] = fl[i];
-    if (fl[i]) mine.push_back(ip[i]);
+    if (fl[i]) curr_rank_eddies.push_back(ip[i]);
   }
 
 #ifdef OPS_MPI
   sub_block_list sb = OPS_sub_block_list[p->block->index];
-  if (!sb->owned) { all.clear(); return; }
+  if (!sb->owned) { eddy_list.clear(); return; }
   const int nranks = ops_num_procs();
-  int nmine = (int)mine.size();
+
+  // get number of eddies to be deleted
+  int num_curr_rank_eddies = (int)curr_rank_eddies.size();
   std::vector<int> cnt(nranks, 0), disp(nranks, 0);
-  MPI_Allgather(&nmine, 1, MPI_INT, cnt.data(), 1, MPI_INT, sb->comm);
+  MPI_Allgather(&num_curr_rank_eddies, 1, MPI_INT, cnt.data(), 1, MPI_INT, sb->comm);
   int total = 0;
   for (int r = 0; r < nranks; r++) { disp[r] = total; total += cnt[r]; }
-  all.resize(total);
+  eddy_list.resize(total);
+
+  // then get ids of each eddy to be deleted
+  // so  current rank holds a list of all eddies that need to be deleted
   if (total > 0)
-    MPI_Allgatherv(mine.data(), nmine, MPI_INT, all.data(), cnt.data(), disp.data(),
-                   MPI_INT, sb->comm);
+    MPI_Allgatherv(curr_rank_eddies.data(), num_curr_rank_eddies, MPI_INT,
+                   eddy_list.data(), cnt.data(), disp.data(), MPI_INT, sb->comm);
 #else
-  all.swap(mine);
+  eddy_list.swap(curr_rank_eddies);
 #endif
+
+  // these eddies will be re-inserted with same id but with a different y-z value
 }
 
 // insert each exited gid at x_min on the rank whose box holds its new (y,z)
 // then delete the marked eddies and rebuild bins and ghost b
 static int reinsert_eddies(ops_particle p, ops_dat pos, ops_dat x, ops_dat r, ops_dat eps,
-                           ops_dat rng, ops_dat exit_flag, ops_dat gid,
+                           ops_dat exit_flag, ops_dat gid,
                            const std::vector<int> &exited, unsigned int counter,
                            ops_dat *dats, int ndats) {
 
@@ -111,41 +131,40 @@ static int reinsert_eddies(ops_particle p, ops_dat pos, ops_dat x, ops_dat r, op
     u.insert(u.end(), v, v + 6);
   }
 
-  const int nnew = (int)ids.size();
-  const size_t first = p->no_particles;
-  if (first + nnew > p->Nmax) ops_particle_realloc_data(p, (int)(first + nnew));
+  const int new_eddies = (int)ids.size();
+  const size_t current_num_eddies = p->no_particles;
+  if (current_num_eddies + new_eddies > p->Nmax)
+    ops_particle_realloc_data(p, (int)(current_num_eddies + new_eddies));
 
-  Real *xp = (Real *)pos->data;
-  Real *xx = (Real *)x->data;
-  Real *rr = (Real *)r->data;
-  Real *ee = (Real *)eps->data;
-  Real *rn = (Real *)rng->data;
-  int *ef = (int *)exit_flag->data;
+  Real *yz_pos = (Real *)pos->data;
+  Real *x_pos = (Real *)x->data;
+  Real *e_rad = (Real *)r->data;
+  Real *e_eps = (Real *)eps->data;
+  int *e_fl = (int *)exit_flag->data;
   int *ip = (int *)gid->data;
 
-  for (int k = 0; k < nnew; k++) {
-    const size_t i = first + k;
+  for (int k = 0; k < new_eddies; k++) {
+    const size_t i = current_num_eddies + k;
     const double *w = &u[6 * k];
-    xp[2 * i] = eddy_y_min + (eddy_y_max - eddy_y_min) * w[1];
-    xp[2 * i + 1] = eddy_z_min + (eddy_z_max - eddy_z_min) * w[2];
-    xx[i] = x_min;
-    rr[i] = eddy_radius;
-    ee[3 * i] = (w[3] < 0.5) ? -1.0 : 1.0;
-    ee[3 * i + 1] = (w[4] < 0.5) ? -1.0 : 1.0;
-    ee[3 * i + 2] = (w[5] < 0.5) ? -1.0 : 1.0;
-    for (int c = 0; c < 6; c++) rn[6 * i + c] = w[c];
-    ef[i] = 0;
+    yz_pos[2 * i] = eddy_y_min + (eddy_y_max - eddy_y_min) * w[1];
+    yz_pos[2 * i + 1] = eddy_z_min + (eddy_z_max - eddy_z_min) * w[2];
+    x_pos[i] = x_min;
+    e_rad[i] = eddy_radius;
+    e_eps[3 * i] = (w[3] < 0.5) ? -1.0 : 1.0;
+    e_eps[3 * i + 1] = (w[4] < 0.5) ? -1.0 : 1.0;
+    e_eps[3 * i + 2] = (w[5] < 0.5) ? -1.0 : 1.0;
+    e_fl[i] = 0;
     p->mark_deletion[i] = 0;
     ip[i] = ids[k];
   }
-  p->no_particles = first + nnew;
+  p->no_particles = current_num_eddies + new_eddies;
 
   // delete the marked eddies (via mark_deletion[i] which were marked in mark_and_gather_exits)
   // if mark_deletion[particle index] is > 1, then particle will be removed
   ops_particle_remove_particles(p, true);
 
   ops_particle_setup_maps_with_dats(p, dats, ndats);
-  return nnew;
+  return new_eddies;
 }
 
 /* ================================================================== */
@@ -241,9 +260,6 @@ int main(int argc, char **argv) {
   ops_dat eddy_particle_id = ops_decl_particle_dat(eddy_particle, 1, base, ni, "int", "gid");
   ops_dat eddy_particle_exit = ops_decl_particle_dat(eddy_particle, 1, base, ni, "int", "exit");
 
-  // rng field which holds 6 random vars for eddy_particle_xyz & eddy_particle_eps
-  ops_dat eddy_particle_rng = ops_decl_particle_dat(eddy_particle, 6, base, nd, "double", "rnd");
-
   ops_particle_mapping map = ops_decl_mapping(
       eddy_particle, d_grid, S2D_9pt, OPS_WITH_VIRTUAL, OPS_UNIFORM_STAG, 1);
 
@@ -301,28 +317,13 @@ int main(int argc, char **argv) {
                ops_arg_dat(a32, 1, S2D_00, "double", OPS_WRITE),
                ops_arg_dat(a33, 1, S2D_00, "double", OPS_WRITE));
 
+  // seed_eddies sets every field, so the first map build already has correct ghosts
   ops_particle_setup_partition();
-  seed_eddies(eddy_particle, eddy_particle_pos, eddy_particle_id, eddies);
-  for (size_t i = 0; i < eddy_particle->no_particles; i++)
-    ((int *)eddy_particle_exit->data)[i] = 0;
+  seed_eddies(eddy_particle, eddy_particle_pos, eddy_particle_x, eddy_particle_r,
+              eddy_particle_eps, eddy_particle_id, eddy_particle_exit, eddies);
   ops_particle_setup_maps_with_dats(eddy_particle, dat_border, nborder);
 
   Real range_parts[] = {eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max};
-
-  // initialising eddies
-  ops_fill_random_uniform_particle(eddy_particle, eddy_particle_rng, eddy_particle_id, seed_gbl, 1u, rng_method);
-
-  ops_particle_par_loop(
-      KerInitEddy, "KerInitEddy", eddy_particle, 2, OPS_PARTICLE_ITERATE_LOCAL,
-      range_parts, map,
-      ops_arg_dat_particle(eddy_particle_x, 1, "double", eddy_particle, map, OPS_WRITE),
-      ops_arg_dat_particle(eddy_particle_r, 1, "double", eddy_particle, map, OPS_WRITE),
-      ops_arg_dat_particle(eddy_particle_eps, 3, "double", eddy_particle, map, OPS_WRITE),
-      ops_arg_dat_particle(eddy_particle_rng, 6, "double", eddy_particle, map, OPS_READ));
-
-  // ghosts were built before KerInitEddy set x, r and eps: refresh them once
-  ops_particle_reset_virtual_particles(eddy_particle);
-  ops_particle_setup_maps_with_dats(eddy_particle, dat_border, nborder);
 
   std::vector<Real> eddy_all(eddies * NCOMP);
   std::vector<int> exited;
@@ -351,9 +352,9 @@ int main(int argc, char **argv) {
     ops_timers(&c0, &w0);
 
     mark_and_gather_exits(eddy_particle, eddy_particle_exit, eddy_particle_id, exited);
-    if (!exited.empty()) {   // same list on every rank, so every rank rebuilds together
+    if (!exited.empty()) {  
       reinsert_eddies(eddy_particle, eddy_particle_pos, eddy_particle_x, eddy_particle_r,
-                      eddy_particle_eps, eddy_particle_rng, eddy_particle_exit,
+                      eddy_particle_eps, eddy_particle_exit,
                       eddy_particle_id, exited, (unsigned int)it + 1u,
                       dat_border, nborder);
       n_reinserted += (long)exited.size();
