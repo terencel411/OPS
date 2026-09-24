@@ -319,6 +319,7 @@ int main(int argc, char **argv) {
 
   // seed_eddies sets every field, so the first map build already has correct ghosts
   ops_particle_setup_partition();
+  print_decomp(eddy_particle, d_grid);
   seed_eddies(eddy_particle, eddy_particle_pos, eddy_particle_x, eddy_particle_r,
               eddy_particle_eps, eddy_particle_id, eddy_particle_exit, eddies);
   ops_particle_setup_maps_with_dats(eddy_particle, dat_border, nborder);
