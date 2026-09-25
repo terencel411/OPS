@@ -7,8 +7,7 @@
 #include <ops_hdf5.h>
 
 inline void write_osem_step(ops_block &block, ops_dat &d_grid, ops_dat &uprime,
-                            ops_dat &vprime, ops_dat &wprime,
-                            const std::vector<double> &all, int step) {
+                            ops_dat &vprime, ops_dat &wprime, int step) {
 
   char file[160];
   snprintf(file, sizeof(file), "osem_output_%06d.h5", step);
@@ -18,19 +17,6 @@ inline void write_osem_step(ops_block &block, ops_dat &d_grid, ops_dat &uprime,
   ops_fetch_dat_hdf5_file(uprime, file);
   ops_fetch_dat_hdf5_file(vprime, file);
   ops_fetch_dat_hdf5_file(wprime, file);
-
-  const int N = eddies;
-
-  std::vector<double> ex(N), ey(N), ez(N), er(N), sx(N), sy(N), sz(N);
-  for (int i = 0; i < N; i++) {
-    ex[i] = all[NCOMP * i + E_X];
-    ey[i] = all[NCOMP * i + E_Y];
-    ez[i] = all[NCOMP * i + E_Z];
-    er[i] = all[NCOMP * i + E_R];
-    sx[i] = all[NCOMP * i + E_SX];
-    sy[i] = all[NCOMP * i + E_SY];
-    sz[i] = all[NCOMP * i + E_SZ];
-  }
 
   double time = dt * step;
   const double box[4] = {eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max};
@@ -45,13 +31,6 @@ inline void write_osem_step(ops_block &block, ops_dat &d_grid, ops_dat &uprime,
   ops_write_const_hdf5("x_plane", 1, "double", (char *)&x_plane, file);
   ops_write_const_hdf5("box", 4, "double", (char *)box, file);
   ops_write_const_hdf5("use_tbl", 1, "int", (char *)&use_tbl, file);
-  ops_write_const_hdf5("eddy_x", N, "double", (char *)ex.data(), file);
-  ops_write_const_hdf5("eddy_y", N, "double", (char *)ey.data(), file);
-  ops_write_const_hdf5("eddy_z", N, "double", (char *)ez.data(), file);
-  ops_write_const_hdf5("eddy_r", N, "double", (char *)er.data(), file);
-  ops_write_const_hdf5("eddy_sx", N, "double", (char *)sx.data(), file);
-  ops_write_const_hdf5("eddy_sy", N, "double", (char *)sy.data(), file);
-  ops_write_const_hdf5("eddy_sz", N, "double", (char *)sz.data(), file);
 }
 
 // per-rank box bounds, the local d_grid size, and which ranks sit on the boundary

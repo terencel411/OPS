@@ -66,21 +66,10 @@ static void seed_eddies(ops_particle eddy_particle, ops_dat pos, ops_dat x, ops_
   eddy_particle->no_particles = n;
 }
 
-// How the re-inserted eddies are split across the ranks, as a running total:
-// entry r covers ranks 0..r, so a uniform draw picks a rank by finding the
-// first entry it falls below. An equal split in 2D, because x is not part of
-// the position dat and a new eddy can land anywhere in (y,z) -- nothing to test.
-//
-// 3D, when it is written: x IS part of the position dat, so only the ranks
-// whose box straddles x_min can receive a re-inserted eddy.
-//
-//   takes_part = (x_min >= box->getLocalMin().x && x_min < box->getLocalMax().x)
-//   weight     = takes_part ? (this rank's y-z face area) : 0.0
-//
-// Allgather the weights over sb->comm and accumulate them the same way. A rank
-// weighted 0 gets a zero-width slice and can never be dealt an eddy, so
-// reinsert_local needs no change. Weighting by face area rather than equally
-// keeps the eddy density uniform when the boxes differ.
+// create a list of ranks that can have eddies re-inserted into it
+// for 2D, all ranks will be considered the equal when it comes to assigning a new eddy
+// NOTE: for 3D, add new logic that selects the ranks because x will be decomposed as well
+//       need a condition for x values to be within the eddy box
 static void reinsert_rank_splits(ops_particle p, std::vector<double> &rank_split) {
 
   int nranks = 1;
@@ -88,39 +77,32 @@ static void reinsert_rank_splits(ops_particle p, std::vector<double> &rank_split
 #ifdef OPS_MPI
   sub_block_list sb = OPS_sub_block_list[p->block->index];
   if (!sb->owned) { rank_split.clear(); return; }
-  MPI_Comm_size(sb->comm, &nranks);
+  nranks = ops_num_procs();
 #endif
 
   rank_split.assign(nranks, 0.0);
   for (int r = 0; r < nranks; r++) rank_split[r] = (double)(r + 1) / (double)nranks;
 }
 
-// mark this rank's exits and return how many exited across every rank
-static int count_exits(ops_particle p, ops_dat exit_flag) {
-
-  const int *e_fl = (const int *)exit_flag->data;
-  int curr_rank_exits = 0;
-  for (size_t i = 0; i < p->no_particles; i++) {
-    p->mark_deletion[i] = e_fl[i];
-    curr_rank_exits += (e_fl[i] != 0);
-  }
-
-#ifdef OPS_MPI
-  sub_block_list sb = OPS_sub_block_list[p->block->index];
-  if (!sb->owned) return 0;
-  int total = 0;
-  MPI_Allreduce(&curr_rank_exits, &total, 1, MPI_INT, MPI_SUM, sb->comm);
-  return total;
-#else
-  return curr_rank_exits;
-#endif
-}
-
-// deal the np exited eddies over the ranks, then create this rank's split
-// locally: y-z inside its own box, id counted on from the global maximum
+// first mark the eddies to be deleted based on exit_flag
+// then find out if any eddies are assigned to current rank
+// if there are new eddies to be re-inserted, then reallocate particle data
+// then assign the new y/z random values generated from the current rank's box bounds (using the new ids)
+// once re-insertion is complete, delete the marked eddies and recompute the map
 static int reinsert_local(ops_particle p, ops_dat pos, ops_dat x, ops_dat r, ops_dat eps,
-                          ops_dat exit_flag, ops_dat gid, int np, unsigned int step,
+                          ops_dat exit_flag, ops_dat gid, int np, int max_tag, unsigned int step,
                           const std::vector<double> &rank_split, ops_dat *dats, int ndats) {
+
+  // np is the total number of particles to be re-inserted
+  // max_tag is the last particle id present currently
+  // all new particles will be created after max_tag with an offset
+
+  // mark eddies that need to be deleted
+  {
+    const int *e_fl = (const int *)exit_flag->data;
+    for (size_t i = 0; i < p->no_particles; i++)
+      p->mark_deletion[i] = e_fl[i];
+  }
 
   ops_particle_reset_virtual_particles(p);
 
@@ -129,19 +111,13 @@ static int reinsert_local(ops_particle p, ops_dat pos, ops_dat x, ops_dat r, ops
   const Real hi[2] = {box->getLocalMax().x, box->getLocalMax().y};
 
   int *ip = (int *)gid->data;
-  int curr_rank_max_id = -1;
-  for (size_t i = 0; i < p->no_particles; i++)
-    if (ip[i] > curr_rank_max_id) curr_rank_max_id = ip[i];
-
-  int curr_rank = 0, max_tag = curr_rank_max_id;
+  int curr_rank = 0;
 #ifdef OPS_MPI
-  sub_block_list sb = OPS_sub_block_list[p->block->index];
-  MPI_Comm_rank(sb->comm, &curr_rank);
-  MPI_Allreduce(&curr_rank_max_id, &max_tag, 1, MPI_INT, MPI_MAX, sb->comm);
+  curr_rank = ops_get_proc();
 #endif
 
-  // every rank replays the same deal, so the split and the ids agree everywhere
-  // without communication. seed_gbl + 1: seeding uses (seed_gbl, gid, 1) at step 1
+  // using a combination of the seed + iteration + idx of new eddy, randomly choose a rank
+  // since the combination is used on all ranks, the eddies distribution is same on all ranks
   std::vector<int> curr_rank_j;
   double u[1];
   for (int j = 0; j < np; j++) {
@@ -151,6 +127,7 @@ static int reinsert_local(ops_particle p, ops_dat pos, ops_dat x, ops_dat r, ops
     if (owner == curr_rank) curr_rank_j.push_back(j);
   }
 
+  // reallocate if there are new eddies
   const int new_eddies = (int)curr_rank_j.size();
   const size_t current_num_eddies = p->no_particles;
   if (current_num_eddies + new_eddies > p->Nmax)
@@ -163,6 +140,7 @@ static int reinsert_local(ops_particle p, ops_dat pos, ops_dat x, ops_dat r, ops
   int *e_fl = (int *)exit_flag->data;
   ip = (int *)gid->data;
 
+  // assign the eddy data
   double v[6];
   for (int k = 0; k < new_eddies; k++) {
     const size_t i = current_num_eddies + k;
@@ -186,8 +164,7 @@ static int reinsert_local(ops_particle p, ops_dat pos, ops_dat x, ops_dat r, ops
   return new_eddies;
 }
 
-// pack every rank's eddies into one array. ids grow without bound here, so the
-// gid-indexed reduction the other reinsert apps use cannot be applied
+// get a list of eddies which fed into the compute_fluct kernel
 static void gather_eddies(ops_particle p, ops_dat pos, ops_dat x, ops_dat r,
                           ops_dat eps, std::vector<Real> &all) {
 
@@ -212,26 +189,25 @@ static void gather_eddies(ops_particle p, ops_dat pos, ops_dat x, ops_dat r,
 #ifdef OPS_MPI
   sub_block_list sb = OPS_sub_block_list[p->block->index];
   if (!sb->owned) { all.assign(eddies * NCOMP, 0.0); return; }
-  int nranks;
-  MPI_Comm_size(sb->comm, &nranks);
+  const int nranks = ops_num_procs();
   std::vector<int> cnt(nranks, 0), disp(nranks, 0);
   int num_curr_rank_vals = NCOMP * n;
   MPI_Allgather(&num_curr_rank_vals, 1, MPI_INT, cnt.data(), 1, MPI_INT, sb->comm);
   int total = 0;
   for (int rr = 0; rr < nranks; rr++) { disp[rr] = total; total += cnt[rr]; }
   if (total != eddies * NCOMP)
-    throw OPSException(OPS_RUNTIME_ERROR, "eddy count drifted from the initial total");
+    throw OPSException(OPS_RUNTIME_ERROR, "total eddy count changed");
   all.resize(total);
   MPI_Allgatherv(curr_rank_eddies.data(), num_curr_rank_vals, MPI_DOUBLE,
                  all.data(), cnt.data(), disp.data(), MPI_DOUBLE, sb->comm);
 #else
   if (NCOMP * n != eddies * NCOMP)
-    throw OPSException(OPS_RUNTIME_ERROR, "eddy count drifted from the initial total");
+    throw OPSException(OPS_RUNTIME_ERROR, "total eddy count changed");
   all.swap(curr_rank_eddies);
 #endif
 }
 
-// diagnostics: total owned, duplicate ids, and eddies outside their rank's box
+// debug: prints total owned, duplicate ids, and eddies outside the rank's box
 static void check_eddies(ops_particle p, ops_dat pos, ops_dat gid,
                          int *owned, int *dup, int *outside, int *max_id) {
 
@@ -252,8 +228,7 @@ static void check_eddies(ops_particle p, ops_dat pos, ops_dat gid,
 #ifdef OPS_MPI
   sub_block_list sb = OPS_sub_block_list[p->block->index];
   if (!sb->owned) { *owned = *dup = *outside = *max_id = 0; return; }
-  int nranks;
-  MPI_Comm_size(sb->comm, &nranks);
+  const int nranks = ops_num_procs();
   std::vector<int> cnt(nranks, 0), disp(nranks, 0);
   MPI_Allgather(&n, 1, MPI_INT, cnt.data(), 1, MPI_INT, sb->comm);
   int total = 0;
@@ -433,6 +408,8 @@ int main(int argc, char **argv) {
   Real range_parts[] = {eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max};
 
   std::vector<Real> eddy_all(eddies * NCOMP);
+  ops_reduction h_np = ops_decl_reduction_handle(sizeof(int), "int", "np");
+  ops_reduction h_max = ops_decl_reduction_handle(sizeof(int), "int", "max_id");
   std::vector<double> rank_split;
   reinsert_rank_splits(eddy_particle, rank_split);
 
@@ -452,17 +429,28 @@ int main(int argc, char **argv) {
         OPS_PARTICLE_ITERATE_ALL, range_parts, map,
         ops_arg_dat_particle(eddy_particle_x, 1, "double", eddy_particle, map, OPS_RW),
         ops_arg_dat_particle(eddy_particle_exit, 1, "int", eddy_particle, map, OPS_WRITE));
+    
+    ops_particle_par_loop(
+        KerCountExits, "KerCountExits", eddy_particle, 2,
+        OPS_PARTICLE_ITERATE_LOCAL, range_parts, map,
+        ops_arg_dat_particle(eddy_particle_exit, 1, "int", eddy_particle, map, OPS_READ),
+        ops_arg_dat_particle(eddy_particle_id, 1, "int", eddy_particle, map, OPS_READ),
+        ops_arg_reduce(h_np, 1, "int", OPS_INC),
+        ops_arg_reduce(h_max, 1, "int", OPS_MAX));
+    int np = 0, max_tag = -1;
+    ops_reduction_result(h_np, &np);
+    ops_reduction_result(h_max, &max_tag);
 
     ops_timers(&c1, &w1);
     t_convect += w1 - w0;
 
     ops_timers(&c0, &w0);
 
-    const int np = count_exits(eddy_particle, eddy_particle_exit);
-    if (np > 0) {   // same np on every rank, so every rank rebuilds together
+    // check if there are new eddies to be re-inserted
+    if (np > 0) {
       reinsert_local(eddy_particle, eddy_particle_pos, eddy_particle_x, eddy_particle_r,
                      eddy_particle_eps, eddy_particle_exit, eddy_particle_id,
-                     np, (unsigned int)it, rank_split, dat_border, nborder);
+                     np, max_tag, (unsigned int)it, rank_split, dat_border, nborder);
       n_reinserted += (long)np;
       n_rebuilds++;
     }
@@ -501,7 +489,7 @@ int main(int argc, char **argv) {
                  "reinserted %ld rebuilds %d\n",
                  it, owned, dup, outside, max_id, n_reinserted, n_rebuilds);
 
-      write_osem_step(block, d_grid, uprime, vprime, wprime, eddy_all, it);
+      write_osem_step(block, d_grid, uprime, vprime, wprime, it);
       ops_printf("step %5d / %d\n", it, niter);
     }
   }
