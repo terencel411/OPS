@@ -81,7 +81,8 @@ static void find_reinsert_ranks(ops_particle p, std::vector<int> &reinsert_rank_
 #ifdef OPS_MPI
   sub_block_list sb = OPS_sub_block_list[p->block->index];
   if (!sb->owned) return;
-  const int nranks = ops_num_procs();
+  int nranks = 0;
+  MPI_Comm_size(sb->comm, &nranks);
   std::vector<int> flag(nranks, 0);
   MPI_Allgather(&takes_part, 1, MPI_INT, flag.data(), 1, MPI_INT, sb->comm);
   for (int r = 0; r < nranks; r++)
@@ -123,7 +124,8 @@ static int reinsert_local(ops_particle p, ops_dat pos, ops_dat x, ops_dat r, ops
   int *ip = (int *)gid->data;
   int curr_rank = 0;
 #ifdef OPS_MPI
-  curr_rank = ops_get_proc();
+  sub_block_list sb = OPS_sub_block_list[p->block->index];
+  MPI_Comm_rank(sb->comm, &curr_rank);
 #endif
 
   // using a combination of the seed + iteration + idx for new eddy, randomly choose a rank
@@ -193,7 +195,8 @@ static void check_eddies(ops_particle p, ops_dat pos, ops_dat gid,
 #ifdef OPS_MPI
   sub_block_list sb = OPS_sub_block_list[p->block->index];
   if (!sb->owned) { *owned = *dup = *outside = *max_id = 0; return; }
-  const int nranks = ops_num_procs();
+  int nranks = 0;
+  MPI_Comm_size(sb->comm, &nranks);
   std::vector<int> cnt(nranks, 0), disp(nranks, 0);
   MPI_Allgather(&n, 1, MPI_INT, cnt.data(), 1, MPI_INT, sb->comm);
   int total = 0;
