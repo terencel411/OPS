@@ -70,31 +70,38 @@ static void seed_eddies(ops_particle eddy_particle, ops_dat pos, ops_dat x, ops_
 }
 
 // create a list of ranks that can have eddies re-inserted into it
-// for 2D, all ranks will be considered the equal when it comes to assigning a new eddy
-// NOTE: for 3D, add new logic that selects the ranks because x will be decomposed as well
-//       need a condition for x values to be within the eddy box
-static void reinsert_rank_splits(ops_particle p, std::vector<double> &rank_split) {
+// for 2D, all ranks take part
+// note: for 3D, set takes_part from the x bounds because x will be decomposed as wlel
+//       takes_part = localMin <= x_min <= localMax (check across all ranks)
+static void find_reinsert_ranks(ops_particle p, std::vector<int> &reinsert_rank_list) {
 
-  int nranks = 1;
-  (void)p;
+  const int takes_part = 1;
+
+  reinsert_rank_list.clear();
 #ifdef OPS_MPI
   sub_block_list sb = OPS_sub_block_list[p->block->index];
-  if (!sb->owned) { rank_split.clear(); return; }
-  nranks = ops_num_procs();
+  if (!sb->owned) return;
+  const int nranks = ops_num_procs();
+  std::vector<int> flag(nranks, 0);
+  MPI_Allgather(&takes_part, 1, MPI_INT, flag.data(), 1, MPI_INT, sb->comm);
+  for (int r = 0; r < nranks; r++)
+    if (flag[r]) reinsert_rank_list.push_back(r);
+#else
+  if (takes_part) reinsert_rank_list.push_back(0);
 #endif
 
-  rank_split.assign(nranks, 0.0);
-  for (int r = 0; r < nranks; r++) rank_split[r] = (double)(r + 1) / (double)nranks;
+  if (reinsert_rank_list.empty())
+    throw OPSException(OPS_RUNTIME_ERROR, "eddy cannot be re-inserted");
 }
 
 // first mark the eddies to be deleted based on exit_flag
 // then find out if any eddies are assigned to current rank
 // if there are new eddies to be re-inserted, then reallocate particle data
-// then assign the new y/z random values generated from the current rank's box bounds (with the new ids)
+// then assign the new y/z random values generated from the current rank's box bounds (using the new ids)
 // once re-insertion is complete, delete the marked eddies and recompute the map
 static int reinsert_local(ops_particle p, ops_dat pos, ops_dat x, ops_dat r, ops_dat eps,
                           ops_dat exit_flag, ops_dat gid, int np, int max_tag, unsigned int step,
-                          const std::vector<double> &rank_split, ops_dat *dats, int ndats) {
+                          const std::vector<int> &reinsert_rank_list, ops_dat *dats, int ndats) {
 
   // np is the total number of particles to be re-inserted
   // max_tag is the last particle id present currently
@@ -119,15 +126,13 @@ static int reinsert_local(ops_particle p, ops_dat pos, ops_dat x, ops_dat r, ops
   curr_rank = ops_get_proc();
 #endif
 
-  // using a combination of the seed + iteration + idx of new eddy, randomly choose a rank
-  // since the combination is used on all ranks, the eddies distribution is same on all ranks
+  // using a combination of the seed + iteration + idx for new eddy, randomly choose a rank
+  // since the sme combination is used on all ranks, the eddies distribution is same on all ranks
   std::vector<int> curr_rank_j;
-  double u[1];
+  const int nlist = (int)reinsert_rank_list.size();
   for (int j = 0; j < np; j++) {
-    ops_prandom_uniform_gid(seed_gbl + 1u, j, step, rng_method, 1, u);
-    int owner = 0;
-    while (owner + 1 < (int)rank_split.size() && u[0] >= rank_split[owner]) owner++;
-    if (owner == curr_rank) curr_rank_j.push_back(j);
+    const int k = ops_prandom_int_gid(seed_gbl + 1u, j, step, rng_method, nlist - 1);
+    if (reinsert_rank_list[k] == curr_rank) curr_rank_j.push_back(j);
   }
 
   // reallocate if there are new eddies
@@ -391,8 +396,8 @@ int main(int argc, char **argv) {
 
   ops_reduction h_np = ops_decl_reduction_handle(sizeof(int), "int", "np");
   ops_reduction h_max = ops_decl_reduction_handle(sizeof(int), "int", "max_id");
-  std::vector<double> rank_split;
-  reinsert_rank_splits(eddy_particle, rank_split);
+  std::vector<int> reinsert_rank_list;
+  find_reinsert_ranks(eddy_particle, reinsert_rank_list);
 
   // time counters
   double c0, w0, c1, w1;
@@ -431,7 +436,7 @@ int main(int argc, char **argv) {
     if (np > 0) {
       reinsert_local(eddy_particle, eddy_particle_pos, eddy_particle_x, eddy_particle_r,
                      eddy_particle_eps, eddy_particle_exit, eddy_particle_id,
-                     np, max_tag, (unsigned int)it, rank_split, dat_border, nborder);
+                     np, max_tag, (unsigned int)it, reinsert_rank_list, dat_border, nborder);
       n_reinserted += (long)np;
       n_rebuilds++;
     }

@@ -33,4 +33,16 @@ inline void ops_prandom_uniform_gid(unsigned int seed, int gid, unsigned int cou
   for (int c = 0; c < d; c++) out[c] = distribution(gen);
 }
 
+// a random int in [0, n]
+inline int ops_prandom_int_gid(unsigned int seed, int gid, unsigned int counter,
+                               int method, int n) {
+  std::uniform_int_distribution<int> distribution(0, n);
+  if (method == OPS_PRNG_MINSTD) {
+    std::minstd_rand gen = ops_prandom_engine_t<std::minstd_rand>(seed, gid, counter);
+    return distribution(gen);
+  }
+  std::mt19937 gen = ops_prandom_engine_t<std::mt19937>(seed, gid, counter);
+  return distribution(gen);
+}
+
 #endif /* _OPS_PARTICLE_RANDOM_H_ */
