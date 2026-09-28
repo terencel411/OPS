@@ -2275,13 +2275,11 @@ void _ops_particle_find_intra_box(ops_particle particle, ops_int_particle_halos 
     if (iswap < halo->nswap_neg && _particle_is_within(xpos, halo->region_bord_neg, ipart, dim ,
                                                        particle->particle_pos_dat->type_size)) {
       nsend_neg++;
-      continue;
     }
 
     if (iswap < halo->nswap_pos && _particle_is_within(xpos, halo->region_bord_pos, ipart, dim,
                                                        particle->particle_pos_dat->type_size)) {
       nsend_pos++;
-      continue;
     }
   }
 
