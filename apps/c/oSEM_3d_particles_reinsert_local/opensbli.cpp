@@ -20,16 +20,14 @@
 #include "ops_particle_random.h"
 #include "io.h"
 
-// things to check:
-// For some reason ops_arg_reduce() does not accept vars for size of var (in ops_par_loop)
-// variables can be given for ops_arg_reduce for ops_particle_par_loop
-// check ops library for the fix
+// ops_arg_reduce takes a variable size in ops_particle_par_loop but needs a literal in
+// ops_par_loop - check the ops library for a fix
 
 typedef double Real;
 
-// the ownership handle of an eddy: its position clamped into the block's box, so an
-// eddy sitting outside the grid still belongs to the rank it sits against.
-// hbox is {lo[3], hi[3]}, top faces pulled one ulp in because the box is half-open
+// the eddy's position clamped into the block's box, so one sitting outside the grid is
+// still owned by the rank it sits against. hbox is {lo[3], hi[3]}, top faces one ulp in.
+// A no-op while the eddy region is inside the block - read the README before dropping it
 static inline void eddy_handle(const double *e, double *q, const double *hbox) {
   for (int d = 0; d < 3; d++)
     q[d] = e[d] < hbox[d] ? hbox[d] : (e[d] > hbox[3 + d] ? hbox[3 + d] : e[d]);
@@ -81,11 +79,9 @@ static void seed_eddies(ops_particle p, ops_dat pos, ops_dat e_xyz, ops_dat r, o
   p->no_particles = n;
 }
 
-// the piece of the inlet face this rank draws new eddies in, as {y_lo, y_hi, z_lo, z_hi},
-// and its area. The rank's own box is widened out to the eddy region on any face it shares
-// with the block, then clipped to the eddy region, so the rectangles of all ranks tile the
-// inlet face exactly once. Returns 0 for a rank that cannot take an eddy at all.
-static double inlet_rect(ops_particle p, double *rect) {
+// the eddy volume this rank holds, and the {y_lo, y_hi, z_lo, z_hi} box it draws new
+// eddies in: its own box clipped to the eddy region, times the x extent of the slab
+static double rank_eddy_volume(ops_particle p, double *rect) {
 
   rect[0] = rect[1] = rect[2] = rect[3] = 0.0;
 
@@ -96,81 +92,79 @@ static double inlet_rect(ops_particle p, double *rect) {
 
   const ops_point<Real> gmin = box->getGlobalMin();
   const ops_point<Real> gmax = box->getGlobalMax();
-  const double glo[3] = {gmin.x, gmin.y, gmin.z};
-  const double ghi[3] = {gmax.x, gmax.y, gmax.z};
   const double elo[3] = {eddy_x_min, eddy_y_min, eddy_z_min};
   const double ehi[3] = {eddy_x_max, eddy_y_max, eddy_z_max};
 
-  int at_lo[3] = {1, 1, 1}, at_hi[3] = {1, 1, 1};
 #ifdef OPS_MPI
   sub_block_list sb = OPS_sub_block_list[p->block->index];
   if (!sb->owned) return 0.0;
-  for (int d = 0; d < 3; d++) {
-    at_lo[d] = (sb->coords[d] == 0);
-    at_hi[d] = (sb->coords[d] == sb->pdims[d] - 1);
-  }
 #endif
 
-  // a new eddy enters at x = eddy_x_min, so its handle lands on the inlet plane:
-  // only a rank whose box holds that plane can take one
-  const double qx = eddy_x_min < glo[0] ? glo[0] : (eddy_x_min > ghi[0] ? ghi[0] : eddy_x_min);
+  // a new eddy enters at the inlet plane, so only a rank whose box holds it can take one
+  const double qx = eddy_x_min < gmin.x ? gmin.x : (eddy_x_min > gmax.x ? gmax.x : eddy_x_min);
   if (qx < lo[0] || qx >= hi[0]) return 0.0;
 
-  double area = 1.0;
+  double vol = ehi[0] - elo[0];
   for (int d = 1; d < 3; d++) {
-    double a = at_lo[d] ? elo[d] : (double)lo[d];
-    double b = at_hi[d] ? ehi[d] : (double)hi[d];
-    if (a < elo[d]) a = elo[d];
-    if (b > ehi[d]) b = ehi[d];
+    const double a = (double)lo[d] < elo[d] ? elo[d] : (double)lo[d];
+    const double b = (double)hi[d] > ehi[d] ? ehi[d] : (double)hi[d];
     rect[2 * (d - 1)] = a;
     rect[2 * (d - 1) + 1] = b;
-    area *= (b > a) ? (b - a) : 0.0;
+    vol *= (b > a) ? (b - a) : 0.0;
   }
 
-  return area;
+  return vol;
 }
 
-// create a list of ranks that can have eddies re-inserted into it
-// a rank appears once per ticket, and its tickets are its share of the inlet face,
-// so ranks holding more of the inlet take proportionally more of the new eddies
-static void find_reinsert_ranks(ops_particle p, double curr_rank_area,
-                                std::vector<int> &reinsert_rank_list) {
+// the ranks that can have eddies re-inserted into them, and each one's share of the
+// eddy volume. The lists run in parallel: reinsert_rank_frac[i] is the chance of
+// drawing reinsert_rank_list[i], so a rank takes eddies in proportion to the space it holds
+static void find_reinsert_ranks(ops_particle p, double curr_rank_vol,
+                                std::vector<int> &reinsert_rank_list,
+                                std::vector<double> &reinsert_rank_frac) {
 
   reinsert_rank_list.clear();
+  reinsert_rank_frac.clear();
 #ifdef OPS_MPI
   sub_block_list sb = OPS_sub_block_list[p->block->index];
   if (!sb->owned) return;
   int nranks = 0;
   MPI_Comm_size(sb->comm, &nranks);
-  std::vector<double> area(nranks, 0.0);
-  MPI_Allgather(&curr_rank_area, 1, MPI_DOUBLE, area.data(), 1, MPI_DOUBLE, sb->comm);
+  std::vector<double> vol(nranks, 0.0);
+  MPI_Allgather(&curr_rank_vol, 1, MPI_DOUBLE, vol.data(), 1, MPI_DOUBLE, sb->comm);
 #else
   const int nranks = 1;
-  std::vector<double> area(1, curr_rank_area);
+  std::vector<double> vol(1, curr_rank_vol);
 #endif
 
   double total = 0.0;
-  for (int r = 0; r < nranks; r++) total += area[r];
+  for (int r = 0; r < nranks; r++) total += vol[r];
+  if (total <= 0.0)
+    throw OPSException(OPS_RUNTIME_ERROR, "eddy cannot be re-inserted");
 
   for (int r = 0; r < nranks; r++) {
-    if (area[r] <= 0.0) continue;
-    const int tickets = 1 + (int)(reinsert_tickets * area[r] / total);
-    for (int t = 0; t < tickets; t++) reinsert_rank_list.push_back(r);
+    if (vol[r] <= 0.0) continue;
+    reinsert_rank_list.push_back(r);
+    reinsert_rank_frac.push_back(vol[r] / total);
   }
 
-  if (reinsert_rank_list.empty())
-    throw OPSException(OPS_RUNTIME_ERROR, "eddy cannot be re-inserted");
+  ops_printf("\n=== REINSERT RANKS ======================================================\n");
+  ops_printf("eddy volume %.6f shared over %d of %d ranks\n", total,
+             (int)reinsert_rank_list.size(), nranks);
+  for (size_t i = 0; i < reinsert_rank_list.size(); i++)
+    ops_printf("  rank %4d   volume %14.6f   %6.2f%%\n", reinsert_rank_list[i],
+               reinsert_rank_frac[i] * total, reinsert_rank_frac[i] * 100.0);
+  ops_printf("=========================================================================\n");
 }
 
-// first mark the eddies to be deleted based on exit_flag
-// then find out if any eddies are assigned to current rank
-// if there are new eddies to be re-inserted, then reallocate particle data
-// then assign the new y/z random values generated from the current rank's inlet rectangle (using the new ids)
-// once re-insertion is complete, delete the marked eddies and recompute the map
+// mark the exiting eddies, work out which of the np replacements belong to this rank,
+// then create them with (y,z) drawn inside the rank's own box and ids counted from
+// max_tag, delete the marked ones and rebuild the map
 static int reinsert_local(ops_particle p, ops_dat pos, ops_dat e_xyz, ops_dat r, ops_dat eps,
                           ops_dat exit_flag, ops_dat gid, int np, int max_tag, unsigned int step,
-                          const std::vector<int> &reinsert_rank_list, const double *rect,
-                          const double *hbox, ops_dat *dats, int ndats) {
+                          const std::vector<int> &reinsert_rank_list,
+                          const std::vector<double> &reinsert_rank_frac,
+                          const double *rect, const double *hbox, ops_dat *dats, int ndats) {
 
   // np is the total number of particles to be re-inserted
   // max_tag is the last particle id present currently
@@ -192,11 +186,16 @@ static int reinsert_local(ops_particle p, ops_dat pos, ops_dat e_xyz, ops_dat r,
 #endif
 
   // using a combination of the seed + iteration + idx for new eddy, randomly choose a rank
-  // since the same combination is used on all ranks, the eddies distribution is same on all ranks
+  // the draw walks the volume fractions, so a rank takes its share of the new eddies, and
+  // since the same combination is used on all ranks, the distribution is same on all ranks
   std::vector<int> curr_rank_j;
   const int nlist = (int)reinsert_rank_list.size();
-  for (int j = 0; j < np; j++) {
-    const int k = ops_prandom_int_gid(seed_gbl + 1u, j, step, rng_method, nlist - 1);
+  double u;
+  for (int j = 0; nlist > 0 && j < np; j++) {
+    ops_prandom_uniform_gid(seed_gbl + 1u, j, step, rng_method, 1, &u);
+    int k = 0;
+    double acc = reinsert_rank_frac[0];
+    while (k < nlist - 1 && u >= acc) { k++; acc += reinsert_rank_frac[k]; }
     if (reinsert_rank_list[k] == curr_rank) curr_rank_j.push_back(j);
   }
 
@@ -220,7 +219,8 @@ static int reinsert_local(ops_particle p, ops_dat pos, ops_dat e_xyz, ops_dat r,
     const int new_gid = max_tag + 1 + curr_rank_j[k];
     ops_prandom_uniform_gid(seed_gbl, new_gid, 0u, rng_method, 6, v);
 
-    const Real e[3] = {eddy_x_min,
+    // x is nudged by up to one convect step, so new eddies do not all share a plane
+    const Real e[3] = {eddy_x_min + increment * v[0],
                        rect[0] + (rect[1] - rect[0]) * v[1],
                        rect[2] + (rect[3] - rect[2]) * v[2]};
     Real q[3];
@@ -346,7 +346,6 @@ niter = 100;
 write_output_file = 10;
 seed_gbl = 182383739u;
 rng_method = OPS_PRNG_MINSTD;
-reinsert_tickets = 1024;
 
 // grid, iterations and output interval from the command line
 for (int a = 1; a < argc; a++) {
@@ -402,12 +401,12 @@ a22 = (double*)malloc(y_cutoff * sizeof(double));
 a33 = (double*)malloc(y_cutoff * sizeof(double));
 delta = 11.6973525411;
 radius = 0.2 * delta;
-eddy_x_min = -radius;
-eddy_x_max = radius;
-eddy_y_min = 0.0 - radius;
-eddy_y_max = delta + radius;
-eddy_z_min = -radius;
-eddy_z_max = 40.0 + radius;
+eddy_x_min = 0.0;
+eddy_x_max = 2.0 * radius;
+eddy_y_min = 0.0;
+eddy_y_max = Lx1;
+eddy_z_min = 0.0;
+eddy_z_max = Delta2block0 * (block0np2 - 1);
 eddy_vol = std::abs((eddy_x_max - eddy_x_min) * (eddy_y_max - eddy_y_min) * (eddy_z_max - eddy_z_min));
 eddies = trunc(eddy_vol/(radius*radius*radius));
 increment = 1.0 * dt;
@@ -651,6 +650,7 @@ ops_arg_dat(x2_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ));
 
 ops_particle_setup_partition();
 print_domain(eddy_particle);
+print_rank_split(eddy_particle);
 print_decomp(eddy_particle, d_grid);
 
 // handle bounds: the block's box, top faces pulled in by one ulp (the box is half-open)
@@ -669,11 +669,12 @@ seed_eddies(eddy_particle, eddy_particle_pos, eddy_particle_e_xyz, eddy_particle
             eddy_particle_eps_xyz, eddy_particle_id, eddy_particle_exit, eddies, hbox);
 ops_particle_setup_maps_with_dats(eddy_particle, dat_border, nborder);
 
-// this rank's piece of the inlet face, and the deal list built from every rank's share
+// the eddy volume this rank holds, and the deal lists built from every rank's share
 double rect[4];
-const double curr_rank_area = inlet_rect(eddy_particle, rect);
+const double curr_rank_vol = rank_eddy_volume(eddy_particle, rect);
 std::vector<int> reinsert_rank_list;
-find_reinsert_ranks(eddy_particle, curr_rank_area, reinsert_rank_list);
+std::vector<double> reinsert_rank_frac;
+find_reinsert_ranks(eddy_particle, curr_rank_vol, reinsert_rank_list, reinsert_rank_frac);
 
 {
 int owned = 0, dup = 0, outside = 0, max_id = 0;
@@ -776,7 +777,7 @@ if (np > 0) {
   reinsert_local(eddy_particle, eddy_particle_pos, eddy_particle_e_xyz, eddy_particle_r,
                  eddy_particle_eps_xyz, eddy_particle_exit, eddy_particle_id,
                  np, max_tag, (unsigned int)(iter - start_iter) + 1u,
-                 reinsert_rank_list, rect, hbox, dat_border, nborder);
+                 reinsert_rank_list, reinsert_rank_frac, rect, hbox, dat_border, nborder);
   n_reinserted += (long)np;
   n_rebuilds++;
 }

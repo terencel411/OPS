@@ -66,8 +66,6 @@ double increment;
 
 unsigned int seed_gbl;
 int rng_method;
-// tickets shared out over the ranks that can take a re-inserted eddy
-int reinsert_tickets;
 
 double* eddy_all;
 

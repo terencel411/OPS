@@ -165,6 +165,63 @@ inline void print_domain(ops_particle p) {
   ops_printf("=========================================================================\n");
 }
 
+// how much physical space each rank slice holds on each axis. The cartesian
+// decomposition splits each axis independently, so this is per axis, not per rank.
+inline void print_rank_split(ops_particle p) {
+
+  BoundingBox<double> *box = (BoundingBox<double> *)p->box_block;
+  double lo[OPS_MAX_DIM], hi[OPS_MAX_DIM];
+  for (int d = 0; d < OPS_MAX_DIM; d++) { lo[d] = 1.0e30; hi[d] = -1.0e30; }
+  box->getLocalMaxMin(lo, hi);
+
+  const ops_point<double> gmin = box->getGlobalMin();
+  const ops_point<double> gmax = box->getGlobalMax();
+  const double glo[3] = {gmin.x, gmin.y, gmin.z};
+  const double ghi[3] = {gmax.x, gmax.y, gmax.z};
+  const char ax[3] = {'x', 'y', 'z'};
+
+#ifdef OPS_MPI
+  sub_block_list sb = OPS_sub_block_list[p->block->index];
+  if (!sb->owned) return;
+  int nr = 0, curr_r = 0;
+  MPI_Comm_size(sb->comm, &nr);
+  MPI_Comm_rank(sb->comm, &curr_r);
+
+  int curr_rank_coords[3] = {sb->coords[0], sb->coords[1], sb->coords[2]};
+  double curr_rank_box[6] = {lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]};
+  std::vector<int> coords(3 * nr, 0);
+  std::vector<double> bounds(6 * nr, 0.0);
+  MPI_Allgather(curr_rank_coords, 3, MPI_INT, coords.data(), 3, MPI_INT, sb->comm);
+  MPI_Allgather(curr_rank_box, 6, MPI_DOUBLE, bounds.data(), 6, MPI_DOUBLE, sb->comm);
+  if (curr_r != 0) return;
+
+  printf("\n=== RANK SPLIT (cart %d x %d x %d) ======================================\n",
+         sb->pdims[0], sb->pdims[1], sb->pdims[2]);
+  for (int d = 0; d < 3; d++) {
+    const int nslice = sb->pdims[d];
+    printf("%2d %c-rank%s: %c", nslice, ax[d], nslice == 1 ? " " : "s", ax[d]);
+    for (int c = 0; c < nslice; c++) {
+      for (int r = 0; r < nr; r++) {
+        if (coords[3 * r + d] != c) continue;
+        const double a = bounds[6 * r + d], b = bounds[6 * r + 3 + d];
+        if (c > 0 && c % 3 == 0) printf("\n%13s", "");
+        printf("  [%10.4f,%10.4f%c %5.1f%%", a, b, c == nslice - 1 ? ']' : ')',
+               100.0 * (b - a) / (ghi[d] - glo[d]));
+        break;
+      }
+    }
+    printf("\n");
+  }
+  printf("=========================================================================\n");
+#else
+  printf("\n=== RANK SPLIT (serial) =================================================\n");
+  for (int d = 0; d < 3; d++)
+    printf("%2d %c-rank : %c  [%10.4f,%10.4f] %5.1f%%\n", 1, ax[d], ax[d],
+           lo[d], hi[d], 100.0 * (hi[d] - lo[d]) / (ghi[d] - glo[d]));
+  printf("=========================================================================\n");
+#endif
+}
+
 // per-rank box bounds, the local d_grid size, and which ranks sit on the boundary
 inline void print_decomp(ops_particle p, ops_dat grid) {
 
