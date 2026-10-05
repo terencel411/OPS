@@ -84,7 +84,7 @@ void uinterp_kernel(ACC<double>& d_uinterp, const ACC<double>& x1_B0, double* re
    double x1d = 0.0;
    x0_B0(0,0,0) = Delta0block0*idx[0];
 
-   x1_B0(0,0,0) = Lx1*sinh(by*invLx1*Delta1block0*idx[1])/sinh(by);
+   x1_B0(0,0,0) = Delta1block0*idx[1];
 
    x2_B0(0,0,0) = Delta2block0*idx[2];
 
