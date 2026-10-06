@@ -655,6 +655,7 @@ ops_particle_setup_maps_with_dats(eddy_particle, dat_border, nborder);
 // this rank's piece of the inlet face, and the list of ranks that can take an eddy
 double rect[4];
 const int takes_part = inlet_rect(eddy_particle, rect);
+print_inlet_rect(eddy_particle, rect, takes_part);
 std::vector<int> reinsert_rank_list;
 find_reinsert_ranks(eddy_particle, takes_part, reinsert_rank_list);
 

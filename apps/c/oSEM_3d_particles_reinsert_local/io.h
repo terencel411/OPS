@@ -242,28 +242,121 @@ inline void print_decomp(ops_particle p, ops_dat grid) {
     printf("\n=== DECOMP: %d ranks on %s, cart %d x %d x %d ===\n",
            nr, p->block->name, sb->pdims[0], sb->pdims[1], sb->pdims[2]);
     printf("rank  coord   |          x box (owned)          |          y box (owned)          "
-           "|          z box (owned)          | block owned      dat owned       disp\n");
+           "|          z box (owned)          | block owned       dat owned          alloc        "
+           " halo x   halo y   halo z     disp       | id_m(x,y,z)       id_p(x,y,z)\n");
     fflush(NULL);
   }
 
   for (int r = 0; r < nr; r++) {
     if (r == curr_r) {
       printf("%4d (%d,%d,%d) | [%+.6e,%+.6e) | [%+.6e,%+.6e) | [%+.6e,%+.6e) |"
-             " %4d x%4d x%4d  %4d x%4d x%4d  (%d,%d,%d)\n",
+             " %4d x%4d x%4d  %4d x%4d x%4d  %4d x%4d x%4d  %+d/%+d  %+d/%+d  %+d/%+d"
+             "  (%d,%d,%d) | (%s,%s,%s) (%s,%s,%s)\n",
              curr_r, sb->coords[0], sb->coords[1], sb->coords[2],
              lo[0], hi[0], lo[1], hi[1], lo[2], hi[2],
              sb->decomp_size[0], sb->decomp_size[1], sb->decomp_size[2],
              sd->decomp_size[0], sd->decomp_size[1], sd->decomp_size[2],
-             sd->decomp_disp[0], sd->decomp_disp[1], sd->decomp_disp[2]);
+             grid->size[0], grid->size[1], grid->size[2],
+             grid->d_m[0], grid->d_p[0], grid->d_m[1], grid->d_p[1],
+             grid->d_m[2], grid->d_p[2],
+             sd->decomp_disp[0], sd->decomp_disp[1], sd->decomp_disp[2],
+             sb->id_m[0] == MPI_PROC_NULL ? "NULL" : "rank",
+             sb->id_m[1] == MPI_PROC_NULL ? "NULL" : "rank",
+             sb->id_m[2] == MPI_PROC_NULL ? "NULL" : "rank",
+             sb->id_p[0] == MPI_PROC_NULL ? "NULL" : "rank",
+             sb->id_p[1] == MPI_PROC_NULL ? "NULL" : "rank",
+             sb->id_p[2] == MPI_PROC_NULL ? "NULL" : "rank");
       fflush(NULL);
     }
     MPI_Barrier(sb->comm);
   }
+
+  int mine[6] = {sb->id_m[0] == MPI_PROC_NULL, sb->id_m[1] == MPI_PROC_NULL,
+                 sb->id_m[2] == MPI_PROC_NULL, sb->id_p[0] == MPI_PROC_NULL,
+                 sb->id_p[1] == MPI_PROC_NULL, sb->id_p[2] == MPI_PROC_NULL};
+  std::vector<int> all(6 * nr, 0);
+  MPI_Gather(mine, 6, MPI_INT, all.data(), 6, MPI_INT, 0, sb->comm);
+
+  if (curr_r == 0) {
+    const char *what[6] = {"id_m[0]", "id_m[1]", "id_m[2]",
+                           "id_p[0]", "id_p[1]", "id_p[2]"};
+    for (int k = 0; k < 6; k++) {
+      printf("edge ranks, %-17s MPI_PROC_NULL:", what[k]);
+      for (int r = 0; r < nr; r++)
+        if (all[6 * r + k]) printf(" %d", r);
+      printf("\n");
+    }
+    fflush(NULL);
+  }
 #else
-  (void)grid;
   printf("\n=== DECOMP: serial ===\n");
   printf("box x [%+.6e,%+.6e)  y [%+.6e,%+.6e)  z [%+.6e,%+.6e)\n",
          lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+  printf("d_grid alloc %d x %d x %d, halo x %+d/%+d, y %+d/%+d, z %+d/%+d\n",
+         grid->size[0], grid->size[1], grid->size[2],
+         grid->d_m[0], grid->d_p[0], grid->d_m[1], grid->d_p[1],
+         grid->d_m[2], grid->d_p[2]);
+  fflush(NULL);
+#endif
+}
+
+// rect is the current rank's owned box clipped to the eddy region
+// so the two match while the region covers the whole block
+inline void print_inlet_rect(ops_particle p, const double *rect, int takes_part) {
+
+  double lo[OPS_MAX_DIM], hi[OPS_MAX_DIM];
+  for (int d = 0; d < OPS_MAX_DIM; d++) { lo[d] = 1.0e30; hi[d] = -1.0e30; }
+  ((BoundingBox<double> *)p->box_block)->getLocalMaxMin(lo, hi);
+
+  const int cy = takes_part && (rect[0] != lo[1] || rect[1] != hi[1]);
+  const int cz = takes_part && (rect[2] != lo[2] || rect[3] != hi[2]);
+  const char *clip = !takes_part ? "-" : (cy && cz ? "y,z" : (cy ? "y" : (cz ? "z" : "none")));
+
+#ifdef OPS_MPI
+  sub_block_list sb = OPS_sub_block_list[p->block->index];
+  if (!sb->owned) return;
+
+  int nr, curr_r;
+  MPI_Comm_size(sb->comm, &nr);
+  MPI_Comm_rank(sb->comm, &curr_r);
+
+  if (curr_r == 0) {
+    printf("\n=== INLET RECT: the window each rank draws new eddies in ===\n");
+    printf("eddy region  x [%+.6e,%+.6e]  y [%+.6e,%+.6e]  z [%+.6e,%+.6e]\n",
+           eddy_x_min, eddy_x_max, eddy_y_min, eddy_y_max, eddy_z_min, eddy_z_max);
+    printf("a rank takes part only if its x box holds the inlet plane x = %+.6e\n", eddy_x_min);
+    printf("rank  coord   take |          x box (owned)          |          y box (owned)          "
+           "|          y rect (draw)          |          z box (owned)          "
+           "|          z rect (draw)          | clipped\n");
+    fflush(NULL);
+  }
+
+  for (int r = 0; r < nr; r++) {
+    if (r == curr_r) {
+      printf("%4d (%d,%d,%d)  %3s | [%+.6e,%+.6e) | [%+.6e,%+.6e) | ",
+             curr_r, sb->coords[0], sb->coords[1], sb->coords[2],
+             takes_part ? "yes" : "no", lo[0], hi[0], lo[1], hi[1]);
+      if (takes_part) printf("[%+.6e,%+.6e) | ", rect[0], rect[1]);
+      else            printf("%29s | ", "--");
+      printf("[%+.6e,%+.6e) | ", lo[2], hi[2]);
+      if (takes_part) printf("[%+.6e,%+.6e) | ", rect[2], rect[3]);
+      else            printf("%29s | ", "--");
+      printf("%s\n", clip);
+      fflush(NULL);
+    }
+    MPI_Barrier(sb->comm);
+  }
+  if (curr_r == 0) { printf("=========================================================================\n"); fflush(NULL); }
+#else
+  printf("\n=== INLET RECT: serial ===\n");
+  printf("box   x [%+.6e,%+.6e)  y [%+.6e,%+.6e)  z [%+.6e,%+.6e)\n",
+         lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+  if (takes_part)
+    printf("rect                                    y [%+.6e,%+.6e)  z [%+.6e,%+.6e)   clipped %s\n",
+           rect[0], rect[1], rect[2], rect[3], clip);
+  else
+    printf("rect  none -- this rank does not hold the inlet plane\n");
+  printf("=========================================================================\n");
   fflush(NULL);
 #endif
 }
