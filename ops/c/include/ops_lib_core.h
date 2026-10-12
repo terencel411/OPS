@@ -1304,6 +1304,20 @@ OPS_FTN_INTEROP
 void ops_dat_fetch_data(ops_dat dat, int part, char *data);
 
 /**
+ * This routine gathers the whole dataset onto every MPI process: the
+ * interior of the dat, in the layout a single-process ops_dat_fetch_data()
+ * returns. `data` must hold the product of the global sizes times the
+ * element size.
+ * Collective over all processes.
+
+ * @param dat   the dataset
+ * @param part  the chunk index (has to be 0)
+ * @param data  pointer to CPU memory which should be filled by OPS
+ */
+OPS_FTN_INTEROP
+void ops_dat_global_fetch_data(ops_dat dat, int part, char *data);
+
+/**
  * This routine copies the data held by OPS to the user-specified
  * memory location, which needs to be at least as large as indicated
  * by the `sizes` parameter of ops_dat_get_extents().

@@ -744,6 +744,10 @@ void ops_dat_fetch_data(ops_dat dat, int part, char *data) {
   ops_dat_fetch_data_memspace(dat, part, data, OPS_HOST);
 }
 
+void ops_dat_global_fetch_data(ops_dat dat, int part, char *data) {
+  ops_dat_fetch_data(dat, part, data);
+}
+
 void ops_dat_fetch_data_host(ops_dat dat, int part, char *data) {
   ops_execute(dat->block->instance);
   ops_check_lowdim_update(dat);

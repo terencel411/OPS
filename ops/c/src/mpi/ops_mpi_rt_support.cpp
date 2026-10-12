@@ -2146,6 +2146,86 @@ void ops_dat_fetch_data(ops_dat dat, int part, char *data) {
              lsize[0]);
 }
 
+// Every rank receives the whole dat
+struct ops_global_fetch_layout {
+  int owned, send_bytes;
+  std::vector<int> box;                 // disp[3], size[3] per rank
+  std::vector<int> counts, displs;      // bytes per rank in the Allgatherv
+  std::vector<char> sendbuf, recvbuf;
+  int gsize[3];
+};
+
+void ops_dat_global_fetch_data(ops_dat dat, int part, char *data) {
+  if (dat->block->dims > 3) throw OPSException(OPS_NOT_IMPLEMENTED, "Error, missing OPS implementation: ops_dat_global_fetch_data not implemented for dims>3");
+  if (OPS_instance::getOPSInstance()->OPS_soa && dat->dim > 1) throw OPSException(OPS_NOT_IMPLEMENTED, "Error, missing OPS implementation: ops_dat_global_fetch_data not implemented for SoA");
+
+  // the decomposition is fixed after ops_partition, so the layout is built once per dat
+  static std::vector<ops_global_fetch_layout *> layouts;
+  if ((int)layouts.size() <= dat->index) layouts.resize(dat->index + 1, NULL);
+  if (layouts[dat->index] == NULL) {
+    ops_global_fetch_layout *L = new ops_global_fetch_layout;
+    sub_dat_list sd = OPS_sub_dat_list[dat->index];
+    sub_block_list sb = OPS_sub_block_list[dat->block->index];
+    int nranks;
+    MPI_Comm_size(OPS_MPI_GLOBAL, &nranks);
+
+    int nrank;
+    MPI_Comm_rank(OPS_MPI_GLOBAL, &nrank);
+
+    // 0-2 hold the rank's starting point in x, y, z
+    // 3-5 hold the number of points it has in x, y, z
+    int rank_extents[6] = {0, 0, 0, 0, 0, 0}, local_bytes = 0;
+    L->owned = sb->owned;
+    int send = sb->owned;
+    if (sb->owned) {
+      ops_dat_get_extents(dat, part, rank_extents, rank_extents + 3);
+      for (int d = dat->block->dims; d < 3; d++) { rank_extents[d] = 0; rank_extents[3 + d] = 1; }
+      local_bytes = rank_extents[3] * rank_extents[4] * rank_extents[5] * dat->elem_size;
+      for (int d = 0; d < dat->block->dims; d++)
+        if (dat->e_dat && sd->gbl_size[d] == 1 && sb->coords[d] != 0) send = 0;
+    }
+    if (!send) for (int d = 0; d < 6; d++) rank_extents[d] = 0;
+    L->box.resize(6 * nranks);
+    MPI_Allgather(rank_extents, 6, MPI_INT, L->box.data(), 6, MPI_INT, OPS_MPI_GLOBAL);
+
+    L->counts.resize(nranks);
+    L->displs.resize(nranks);
+    int total = 0;
+    for (int d = 0; d < 3; d++) L->gsize[d] = 0;
+    for (int r = 0; r < nranks; r++) {
+      const int *b = &L->box[6 * r];
+      L->counts[r] = b[3] * b[4] * b[5] * dat->elem_size;
+      L->displs[r] = total;
+      total += L->counts[r];
+      for (int d = 0; d < 3; d++)
+        if (b[3 + d] > 0) L->gsize[d] = std::max(L->gsize[d], b[d] + b[3 + d]);
+    }
+    L->send_bytes = L->counts[nrank];
+    L->sendbuf.resize(std::max(local_bytes, 1));
+    L->recvbuf.resize(std::max(total, 1));
+    layouts[dat->index] = L;
+  }
+  ops_global_fetch_layout *L = layouts[dat->index];
+
+  // every owning rank fetches: the lowdim update inside it is collective over the pencil
+  if (L->owned) ops_dat_fetch_data(dat, part, L->sendbuf.data());
+  MPI_Allgatherv(L->sendbuf.data(), L->send_bytes, MPI_BYTE, L->recvbuf.data(),
+                 L->counts.data(), L->displs.data(), MPI_BYTE, OPS_MPI_GLOBAL);
+
+  // place each rank's box into the global row-major array
+  const size_t es = dat->elem_size;
+  for (size_t r = 0; r < L->counts.size(); r++) {
+    if (L->counts[r] == 0) continue;
+    const int *b = &L->box[6 * r];
+    const char *src = L->recvbuf.data() + L->displs[r];
+    for (int k = 0; k < b[5]; k++)
+      for (int j = 0; j < b[4]; j++) {
+        size_t dst = ((size_t)(b[2] + k) * L->gsize[1] + (b[1] + j)) * L->gsize[0] + b[0];
+        memcpy(data + dst * es, src + ((size_t)k * b[4] + j) * b[3] * es, b[3] * es);
+      }
+  }
+}
+
 void ops_dat_set_data_host(ops_dat dat, int part, char *data) {
   throw OPSException(OPS_NOT_IMPLEMENTED, "Error: Not implemented");
 }
