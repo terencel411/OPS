@@ -2146,9 +2146,9 @@ void ops_dat_fetch_data(ops_dat dat, int part, char *data) {
              lsize[0]);
 }
 
-// Every rank receives the whole dat
+// Every rank of the dat's block receives the whole dat
 struct ops_global_fetch_layout {
-  int owned, send_bytes;
+  int send_bytes;
   std::vector<int> box;                 // disp[3], size[3] per rank
   std::vector<int> counts, displs;      // bytes per rank in the Allgatherv
   std::vector<char> sendbuf, recvbuf;
@@ -2159,34 +2159,32 @@ void ops_dat_global_fetch_data(ops_dat dat, int part, char *data) {
   if (dat->block->dims > 3) throw OPSException(OPS_NOT_IMPLEMENTED, "Error, missing OPS implementation: ops_dat_global_fetch_data not implemented for dims>3");
   if (OPS_instance::getOPSInstance()->OPS_soa && dat->dim > 1) throw OPSException(OPS_NOT_IMPLEMENTED, "Error, missing OPS implementation: ops_dat_global_fetch_data not implemented for SoA");
 
+  // collective over the dat's block; ranks not on the block take no part and get nothing
+  sub_block_list sb = OPS_sub_block_list[dat->block->index];
+  if (!sb->owned) return;
+
   // the decomposition is fixed after ops_partition, so the layout is built once per dat
   static std::vector<ops_global_fetch_layout *> layouts;
   if ((int)layouts.size() <= dat->index) layouts.resize(dat->index + 1, NULL);
   if (layouts[dat->index] == NULL) {
     ops_global_fetch_layout *L = new ops_global_fetch_layout;
     sub_dat_list sd = OPS_sub_dat_list[dat->index];
-    sub_block_list sb = OPS_sub_block_list[dat->block->index];
-    int nranks;
-    MPI_Comm_size(OPS_MPI_GLOBAL, &nranks);
-
-    int nrank;
-    MPI_Comm_rank(OPS_MPI_GLOBAL, &nrank);
+    int nranks, nrank;
+    MPI_Comm_size(sb->comm, &nranks);
+    MPI_Comm_rank(sb->comm, &nrank);
 
     // 0-2 hold the rank's starting point in x, y, z
     // 3-5 hold the number of points it has in x, y, z
-    int rank_extents[6] = {0, 0, 0, 0, 0, 0}, local_bytes = 0;
-    L->owned = sb->owned;
-    int send = sb->owned;
-    if (sb->owned) {
-      ops_dat_get_extents(dat, part, rank_extents, rank_extents + 3);
-      for (int d = dat->block->dims; d < 3; d++) { rank_extents[d] = 0; rank_extents[3 + d] = 1; }
-      local_bytes = rank_extents[3] * rank_extents[4] * rank_extents[5] * dat->elem_size;
-      for (int d = 0; d < dat->block->dims; d++)
-        if (dat->e_dat && sd->gbl_size[d] == 1 && sb->coords[d] != 0) send = 0;
-    }
+    int rank_extents[6] = {0, 0, 0, 0, 0, 0};
+    int send = 1;
+    ops_dat_get_extents(dat, part, rank_extents, rank_extents + 3);
+    for (int d = dat->block->dims; d < 3; d++) { rank_extents[d] = 0; rank_extents[3 + d] = 1; }
+    int local_bytes = rank_extents[3] * rank_extents[4] * rank_extents[5] * dat->elem_size;
+    for (int d = 0; d < dat->block->dims; d++)
+      if (dat->e_dat && sd->gbl_size[d] == 1 && sb->coords[d] != 0) send = 0;
     if (!send) for (int d = 0; d < 6; d++) rank_extents[d] = 0;
     L->box.resize(6 * nranks);
-    MPI_Allgather(rank_extents, 6, MPI_INT, L->box.data(), 6, MPI_INT, OPS_MPI_GLOBAL);
+    MPI_Allgather(rank_extents, 6, MPI_INT, L->box.data(), 6, MPI_INT, sb->comm);
 
     L->counts.resize(nranks);
     L->displs.resize(nranks);
@@ -2207,10 +2205,10 @@ void ops_dat_global_fetch_data(ops_dat dat, int part, char *data) {
   }
   ops_global_fetch_layout *L = layouts[dat->index];
 
-  // every owning rank fetches: the lowdim update inside it is collective over the pencil
-  if (L->owned) ops_dat_fetch_data(dat, part, L->sendbuf.data());
+  // every rank fetches data, even if it sends nothing
+  ops_dat_fetch_data(dat, part, L->sendbuf.data());
   MPI_Allgatherv(L->sendbuf.data(), L->send_bytes, MPI_BYTE, L->recvbuf.data(),
-                 L->counts.data(), L->displs.data(), MPI_BYTE, OPS_MPI_GLOBAL);
+                 L->counts.data(), L->displs.data(), MPI_BYTE, sb->comm);
 
   // place each rank's box into the global row-major array
   const size_t es = dat->elem_size;

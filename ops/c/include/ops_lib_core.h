@@ -1304,11 +1304,11 @@ OPS_FTN_INTEROP
 void ops_dat_fetch_data(ops_dat dat, int part, char *data);
 
 /**
- * This routine gathers the whole dataset onto every MPI process: the
- * interior of the dat, in the layout a single-process ops_dat_fetch_data()
- * returns. `data` must hold the product of the global sizes times the
- * element size.
- * Collective over all processes.
+ * This routine gathers the whole dataset onto every MPI process that owns
+ * the dat's block: the interior of the dat, in the layout a single-process
+ * ops_dat_fetch_data() returns. `data` must hold the product of the global
+ * sizes times the element size. Collective over the block's processes;
+ * on processes not owning the block it returns without touching `data`.
 
  * @param dat   the dataset
  * @param part  the chunk index (has to be 0)
