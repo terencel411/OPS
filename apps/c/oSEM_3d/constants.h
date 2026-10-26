@@ -74,5 +74,4 @@ int a;
 int c;
 int m;
 int seed_gbl;
-int use_gather;
 int write_convection_data_to_text;

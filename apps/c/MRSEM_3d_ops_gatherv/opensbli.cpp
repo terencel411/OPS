@@ -1,21 +1,14 @@
 #include <stdlib.h> 
 #include <string.h> 
 #include <math.h> 
-#include <vector>
 #include "constants.h"
 #include "Pir_data.h"
 #include "TBL_data.h"
-
 #define OPS_3D
 #define OPS_API 2
 #include "ops_seq.h"
 #include "opensbliblock00_kernels.h"
 #include "io.h"
-#ifdef OPS_MPI
-#include <mpi.h>
-#endif
-
-
 int main(int argc, char **argv) 
 {
 // Initializing OPS 
@@ -28,27 +21,38 @@ block0np0 = 750;
 block0np1 = 250;
 block0np2 = 150;
 niter = 55000;
-niter = 100;
+start_averaging = 25000;
 double rkB[] = {(1.0/3.0), (15.0/16.0), (8.0/15.0)};
 double rkA[] = {0, (-5.0/9.0), (-153.0/128.0)};
 dt = 0.025;
 write_output_file = 5000;
-write_output_file = 10;
-seed_gbl = 182383739;
-write_convection_data_to_text = 1; // 0 disables writing debug eddy data to text
 
+// grid, iterations and output interval from the command line; the physical domain is
+// fixed at 375 x 100 x 40, so -ngrid changes the resolution, not the box
+for (int a = 1; a < argc; a++) {
+  if (!strcmp(argv[a], "-ngrid") && a + 3 < argc) {
+    block0np0 = atoi(argv[a + 1]); block0np1 = atoi(argv[a + 2]); block0np2 = atoi(argv[a + 3]);
+  }
+  if (!strcmp(argv[a], "-niter") && a + 1 < argc) niter = atoi(argv[a + 1]);
+  if (!strcmp(argv[a], "-nout") && a + 1 < argc) write_output_file = atoi(argv[a + 1]);
+}
+// the default 25000 is fixed, not a fraction of niter, so a short run would leave
+// start_averaging past the end and invniter negative
+if (start_averaging >= niter) start_averaging = niter / 2;
+
+// derived from the grid, so these must follow the parser
 Delta0block0 = 375.0/(block0np0-1);
 Delta1block0 = 100.0/(block0np1-1);
 Delta2block0 = 40.0/(block0np2);
 HDF5_timing = 0;
-Pr = 0.72;
-Minf = 2.0;
-r = pow(Pr, 0.33333333);
-Re = 873.4;
 gama = 1.4;
-SuthT = 110.4;
+Re = 873.4;
+Minf = 2.0;
+Pr = 0.72;
+r = pow(Pr, 0.3333333);
+Twall = 1.0 + 0.5 * r * (gama-1) * Minf*Minf;
 RefT = 202.17;
-Twall = 1 + 0.5 * r * (gama-1) * Minf*Minf;
+SuthT = 110.4;
 by = 4.0;
 inv2Delta0block0 = 1.0/(Delta0block0*Delta0block0);
 inv2Delta1block0 = 1.0/(Delta1block0*Delta1block0);
@@ -62,47 +66,76 @@ invPr = 1.0/(Pr);
 invRe = 1.0/(Re);
 invRefT = 1.0/(RefT);
 inv_gamma_m1 = 1.0/((-1 + gama));
-// start_averaging = 25000;
-start_averaging = 0.5 * niter;
 invniter = 1.0/(niter - start_averaging);
 
+// velocity profile
 ny = (int)trunc(block0np1 * 0.6);
 uinterp = (double*)malloc(ny * sizeof(double));
 
-y_cutoff = (block0np1 < 150) ? block0np1 : 150;
 
 //------------------- eddy variables---------------------------
-
+y_cutoff = 150;
 ndata = 121;
+regnum = 0;
 a11 = (double*)malloc(y_cutoff * sizeof(double));
 a21 = (double*)malloc(y_cutoff * sizeof(double));
 a22 = (double*)malloc(y_cutoff * sizeof(double));
 a33 = (double*)malloc(y_cutoff * sizeof(double));
 delta = 11.6973525411;
-radius = 0.2 * delta;
-eddy_x_min = -radius;
-eddy_x_max = radius;
-eddy_y_min = 0.0 - radius;
-eddy_y_max = delta + radius;
-eddy_z_min = -radius;
-eddy_z_max = 40.0 + radius;
-eddy_vol = std::abs((eddy_x_max - eddy_x_min) * (eddy_y_max - eddy_y_min) * (eddy_z_max - eddy_z_min));
-eddies = trunc(eddy_vol/(radius*radius*radius));
-// eddies = 380;
-eddiesm2 = 2 * eddies;
-eddy_x_gbl = (double*)malloc(eddiesm2 * sizeof(double));
-eddy_y_gbl = (double*)malloc(eddiesm2 * sizeof(double));
-eddy_z_gbl = (double*)malloc(eddiesm2 * sizeof(double));
-eddy_r_gbl = (double*)malloc(eddiesm2 * sizeof(double));
-eddy_increment_gbl = (double*)malloc(eddiesm2 * sizeof(double));
-eddy_eps_x_gbl = (int*)malloc(eddiesm2 * sizeof(int));
-eddy_eps_y_gbl = (int*)malloc(eddiesm2 * sizeof(int));
-eddy_eps_z_gbl = (int*)malloc(eddiesm2 * sizeof(int));
+nregions = 3;
+radii = (double*)malloc(sizeof(double) * 3 * nregions);
+double lplus = 0.05711318346685964;
+radii[0] = 100.0 * lplus;
+radii[1] = 20.0 * lplus;
+radii[2] = 60.0 * lplus;
+radii[3] = 60.0 * lplus;
+radii[4] = 30.0 * lplus;
+radii[5] = 30.0 * lplus;
+radii[6] = 0.20 * delta;
+radii[7] = 0.20 * delta;
+radii[8] = 0.20 * delta;
+eddy_vels = (double*)malloc(sizeof(double) * nregions);
+eddy_vels[0] = 0.62;//1.0;//0.62;
+eddy_vels[1] = 0.62;//1.0;//0.62;
+eddy_vels[2] = 0.80;//1.0;//0.80;
+eddy_y_min = (double*)malloc(sizeof(double) * nregions);
+eddy_y_max = (double*)malloc(sizeof(double) * nregions);
+eddy_y_min[0] = 5.0 * lplus;
+eddy_y_max[0] = 60.0 * lplus;
+eddy_y_min[1] = 60.0 * lplus;
+eddy_y_max[1] = 0.6 * delta;
+eddy_y_min[2] = 0.6 * delta;
+eddy_y_max[2] = 1.0 * delta + radii[7];
+eddy_z_min = (double*)malloc(sizeof(double) * nregions);
+eddy_z_max = (double*)malloc(sizeof(double) * nregions);
+for(int i{0}; i < nregions; i++){
+  eddy_z_min[i] = 0.0 - radii[3*i+2];
+  eddy_z_max[i] = 40.0 + radii[3*i+2];
+}
+eddy_vols = (double*)malloc(sizeof(double) * nregions);
+eddies = (int*)malloc(sizeof(int) * nregions);
+eddiesm3 = (int*)malloc(sizeof(int) * nregions);
+for (int i{0}; i < nregions; i++){
+  eddy_vols[i] = std::abs(2 * radii[3*i] * (eddy_y_max[i] - eddy_y_min[i]) * (eddy_z_max[i] - eddy_z_min[i]));
+  eddies[i] = trunc(eddy_vols[i]/(radii[3*i]*radii[3*i+1]*radii[3*i+2]));
+  eddiesm3[i] = 3 * eddies[i];
+  radii[3*i] = radii[3*i] / eddy_vels[i];// convert to time scale instead of x length
+}
+eddy_pos1_gbl = (double*)malloc(sizeof(double) * eddiesm3[0]);
+eddy_r1_gbl = (double*)malloc(sizeof(double) * eddiesm3[0]);
+eddy_eps1_gbl = (int*)malloc(sizeof(int) * eddiesm3[0]);
+eddy_pos2_gbl = (double*)malloc(sizeof(double) * eddiesm3[1]);
+eddy_r2_gbl = (double*)malloc(sizeof(double) * eddiesm3[1]);
+eddy_eps2_gbl = (int*)malloc(sizeof(int) * eddiesm3[1]);
+eddy_pos3_gbl = (double*)malloc(sizeof(double) * eddiesm3[2]);
+eddy_r3_gbl = (double*)malloc(sizeof(double) * eddiesm3[2]);
+eddy_eps3_gbl = (int*)malloc(sizeof(double) * eddiesm3[2]);
+
 a = 5;
 c = 3;
 m = pow(2, 29);
+seed_gbl = 182383739;
 
-ops_printf("\neddies = %d\n", eddies);
 //-------------------------------------------------------------
 
 ops_decl_const("Delta0block0" , 1, "double", &Delta0block0);
@@ -139,40 +172,39 @@ ops_decl_const("niter" , 1, "int", &niter);
 ops_decl_const("simulation_time" , 1, "double", &simulation_time);
 ops_decl_const("start_iter" , 1, "int", &start_iter);
 ops_decl_const("write_output_file" , 1, "int", &write_output_file);
+
 ops_decl_const("ny", 1, "int", &ny);
 ops_decl_const("uinterp", ny, "double", &uinterp[0]);
 ops_decl_const("yprofdata", 121, "double", &yprofdata[0]);
 ops_decl_const("uprofdata", 121, "double", &uprofdata[0]);
 
-
 // ---------------------- eddy global constants-------------------------------
 ops_decl_const("y_cutoff", 1, "int", &y_cutoff);
 ops_decl_const("ndata", 1, "int", &ndata);
-// ops_decl_const("ydata", ndata, "double", &ydata[0]);
-// ops_decl_const("uudata", ndata, "double", &uudata[0]);
-// ops_decl_const("uvdata", ndata, "double", &uvdata[0]);
-// ops_decl_const("vvdata", ndata, "double", &vvdata[0]);
-// ops_decl_const("wwdata", ndata, "double", &wwdata[0]);
+//ops_decl_const("regnum", 1, "int", &regnum);
+// literal 121, not ndata: a variable dim makes the translator declare these as
+// `extern double *ydata` while TBL_data.h defines arrays -- see util.py:555-561
+ops_decl_const("ydata", 121, "double", &ydata[0]);
+ops_decl_const("uudata", 121, "double", &uudata[0]);
+ops_decl_const("uvdata", 121, "double", &uvdata[0]);
+ops_decl_const("vvdata", 121, "double", &vvdata[0]);
+ops_decl_const("wwdata", 121, "double", &wwdata[0]);
 ops_decl_const("delta", 1, "double", &delta);
-ops_decl_const("radius", 1, "double", &radius);
-ops_decl_const("eddy_vol", 1, "double", &eddy_vol);
-ops_decl_const("eddies", 1, "int", &eddies);
-ops_decl_const("eddiesm2", 1, "int", &eddiesm2);
-
-ops_decl_const("eddy_x_min", 1, "double", &eddy_x_min);
-ops_decl_const("eddy_x_max", 1, "double", &eddy_x_max);
-ops_decl_const("eddy_y_min", 1, "double", &eddy_y_min);
-ops_decl_const("eddy_y_max", 1, "double", &eddy_y_max);
-ops_decl_const("eddy_z_min", 1, "double", &eddy_z_min);
-ops_decl_const("eddy_z_max", 1, "double", &eddy_z_max);
-
+ops_decl_const("radii", 3*nregions, "double", &radii[0]);
+ops_decl_const("eddy_vols", nregions, "double", &eddy_vols[0]);
+ops_decl_const("eddies", nregions, "int", &eddies[0]);
+ops_decl_const("eddiesm3", nregions, "int", &eddiesm3[0]);
+ops_decl_const("eddy_y_min", nregions, "double", &eddy_y_min[0]);
+ops_decl_const("eddy_y_max", nregions, "double", &eddy_y_max[0]);
+ops_decl_const("eddy_z_min", nregions, "double", &eddy_z_min[0]);
+ops_decl_const("eddy_z_max", nregions, "double", &eddy_z_max[0]);
 
 //----------------------------------------------------------------------------
 
 
+
 // Define and Declare OPS Block
 ops_block opensbliblock00 = ops_decl_block(3, "opensbliblock00");
-// ops_block eddy_block = ops_decl_block(3, "eddy_block");
 #include "defdec_data_set.h"
 // Define and declare stencils
 #include "stencils.h"
@@ -181,8 +213,6 @@ ops_block opensbliblock00 = ops_decl_block(3, "opensbliblock00");
 double partition_start0, elapsed_partition_start0, partition_end0, elapsed_partition_end0;
 ops_timers(&partition_start0, &elapsed_partition_start0);
 ops_partition("");
-printf("Rank %d passed partition\n", ops_get_proc());
-// exit(-1);
 ops_timers(&partition_end0, &elapsed_partition_end0);
 ops_printf("-----------------------------------------\n MPI partition and reading input file time: %lf\n -----------------------------------------\n", elapsed_partition_end0-elapsed_partition_start0);
 // Restart procedure
@@ -259,9 +289,10 @@ ops_arg_idx());
 int iteration_range_uinterp[] = {0, 1, 0, ny, 0, 1};
 ops_par_loop(uinterp_kernel, "uinterp_kernel", opensbliblock00, 3, iteration_range_uinterp,
 ops_arg_dat(d_uinterp, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ));
+ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
+ops_arg_idx());
 
-ops_dat_fetch_data(d_uinterp, 0, (char*)uinterp);
+ops_dat_global_fetch_data(d_uinterp, 0, (char*)uinterp);
 ops_update_const("uinterp", ny, "double", &uinterp[0]);
 
 for(int i{0}; i < ny; i++){
@@ -272,38 +303,51 @@ for(int i{0}; i < ny; i++){
 
 seed_gbl = (a*seed_gbl + c) % m;
 ops_randomgen_init(seed_gbl, 0);
-ops_fill_random_uniform(eddy_x_rng);
-seed_gbl = (a*seed_gbl + c) % m;
-//ops_randomgen_init(seed_gbl, 0);
-ops_fill_random_uniform(eddy_bulk_rng);
-int eddy_iter_range[] = {0, eddies, 0, 1, 0, 1};
-ops_par_loop(instantiate_eddies, "instantiate_eddies", opensbliblock00, 3, eddy_iter_range,
-ops_arg_dat(eddy_x, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_y, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_z, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_r, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_increment, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_eps_x, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_eps_y, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_eps_z, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_x_rng, 1, stencil_0_00_00_00_3, "int", OPS_READ),
-ops_arg_dat(eddy_bulk_rng, 5, stencil_0_00_00_00_3, "int", OPS_READ));
+ops_fill_random_uniform(bulk_rng1);
+ops_fill_random_uniform(bulk_rng2);
+ops_fill_random_uniform(bulk_rng3);
 
-ops_dat_fetch_data(eddy_x, 0, (char*)eddy_x_gbl);
-ops_dat_fetch_data(eddy_y, 0, (char*)eddy_y_gbl);
-ops_dat_fetch_data(eddy_z, 0, (char*)eddy_z_gbl);
-ops_dat_fetch_data(eddy_r, 0, (char*)eddy_r_gbl);
-ops_dat_fetch_data(eddy_eps_x, 0, (char*)eddy_eps_x_gbl);
-ops_dat_fetch_data(eddy_eps_y, 0, (char*)eddy_eps_y_gbl);
-ops_dat_fetch_data(eddy_eps_z, 0, (char*)eddy_eps_z_gbl);
- 
-char fname[64];
-sprintf(fname, "convect_eddies_rank%d.txt", ops_get_proc());
-FILE* eddy_f = fopen(fname, "w");
+int eddy_iter_range1[] = {0, eddies[0], 0, 1, 0, 1};
+int eddy_iter_range2[] = {0, eddies[1], 0, 1, 0, 1};
+int eddy_iter_range3[] = {0, eddies[2], 0, 1, 0, 1};
 
-ops_printf("instantiate eddies [rank %d]: %g %g %g %g %g %g %g %g %g %g\n", 
-  ops_get_proc(), eddy_x_gbl[0], eddy_x_gbl[5], eddy_x_gbl[10], eddy_x_gbl[15], eddy_x_gbl[20],
-  eddy_x_gbl[eddies-1], eddy_x_gbl[eddies-1-5], eddy_x_gbl[eddies-1-10], eddy_x_gbl[eddies-1-15], eddy_x_gbl[eddies-1-20]);
+regnum = 0;
+//ops_update_const("regnum", 1, "int", &regnum);
+ops_par_loop(instantiate_eddies, "instantiate_eddies", opensbliblock00, 3, eddy_iter_range1,
+ops_arg_dat(eddy_pos1, 3, stencil_0_00_00_00_3, "double", OPS_WRITE),
+ops_arg_dat(eddy_r1, 3, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(eddy_eps1, 3, stencil_0_00_00_00_3, "int", OPS_WRITE),
+ops_arg_dat(bulk_rng1, 6, stencil_0_00_00_00_3, "int", OPS_READ),
+ops_arg_gbl(&regnum, 1, "int", OPS_READ));
+
+regnum = 1;
+//ops_update_const("regnum", 1, "int", &regnum);
+ops_par_loop(instantiate_eddies, "instantiate_eddies", opensbliblock00, 3, eddy_iter_range2,
+ops_arg_dat(eddy_pos2, 3, stencil_0_00_00_00_3, "double", OPS_WRITE),
+ops_arg_dat(eddy_r2, 3, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(eddy_eps2, 3, stencil_0_00_00_00_3, "int", OPS_WRITE),
+ops_arg_dat(bulk_rng2, 6, stencil_0_00_00_00_3, "int", OPS_READ),
+ops_arg_gbl(&regnum, 1, "int", OPS_READ));
+
+regnum = 2;
+//ops_update_const("regnum", 1, "int", &regnum);
+ops_par_loop(instantiate_eddies, "instantiate_eddies", opensbliblock00, 3, eddy_iter_range3,
+ops_arg_dat(eddy_pos3, 3, stencil_0_00_00_00_3, "double", OPS_WRITE),
+ops_arg_dat(eddy_r3, 3, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(eddy_eps3, 3, stencil_0_00_00_00_3, "int", OPS_WRITE),
+ops_arg_dat(bulk_rng3, 6, stencil_0_00_00_00_3, "int", OPS_READ),
+ops_arg_gbl(&regnum, 1, "int", OPS_READ));
+
+ops_dat_global_fetch_data(eddy_pos1, 0, (char*)eddy_pos1_gbl);
+ops_dat_global_fetch_data(eddy_r1, 0, (char*)eddy_r1_gbl);
+ops_dat_global_fetch_data(eddy_eps1, 0, (char*)eddy_eps1_gbl);
+ops_dat_global_fetch_data(eddy_pos2, 0, (char*)eddy_pos2_gbl);
+ops_dat_global_fetch_data(eddy_r2, 0, (char*)eddy_r2_gbl);
+ops_dat_global_fetch_data(eddy_eps2, 0, (char*)eddy_eps2_gbl);
+ops_dat_global_fetch_data(eddy_pos3, 0, (char*)eddy_pos3_gbl);
+ops_dat_global_fetch_data(eddy_r3, 0, (char*)eddy_r3_gbl);
+ops_dat_global_fetch_data(eddy_eps3, 0, (char*)eddy_eps3_gbl);
+
 
 int interp_iter_range[] = {0, 1, 0, y_cutoff, 0, 1};
 ops_par_loop(interp_RST, "interp_RST", opensbliblock00, 3, interp_iter_range,
@@ -311,27 +355,24 @@ ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
 ops_arg_dat(d_a11, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(d_a21, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(d_a22, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(d_a33, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_gbl(ydata, ndata, "double", OPS_READ),
-ops_arg_gbl(uudata, ndata, "double", OPS_READ),
-ops_arg_gbl(uvdata, ndata, "double", OPS_READ),
-ops_arg_gbl(vvdata, ndata, "double", OPS_READ),
-ops_arg_gbl(wwdata, ndata, "double", OPS_READ));
+ops_arg_dat(d_a33, 1, stencil_0_00_00_00_3, "double", OPS_WRITE));
 
-ops_dat_fetch_data(d_a11, 0, (char*)a11);
-ops_dat_fetch_data(d_a21, 0, (char*)a21);
-ops_dat_fetch_data(d_a22, 0, (char*)a22);
-ops_dat_fetch_data(d_a33, 0, (char*)a33);
+ops_dat_global_fetch_data(d_a11, 0, (char*)a11);
+ops_dat_global_fetch_data(d_a21, 0, (char*)a21);
+ops_dat_global_fetch_data(d_a22, 0, (char*)a22);
+ops_dat_global_fetch_data(d_a33, 0, (char*)a33);
 
 ops_decl_const("a11", y_cutoff, "double", &a11[0]);
 ops_decl_const("a21", y_cutoff, "double", &a21[0]);
 ops_decl_const("a22", y_cutoff, "double", &a22[0]);
 ops_decl_const("a33", y_cutoff, "double", &a33[0]);
 
-ops_printf("eddies: %i. Eddy volume: %f \n", eddies, eddy_vol);
-ops_printf("xmax: %f, xmin: %f \n", eddy_x_max, eddy_x_min);
-ops_printf("ymax: %f, ymin: %f \n", eddy_y_max, eddy_y_min);
-ops_printf("zmax: %f, zmin: %f \n", eddy_z_max, eddy_z_min);
+for (int i{0}; i < nregions; i++){
+  ops_printf("region: %i \n", i);
+  ops_printf("eddies: %i. Eddy volume: %f \n", eddies[i], eddy_vols[i]);
+  ops_printf("ymax: %f, ymin: %f \n", eddy_y_max[i], eddy_y_min[i]);
+  ops_printf("zmax: %f, zmin: %f \n", eddy_z_max[i], eddy_z_min[i]);
+}
 
 for (int i{0}; i < y_cutoff; i++){
   ops_printf("a11: %f, a21: %f, a22: %f, a33: %f \n", a11[i], a21[i], a22[i], a33[i]);
@@ -339,6 +380,9 @@ for (int i{0}; i < y_cutoff; i++){
 
 
 //--------------------------------------------------------------------
+
+
+
 
 ops_reduction h_rhomin = ops_decl_reduction_handle(sizeof(double), "double", "rho_min");
 
@@ -348,14 +392,13 @@ ops_timers(&cpu_start0, &elapsed_start0);
 double inner_start, elapsed_inner_start;
 double inner_end, elapsed_inner_end;
 ops_timers(&inner_start, &elapsed_inner_start);
-
 for(iter=start_iter; iter<=start_iter+niter - 1; iter++)
 {
 simulation_time = tstart + dt*((iter - start_iter)+1);
 ops_update_const("simulation_time", 1, "double", &simulation_time);
-if(fmod(iter+1, 1) == 0){
+if(fmod(iter+1, 100) == 0){
         ops_timers(&inner_end, &elapsed_inner_end);
-        ops_printf("Iteration: %d. Time-step: %.3e. Simulation time: %.5f. Time/iteration: %lf.\n", iter+1, dt, simulation_time, (elapsed_inner_end - elapsed_inner_start)/1);
+        ops_printf("Iteration: %d. Time-step: %.3e. Simulation time: %.5f. Time/iteration: %lf.\n", iter+1, dt, simulation_time, (elapsed_inner_end - elapsed_inner_start)/100);
         ops_NaNcheck(rho_B0);
 
         {
@@ -367,113 +410,72 @@ if(fmod(iter+1, 1) == 0){
         ops_reduction_result(h_rhomin, &rmin);
         ops_printf("   rho_min %.6f\n", rmin);
         }
-
         ops_timers(&inner_start, &elapsed_inner_start);
 }
 
 // ------------------------ eddy convection -----------------------------------------------
 
+ops_fill_random_uniform(bulk_rng1);
+ops_fill_random_uniform(bulk_rng2);
+ops_fill_random_uniform(bulk_rng3);
 
-seed_gbl = (a*seed_gbl + c) % m;
-//ops_randomgen_init(seed_gbl, 0);
-ops_fill_random_uniform(eddy_bulk_rng);
-ops_par_loop(convect_eddies, "convect_eddies", opensbliblock00, 3, eddy_iter_range,
-ops_arg_dat(eddy_x, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(eddy_y, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_z, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_r, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
-ops_arg_dat(eddy_increment, 1, stencil_0_00_00_00_3, "double", OPS_READ),
-ops_arg_dat(eddy_eps_x, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_eps_y, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_eps_z, 1, stencil_0_00_00_00_3, "int", OPS_WRITE),
-ops_arg_dat(eddy_bulk_rng, 5, stencil_0_00_00_00_3, "int", OPS_READ));
+regnum=0;
+//ops_update_const("regnum", 1, "int", &regnum);
+ops_par_loop(convect_eddies, "convect_eddies", opensbliblock00, 3, eddy_iter_range1,
+ops_arg_dat(eddy_pos1, 3, stencil_0_00_00_00_3, "double", OPS_WRITE),
+ops_arg_dat(eddy_r1, 3, stencil_0_00_00_00_3, "double", OPS_READ),
+ops_arg_dat(eddy_eps1, 3, stencil_0_00_00_00_3, "int", OPS_WRITE),
+ops_arg_dat(bulk_rng1, 3, stencil_0_00_00_00_3, "int", OPS_READ),
+ops_arg_gbl(&regnum, 1, "int", OPS_READ));
 
-ops_dat_fetch_data(eddy_x, 0, (char*) eddy_x_gbl);
-ops_dat_fetch_data(eddy_y, 0, (char*) eddy_y_gbl);
-ops_dat_fetch_data(eddy_z, 0, (char*) eddy_z_gbl);
-ops_dat_fetch_data(eddy_r, 0, (char*) eddy_r_gbl);
-ops_dat_fetch_data(eddy_increment, 0, (char*) eddy_increment_gbl);
-ops_dat_fetch_data(eddy_eps_x, 0, (char*) eddy_eps_x_gbl);
-ops_dat_fetch_data(eddy_eps_y, 0, (char*) eddy_eps_y_gbl);
-ops_dat_fetch_data(eddy_eps_z, 0, (char*) eddy_eps_z_gbl);
+regnum=1;
+//ops_update_const("regnum", 1, "int", &regnum);
+ops_par_loop(convect_eddies, "convect_eddies", opensbliblock00, 3, eddy_iter_range2,
+ops_arg_dat(eddy_pos2, 3, stencil_0_00_00_00_3, "double", OPS_WRITE),
+ops_arg_dat(eddy_r2, 3, stencil_0_00_00_00_3, "double", OPS_READ),
+ops_arg_dat(eddy_eps2, 3, stencil_0_00_00_00_3, "int", OPS_WRITE),
+ops_arg_dat(bulk_rng2, 3, stencil_0_00_00_00_3, "int", OPS_READ),
+ops_arg_gbl(&regnum, 1, "int", OPS_READ));
 
-// debug statements to check which slice of eddy var the current rank holds
-// disp[d] - where the rank's chunk starts in the global array in dim d (offset)
-// size[d] - how many points this ranks owns in the dim d
-// If I run with eddies = 380 (x-coord) and the blocksize is 750x250x150, the ranks will split and 
-// assign the work
-// Output with 4 ranks (2x2x1):
-//     [rank 0] disp0=0   size0=375
-//     [rank 1] disp0=0   size0=375
-//     [rank 2] disp0=375 size0=5
-//     [rank 3] disp0=375 size0=5
+regnum=2;
+//ops_update_const("regnum", 1, "int", &regnum);
+ops_par_loop(convect_eddies, "convect_eddies", opensbliblock00, 3, eddy_iter_range3,
+ops_arg_dat(eddy_pos3, 3, stencil_0_00_00_00_3, "double", OPS_WRITE),
+ops_arg_dat(eddy_r3, 3, stencil_0_00_00_00_3, "double", OPS_READ),
+ops_arg_dat(eddy_eps3, 3, stencil_0_00_00_00_3, "int", OPS_WRITE),
+ops_arg_dat(bulk_rng3, 3, stencil_0_00_00_00_3, "int", OPS_READ),
+ops_arg_gbl(&regnum, 1, "int", OPS_READ));
 
-// First chunk has 375 elements starting from 0
-// Second chunk has 5 elements starting from 375
+ops_dat_global_fetch_data(eddy_pos1, 0, (char*)eddy_pos1_gbl);
+ops_dat_global_fetch_data(eddy_eps1, 0, (char*)eddy_eps1_gbl);
+ops_dat_global_fetch_data(eddy_pos2, 0, (char*)eddy_pos2_gbl);
+ops_dat_global_fetch_data(eddy_eps2, 0, (char*)eddy_eps2_gbl);
+ops_dat_global_fetch_data(eddy_pos3, 0, (char*)eddy_pos3_gbl);
+ops_dat_global_fetch_data(eddy_eps3, 0, (char*)eddy_eps3_gbl);
 
-// If eddies = 267 (original)
-// Output:
-//     [rank 3] disp0=375 size0=0  npart=1
-//     [rank 2] disp0=375 size0=0  npart=1
-//     [rank 0] disp0=0 size0=267  npart=1
-//     [rank 1] disp0=0 size0=267  npart=1
 
-// One chunk gets all 267 elements and the other chunk gets 0
+//-----------------------------------------------------------------------------------
 
-// In case the chunks are split (eddies = 380). Need to implement an allgather operation 
-// to get the full eddies array in all ranks to make sure later kernels have all the data
 
-// ops_get_num_procs();
-
-const bool eddy_debug = (iter == start_iter);
-
-int disp[3], size[3];
-ops_dat_get_extents(eddy_x, 0, disp, size);
-if (eddy_debug) {
-  printf("[rank %d] disp0=%d size0=%d  npart=%d\n",
-          ops_get_proc(), disp[0], size[0],
-          ops_dat_get_local_npartitions(eddy_x));
-  fflush(stdout);
-}
-
-if (write_convection_data_to_text) {
-  fprintf(eddy_f, "rank %d  eddies = %d\n\n", ops_get_proc(), eddies);
-  fprintf(eddy_f, "%4s  %14s %14s %14s %14s %14s %6s %6s %6s\n",
-        "iter", "x", "y", "z", "r", "incr", "epx", "epy", "epz");
-
-  fprintf(eddy_f, "--- (iter %d) first 5 ---\n", iter);
-  for (int j = 0; j < 5; j++) {
-      fprintf(eddy_f, "%4d  %14.6e %14.6e %14.6e %14.6e %14.6e %6d %6d %6d\n",
-              j, eddy_x_gbl[j], eddy_y_gbl[j], eddy_z_gbl[j],
-              eddy_r_gbl[j], eddy_increment_gbl[j],
-              eddy_eps_x_gbl[j], eddy_eps_y_gbl[j], eddy_eps_z_gbl[j]);
-  }
-
-  fprintf(eddy_f, "\n--- last 5 ---\n");
-  for (int j = eddies - 5; j < eddies; j++) {
-      fprintf(eddy_f, "%4d  %14.6e %14.6e %14.6e %14.6e %14.6e %6d %6d %6d\n",
-              j, eddy_x_gbl[j], eddy_y_gbl[j], eddy_z_gbl[j],
-              eddy_r_gbl[j], eddy_increment_gbl[j],
-              eddy_eps_x_gbl[j], eddy_eps_y_gbl[j], eddy_eps_z_gbl[j]);
-  }
-}
 
 int iteration_range_30_block0[] = {-2, 1, -2, block0np1 + 2, -2, block0np2 + 2};
 ops_par_loop(opensbliblock00Kernel030, "Dirichlet boundary dir0 side0", opensbliblock00, 3, iteration_range_30_block0,
 ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
+ops_arg_dat(x2_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
 ops_arg_dat(rhoE_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(rhou0_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(rhou1_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(rhou2_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(rho_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(x2_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
-ops_arg_gbl(eddy_x_gbl, eddies, "double", OPS_READ),
-ops_arg_gbl(eddy_y_gbl, eddies, "double", OPS_READ),
-ops_arg_gbl(eddy_z_gbl, eddies, "double", OPS_READ),
-ops_arg_gbl(eddy_r_gbl, eddies, "double", OPS_READ),
-ops_arg_gbl(eddy_eps_x_gbl, eddies, "int", OPS_READ),
-ops_arg_gbl(eddy_eps_y_gbl, eddies, "int", OPS_READ),
-ops_arg_gbl(eddy_eps_z_gbl, eddies, "int", OPS_READ),
+ops_arg_gbl(eddy_pos1_gbl, eddiesm3[0], "double", OPS_READ),
+ops_arg_gbl(eddy_r1_gbl, eddiesm3[0], "double", OPS_READ),
+ops_arg_gbl(eddy_eps1_gbl, eddiesm3[0], "int", OPS_READ),
+ops_arg_gbl(eddy_pos2_gbl, eddiesm3[1], "double", OPS_READ),
+ops_arg_gbl(eddy_r2_gbl, eddiesm3[1], "double", OPS_READ),
+ops_arg_gbl(eddy_eps2_gbl, eddiesm3[1], "int", OPS_READ),
+ops_arg_gbl(eddy_pos3_gbl, eddiesm3[2], "double", OPS_READ),
+ops_arg_gbl(eddy_r3_gbl, eddiesm3[2], "double", OPS_READ),
+ops_arg_gbl(eddy_eps3_gbl, eddiesm3[2], "int", OPS_READ),
 ops_arg_idx());
 
 int iteration_range_31_block0[] = {block0np0 - 1, block0np0, -2, block0np1 + 2, -2, block0np2 + 2};
@@ -688,19 +690,21 @@ ops_arg_gbl(&rkB[stage], 1, "double", OPS_READ));
 int iteration_range_30_block0[] = {-2, 1, -2, block0np1 + 2, -2, block0np2 + 2};
 ops_par_loop(opensbliblock00Kernel030, "Dirichlet boundary dir0 side0", opensbliblock00, 3, iteration_range_30_block0,
 ops_arg_dat(x1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
-ops_arg_dat(rhoE_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
+ops_arg_dat(x2_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
+ops_arg_dat(rhoE_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),   
 ops_arg_dat(rhou0_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(rhou1_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(rhou2_B0, 1, stencil_0_00_00_00_3, "double", OPS_WRITE),
 ops_arg_dat(rho_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(x2_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
-ops_arg_gbl(eddy_x_gbl, eddies, "double", OPS_READ),
-ops_arg_gbl(eddy_y_gbl, eddies, "double", OPS_READ),
-ops_arg_gbl(eddy_z_gbl, eddies, "double", OPS_READ),
-ops_arg_gbl(eddy_r_gbl, eddies, "double", OPS_READ),
-ops_arg_gbl(eddy_eps_x_gbl, eddies, "int", OPS_READ),
-ops_arg_gbl(eddy_eps_y_gbl, eddies, "int", OPS_READ),
-ops_arg_gbl(eddy_eps_z_gbl, eddies, "int", OPS_READ),
+ops_arg_gbl(eddy_pos1_gbl, eddiesm3[0], "double", OPS_READ),
+ops_arg_gbl(eddy_r1_gbl, eddiesm3[0], "double", OPS_READ),
+ops_arg_gbl(eddy_eps1_gbl, eddiesm3[0], "int", OPS_READ),
+ops_arg_gbl(eddy_pos2_gbl, eddiesm3[1], "double", OPS_READ),
+ops_arg_gbl(eddy_r2_gbl, eddiesm3[1], "double", OPS_READ),
+ops_arg_gbl(eddy_eps2_gbl, eddiesm3[1], "int", OPS_READ),
+ops_arg_gbl(eddy_pos3_gbl, eddiesm3[2], "double", OPS_READ),
+ops_arg_gbl(eddy_r3_gbl, eddiesm3[2], "double", OPS_READ),
+ops_arg_gbl(eddy_eps3_gbl, eddiesm3[2], "int", OPS_READ),
 ops_arg_idx());
 
 int iteration_range_31_block0[] = {block0np0 - 1, block0np0, -2, block0np1 + 2, -2, block0np2 + 2};
@@ -730,16 +734,20 @@ ops_arg_dat(rhou2_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW));
 ops_halo_transfer(periodicBC_direction2_side0_34_block0);
 ops_halo_transfer(periodicBC_direction2_side1_35_block0);
 }
-if(iter > start_averaging){
+
+if(iter >= start_averaging){
 int iteration_range_47_block0[] = {0, block0np0, 0, block0np1, 0, block0np2};
 ops_par_loop(opensbliblock00Kernel047, "user kernel InTheSimulation", opensbliblock00, 3, iteration_range_47_block0,
+ops_arg_dat(mu_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
 ops_arg_dat(rhoE_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
 ops_arg_dat(rho_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
 ops_arg_dat(rhou0_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
 ops_arg_dat(rhou1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
 ops_arg_dat(rhou2_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
+ops_arg_dat(mu_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhoE_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rho_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(rhohou0u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou0u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou0u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
@@ -749,27 +757,23 @@ ops_arg_dat(rhou1u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou1u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou2u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(rhorhou0u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW));
+ops_arg_dat(u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u0u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u0u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u1u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u2u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW));
 
 int iteration_range_new01_block0[] = {0, block0np0, 0, block0np1, 0, block0np2};
 ops_par_loop(opensbliblock00Kernel_new01, "opensbliblock00Kernel_new01", opensbliblock00, 3, iteration_range_new01_block0,
 ops_arg_dat(mu_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
 ops_arg_dat(rho_B0, 1, stencil_0_00_44_00_16, "double", OPS_READ),
 ops_arg_dat(rhou0_B0, 1, stencil_0_00_44_00_16, "double", OPS_READ),
-ops_arg_dat(rhou1_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
-ops_arg_dat(rhou2_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
 ops_arg_dat(D11_B0, 1, stencil_0_00_00_00_3, "double", OPS_READ),
 ops_arg_dat(taux0x1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(l_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(mu_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(du0dx1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u0u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u1u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u2u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u0u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(utau_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_idx());
 }
@@ -784,10 +788,13 @@ ops_printf("\nTimings are:\n");
 ops_printf("-----------------------------------------\n");
 ops_printf("Total Wall time %lf\n",elapsed_end0-elapsed_start0);
 
+
 int iteration_range_48_block0[] = {0, block0np0, 0, block0np1, 0, block0np2};
 ops_par_loop(opensbliblock00Kernel048, "user kernel AfterSimulationEnds", opensbliblock00, 3, iteration_range_48_block0,
+ops_arg_dat(mu_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhoE_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rho_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(rhohou0u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou0u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou0u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
@@ -797,28 +804,20 @@ ops_arg_dat(rhou1u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou1u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(rhou2u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(rhorhou0u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u0u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u0u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u1u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
+ops_arg_dat(u2u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(taux0x1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(l_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(du0dx1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(mu_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u0u0_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u1u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u2u2_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
-ops_arg_dat(u0u1_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW),
 ops_arg_dat(utau_mean_B0, 1, stencil_0_00_00_00_3, "double", OPS_RW));
 
 HDF5_IO_Write_0_opensbliblock00(opensbliblock00, rho_B0, rhou0_B0, rhou1_B0, rhou2_B0, rhoE_B0, x0_B0, x1_B0, x2_B0, D11_B0, T_B0, mu_B0, p_B0, HDF5_timing);
-HDF5_IO_Write_1_opensbliblock00(opensbliblock00, rho_mean_B0, rhou0_mean_B0, rhou1_mean_B0, rhou2_mean_B0, rhoE_mean_B0, rhou0u0_mean_B0, rhou1u1_mean_B0, rhou2u2_mean_B0, rhou0u1_mean_B0, rhou1u2_mean_B0, rhou0u2_mean_B0, rhou0u0_mean_B0, taux0x1_mean_B0, l_mean_B0, du0dx1_mean_B0, mu_mean_B0, u0_mean_B0, u1_mean_B0, u2_mean_B0, u0u0_mean_B0, u1u1_mean_B0, u2u2_mean_B0, u0u1_mean_B0, utau_mean_B0, HDF5_timing);
-
-fclose(eddy_f);
-
-// run with OPS_DIAGS=2 or this function will have no output
-ops_timing_output_stdout();
-
+HDF5_IO_Write_1_opensbliblock00(opensbliblock00, rho_mean_B0, rhou0_mean_B0, rhou1_mean_B0, rhou2_mean_B0, rhoE_mean_B0, rhou0u0_mean_B0, rhou1u1_mean_B0, rhou2u2_mean_B0, rhou0u1_mean_B0, rhou1u2_mean_B0, rhou0u2_mean_B0, rhohou0u0_mean_B0, mu_mean_B0, u0u0_mean_B0, u0u1_mean_B0, u1u1_mean_B0, u2u2_mean_B0, u0_mean_B0, u1_mean_B0, u2_mean_B0, taux0x1_mean_B0, l_mean_B0, du0dx1_mean_B0, utau_mean_B0, HDF5_timing);
 ops_exit();
 //Main program end 
 }

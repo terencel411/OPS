@@ -36,8 +36,6 @@ void interp_RST(const ACC<double>& x1_B0, ACC<double>& a11, ACC<double>& a21, AC
   }
 }
 
-// check lowest value for rho- density going
-// non-physical is what precedes the NaN check firing
 void KerRhoMin(const ACC<double>& rho_B0, double* m) {
   if (rho_B0(0,0,0) < *m) *m = rho_B0(0,0,0);
 }
