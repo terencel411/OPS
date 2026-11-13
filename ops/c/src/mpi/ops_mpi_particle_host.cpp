@@ -1239,6 +1239,7 @@ void _ops_particle_build_local_uniform(ops_particle_mapping map, ops_particle pa
                          + static_cast<float>(d_m[2]) * ((float *) dx)[2] : 0.;
     x_max.z = (dim == 3) ? ((float *) map->xmax)[2]
                          + static_cast<float>(d_p[2]) * ((float *) dx)[2] : 0.;
+    ((float *) xmin)[0] = x_min.x; ((float *) xmin)[1] = x_min.y; ((float *) xmin)[2] = x_min.z;
 
     _ops_build_uniform_dats(1, dim, map->grid, particle->particle_pos_dat,
                             Np, (float *)dx, x_min, x_max, map->binhead, map->bin,
@@ -1251,10 +1252,11 @@ void _ops_particle_build_local_uniform(ops_particle_mapping map, ops_particle pa
     x_max.x = ((double *) map->xmax)[0] + static_cast<double>(d_p[0]) * ((double *) dx)[0];
     x_min.y = ((double *) map->xmin)[1] + static_cast<double>(d_m[1]) * ((double *) dx)[1];
     x_max.y = ((double *) map->xmax)[1] + static_cast<double>(d_p[1]) * ((double *) dx)[1];
-    x_min.z = (dim == 3) ? ((float *) map->xmin)[2]
+    x_min.z = (dim == 3) ? ((double *) map->xmin)[2]
                          + static_cast<double>(d_m[2]) * ((double *) dx)[2] : 0.;
-    x_max.z = (dim == 3) ? ((float *) map->xmax)[2]
+    x_max.z = (dim == 3) ? ((double *) map->xmax)[2]
                          + static_cast<double>(d_p[2]) * ((double *) dx)[2] : 0.;
+    ((double *) xmin)[0] = x_min.x; ((double *) xmin)[1] = x_min.y; ((double *) xmin)[2] = x_min.z;
 
     _ops_build_uniform_dats(1, dim, map->grid, particle->particle_pos_dat,
                             Np, (double *)dx, x_min, x_max, map->binhead, map->bin,
@@ -1270,8 +1272,9 @@ void _ops_particle_build_local_uniform(ops_particle_mapping map, ops_particle pa
     x_max.y = ((long double *) map->xmax)[1] + static_cast<long double>(d_p[1]) * ((long double *) dx)[1];
     x_min.z = (dim == 3) ? ((long double *) map->xmin)[2]
                          + static_cast<long double>(d_m[2]) * ((long double *) dx)[2] : 0.;
-    x_max.z = (dim == 3) ? ((float *) map->xmax)[2]
+    x_max.z = (dim == 3) ? ((long double *) map->xmax)[2]
                          + static_cast<long double>(d_p[2]) * ((long double *) dx)[2] : 0.;
+    ((long double *) xmin)[0] = x_min.x; ((long double *) xmin)[1] = x_min.y; ((long double *) xmin)[2] = x_min.z;
     _ops_build_uniform_dats(1, dim, map->grid, particle->particle_pos_dat,
                             Np, (long double *)dx, x_min, x_max, map->binhead, map->bin,
                             map->parts_to_grid);

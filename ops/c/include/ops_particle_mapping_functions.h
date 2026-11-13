@@ -183,6 +183,7 @@ int _ops_coord_to_bin(const int dim, const ops_point<T> xmin, const ops_point<T>
 
   iz = 0;
   if (dim == 3) {
+    iz = -1;  // out-of-range z rejected like x and y
     within = 0;
     if (xp[2] >= xmin.z - epsilon && xp[2] <= xmax.z + epsilon) {
       iz = (int) ops_floor((xp[2] - xmin.z) /dx[2]);

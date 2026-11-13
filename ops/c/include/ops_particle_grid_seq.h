@@ -314,7 +314,7 @@ struct part_grid_param_handler2<ACC<T>> {
         int d_m = arg.dat->d_m[i];
 #endif
         addressX += (grid_point[i] - d_m) * prod;
-        for (int j = 0; j <= i; j++ ) prod *= arg.dat->size[i];
+        prod *= arg.dat->size[i];
       }
 
 
