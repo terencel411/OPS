@@ -16,6 +16,16 @@
 
 #include "ops_seq_v2.h" //TODO: Check if wew need
 
+inline int particle_in_group_v3(ops_particle particle, int i, ops_particle_group group) {
+  if (particle->index != group->particle_index)
+    throw OPSException(OPS_RUNTIME_ERROR,"Error: The given ops_particle_group not "
+                                         "linked to the given ops_particle_structure");
+
+  if (((int *) group->group_dat->data)[i] != 0) return 1;
+
+  return 0;
+}
+
 #if __cplusplus >= 201103L
 
 template<typename ParamT> struct verlet_param_handler {
@@ -24,25 +34,66 @@ template<typename ParamT> struct verlet_param_handler {
     if (arg.argtype == OPS_ARG_GBL) {
       if (arg.acc == OPS_READ) return arg.data;
 #ifdef OPS_MPI
-      return ((ops_reduction)arg.data)->data + ((ops_reduction)arg.data)->size * particle->block->index;
+      return ((ops_reduction)arg.data)->data + ((ops_reduction)arg.data)->size * particleI->block->index;
 #else
       return ((ops_reduction)arg.data)->data;
 #endif
     }
     else if (arg.argtype == OPS_ARG_IDP) {
-
-      particleI->block->instance->arg_idp[0] =
-          (particleI->ids != nullptr) ? ((int *)particleI->ids->data)[ifirst] : ifirst;
-      return  (char *) particleI->block->instance->arg_idp;
+      if (particleI->ids != nullptr) {
+        if (strcmp(particleI->ids->type, "int") == 0 ||
+            strcmp(particleI->ids->type, "int(4)") == 0 ||
+            strcmp(particleI->ids->type, "integer") == 0 ||
+            strcmp(particleI->ids->type, "integer(4)") == 0 ||
+            strcmp(particleI->ids->type, "integer(kind=4)") == 0) {
+          particleI->block->instance->arg_idp[particleI->index] = ((int *)particleI->ids->data)[ifirst];
+          return  (char *) particleI->block->instance->arg_idp + sizeof(int) * particleI->index;
+        }
+        else if (strcmp(particleI->ids->type, "int64") == 0 ||
+            strcmp(particleI->ids->type, "uint64_t") == 0 ||
+            strcmp(particleI->ids->type, "uint64") == 0 ||
+            strcmp(particleI->ids->type, "int64_t") == 0) {
+          int idp = ((int64_t *)particleI->ids->data)[ifirst];
+          particleI->block->instance->arg_idp[particleI->index] = (int ) idp;
+          return  (char *) particleI->block->instance->arg_idp + sizeof(int) * particleI->index;
+        }
+        else
+          throw OPSException(OPS_RUNTIME_ERROR, "Error: Incompatible type for particle ids");
+      }
+      else {
+        particleI->block->instance->arg_idp[particleI->index] = ifirst;
+        return  (char *) particleI->block->instance->arg_idp + sizeof(int) * particleI->index;
+      }
     }
     else if (arg.argtype == OPS_ARG_GBL_PARTICLE) {
       throw OPSException(OPS_RUNTIME_ERROR, "ERROR: This type of arg is not currently"
                          " supported");
     }
     else if (arg.argtype == OPS_ARG_IDJ) {
-      particleJ->block->instance->arg_idj[0] =
-          (particleJ->ids != nullptr) ?  ((int *)particleJ->ids->data)[jfirst] : jfirst;
-      return (char *) particleJ->block->instance->arg_idj;
+      if (particleJ->ids != nullptr) {
+        if (strcmp(particleJ->ids->type, "int") == 0 ||
+            strcmp(particleJ->ids->type, "int(4)") == 0 ||
+            strcmp(particleJ->ids->type, "integer") == 0 ||
+            strcmp(particleJ->ids->type, "integer(4)") == 0 ||
+            strcmp(particleJ->ids->type, "integer(kind=4)") == 0) {
+          particleJ->block->instance->arg_idp[particleJ->index] = ((int *)particleJ->ids->data)[ifirst];
+          return  (char *) particleJ->block->instance->arg_idp + particleJ->index * sizeof(dim);
+        }
+        else if (strcmp(particleJ->ids->type, "int64") == 0 ||
+            strcmp(particleJ->ids->type, "uint64_t") == 0 ||
+            strcmp(particleJ->ids->type, "uint64") == 0 ||
+            strcmp(particleJ->ids->type, "int64_t") == 0) {
+          int idp = ((int64_t *)particleJ->ids->data)[ifirst];
+          particleJ->block->instance->arg_idp[particleJ->index] = (int ) idp;
+          return  (char *) particleJ->block->instance->arg_idp + sizeof(int) * particleJ->index;
+        } //TODO: Fix that dependency
+        else
+          throw OPSException(OPS_RUNTIME_ERROR, "Error: Incompatible type for particle ids");
+      }
+      else {
+        particleJ->block->instance->arg_idj[particleJ->index] = jfirst;
+        return (char *) particleJ->block->instance->arg_idj + sizeof(int) * particleJ->index;
+      }
     }
 
     return nullptr;
@@ -53,12 +104,51 @@ template<typename ParamT> struct verlet_param_handler {
                           int jpart, int jfirst, int ihist_shift,  OPS_instance *instance) {
 
     if (arg.argtype == OPS_ARG_IDP) {
-      instance->arg_idp[0] =
-         (particleI->ids != nullptr) ? ((int *)particleI->ids->data)[ipart] : ipart;
+      if (particleI->ids != nullptr) {
+        if (strcmp(particleI->ids->type, "int") == 0 ||
+            strcmp(particleI->ids->type, "int(4)") == 0 ||
+            strcmp(particleI->ids->type, "integer") == 0 ||
+            strcmp(particleI->ids->type, "integer(4)") == 0 ||
+            strcmp(particleI->ids->type, "integer(kind=4)") == 0) {
+          instance->arg_idp[particleI->index] = ((int *) particleI->ids->data)[ipart];
+        }
+        else if (strcmp(particleI->ids->type, "int64") == 0 ||
+            strcmp(particleI->ids->type, "uint64_t") == 0 ||
+            strcmp(particleI->ids->type, "uint64") == 0 ||
+            strcmp(particleI->ids->type, "int64_t") == 0) {
+          int tagI = ((int64_t *) particleI->ids->data)[ipart];
+          instance->arg_idp[particleI->index] = (int ) tagI;
+        }
+        else
+          throw OPSException(OPS_RUNTIME_ERROR, "Error: Incompatible type for particle ids");
+      }
+      else {
+        instance->arg_idp[particleI->index] = ipart;
+      }
     }
     else if (arg.argtype == OPS_ARG_IDJ) {
-      instance->arg_idj[0] =
-          (particleJ->ids != nullptr) ? ((int *)particleJ->ids->data)[jpart] : jpart;
+
+      if (particleJ->ids != nullptr) {
+        if (strcmp(particleJ->ids->type, "int") == 0 ||
+            strcmp(particleJ->ids->type, "int(4)") == 0 ||
+            strcmp(particleJ->ids->type, "integer") == 0 ||
+            strcmp(particleJ->ids->type, "integer(4)") == 0 ||
+            strcmp(particleJ->ids->type, "integer(kind=4)") == 0) {
+          instance->arg_idp[particleJ->index] = ((int *) particleJ->ids->data)[ipart];
+        }
+        else if (strcmp(particleJ->ids->type, "int64") == 0 ||
+            strcmp(particleJ->ids->type, "uint64_t") == 0 ||
+            strcmp(particleJ->ids->type, "uint64") == 0 ||
+            strcmp(particleJ->ids->type, "int64_t") == 0) {
+          int tagI = ((int64_t *) particleJ->ids->data)[ipart];
+          instance->arg_idp[particleJ->index] = (int ) tagI;
+        }
+        else
+          throw OPSException(OPS_RUNTIME_ERROR, "Error: Incompatible type for particle ids");
+      }
+      else {
+        instance->arg_idj[particleJ->index] = jpart;
+      }
     }
   }
 
@@ -157,8 +247,9 @@ struct verlet_param_handler<ACC_HIS<T>> {
 
 
 template<typename... ParamType, typename... OPSARG, size_t... J>
-void ops_part_par_verlet_imp(indices<J...>, void (*kernel)(ParamType...), char const *name,
-                             ops_particle particle, ops_particle particleJ, int dim,
+void ops_part_par_verlet_imp(indices<J...>,void (*kernel)(ParamType...), char const *name,
+                             ops_particle particle, ops_particle_group groupI,
+                             ops_particle particleJ, ops_particle_group groupJ, int dim,
                              ops_neighbor_history history_user, OPSARG... arguments) {
 
   constexpr int N = sizeof...(OPSARG);
@@ -191,6 +282,8 @@ void ops_part_par_verlet_imp(indices<J...>, void (*kernel)(ParamType...), char c
     }
   }
 
+  //TODO: Need to set exchange structures for particles that linked to wall histories!!!!!
+
   if (nhists == 0)
     throw OPSException(OPS_RUNTIME_ERROR,"Error: Verlet particle loop requires an ops_arg_dat of history type");
 
@@ -200,7 +293,6 @@ void ops_part_par_verlet_imp(indices<J...>, void (*kernel)(ParamType...), char c
   if (nhists > 1)
     throw OPSException(OPS_RUNTIME_ERROR, "Error: A single neighbor history is supported");
 
-  //Initialize arguments
 
   int ifirst = 0;
   int jfirst = 0;
@@ -219,26 +311,48 @@ void ops_part_par_verlet_imp(indices<J...>, void (*kernel)(ParamType...), char c
     ipart = parts_in_cont[2 * i];
     jpart = parts_in_cont[2 * i + 1];
 
-    (void) std::initializer_list<int>{
-      (verlet_param_handler<param_remove_cvref_t<ParamType>>::shift_point(arguments, particle, particleJ, p_a[J],
-                                                                          ipart, ifirst, jpart, jfirst, 1,
-                                                                          particle->block->instance), 0)...};
+    if (groupI != nullptr)
+      if (!particle_in_group_v3(particle, ipart, groupI)) continue;
 
-    kernel((verlet_param_handler<param_remove_cvref_t<ParamType>>::get(p_a[J]))...);
-    iold++;
-    ifirst = ipart;
-    jfirst = jpart;
+    if (groupJ != nullptr)
+      if (!particle_in_group_v3(particle, jpart, groupJ)) continue;
+
+    int off_his = (i == 0) ? 0 : 1;
+
+    int intersect = 1;
+
+    if (intersect) {
+      (void) std::initializer_list<int>{
+      (verlet_param_handler<param_remove_cvref_t<ParamType>>::shift_point(arguments, particle, particleJ, p_a[J],
+                                                                          ipart, ifirst, jpart, jfirst, off_his,
+                                                                          particle->block->instance), 0)...};
+    //TODO: We do not access it correctly for the pair
+
+
+      kernel((verlet_param_handler<param_remove_cvref_t<ParamType>>::get(p_a[J]))...);
+
+
+      iold++;
+      ifirst = ipart;
+      jfirst = jpart;
+    }
+
   }
 
   (void) std::initializer_list<int>{
-    (part_inter_param_handler<param_remove_cvref_t<ParamType>>::free(p_a[J]), 0)...};
+    (verlet_param_handler<param_remove_cvref_t<ParamType>>::free(p_a[J]), 0)...};
 
   //
 }
 
+//**
+//** TODO ADD comments
+
 template<typename... ParamType, typename... OPSARG>
 void ops_particle_par_verlet(void (*kernel)(ParamType...), char const *name,
-                             ops_particle particle, ops_particle particleJ, int dim,
+                             ops_particle particle,  ops_particle_group groupI,
+                             ops_particle particleJ,  ops_particle_group groupJ,
+                             int dim,
                              ops_neighbor_history history,
                              OPSARG... arguments) {
 
@@ -246,7 +360,7 @@ void ops_particle_par_verlet(void (*kernel)(ParamType...), char const *name,
                 "Number of kernel parameters do not match the number of ops_arg");
 
   ops_part_par_verlet_imp(build_indices<sizeof...(ParamType)>{}, kernel, name,
-                           particle, particleJ, dim, history, arguments...);
+                           particle, groupI, particleJ, groupJ, dim, history, arguments...);
 }
 
 #endif

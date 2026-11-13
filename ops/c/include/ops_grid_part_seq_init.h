@@ -74,7 +74,6 @@ template <typename T> struct grid_part_param_handler<ACC<T>> {
                          ops_particle_mapping map) {
 
     if (arg.argtype == OPS_ARG_DAT) {
- //     printf("arg_name = %s\n", arg.dat->name);
       int d_m[OPS_MAX_DIM] = {};
   #ifdef OPS_MPI
       for (int d = 0; d < dim; d++) d_m[d] = arg.dat->d_m[d] + OPS_sub_dat_list[arg.dat->index]->d_im[d];
@@ -330,10 +329,6 @@ void  ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
     //TODO: Loop over points in stencil
     //LOOP OVER POINTS FINDING THEM IF NECESSARY
     for (int ipoints  = 0; ipoints < part_stencil->points; ipoints++) {
-
- //     printf("%d: Stencil points [%d %d %d]\n", ipoints, part_stencil->stencil[3 * ipoints],
-  //                                                 part_stencil->stencil[3 * ipoints + 1],
-  //                                                 part_stencil->stencil[3 * ipoints + 2]);
 #if defined(OPS_1D)
       ACC<int>& binpoint = grid_part_param_handler<int>::get(p_grid);
       int ipart =  binpoint(0, part_stencil->stencil[ipoints]);
@@ -342,12 +337,8 @@ void  ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
       int ipart = binpoint(0, part_stencil->stencil[2 * ipoints], part_stencil->stencil[2 * ipoints + 1]); //TODO
 #elif defined(OPS_3D)
       ACC<int>& binpoint = grid_part_param_handler<ACC<int>>::get(p_grid); //Here we get the binpoint
- //     printf("ACC(0, 0, 0) = %d\n", binpoint(0, 0, 0, 0));
       int ipart = binpoint(0, part_stencil->stencil[3 * ipoints], part_stencil->stencil[3 * ipoints + 1],
                                                                   part_stencil->stencil[3 * ipoints + 2]);
-
-     // printf("ipart = %d\n", ipart);
-
 #else
      int ipart;
      throw OPSException(OPS_RUNTIME_ERROR, "ops-grid-particle loop supported only for 1D-2D or 3D grids");
@@ -355,7 +346,6 @@ void  ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
 
 
      while (ipart != -1) { //TODO: WE need to change it to sth different for CUDA
-   //   printf("Entered to loop for %d - %d\n", ipoints, ipart);
       //TODO: Shift into a variadic function need to loop
       (void) std::initializer_list<int>{(grid_part_param_handler<param_remove_cvref_t<ParamType>>::shift_point_arg(arguments, map, p_a[J], dim,
                                                                                                                    ipart, ifirst[J]), 0)...};

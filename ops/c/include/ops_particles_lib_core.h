@@ -56,6 +56,13 @@
 #include <random>
 #include<array>
 
+#if __cplusplus >= 201103L
+  #include <cstdint>
+  #include <type_traits>
+  static_assert(sizeof(int64_t) == 8);
+  static_assert(sizeof(uint64_t) == 8);
+#endif
+
 #define OPS_HALO_GRP_EXCHANGE 0
 #define OPS_HALO_GRP_BORDER   1
 #define OPS_HALO_GRP_FORWARD  2
@@ -94,10 +101,10 @@
 #define OPS_EXCHANGE_PARTICLE_DAT 0
 #define OPS_EXCHANGE_HISTORY 1
 
-
+#define OPS_BOX_TO_BLOCK 1
 
 #include <ops_exceptions.h>
-//#include <ops_internal2.h>
+#include "ops_bounding_box.h"
 
 typedef int ops_part_orient;
 typedef int ops_part_halo_grp_type;
@@ -112,8 +119,9 @@ typedef int ops_with_virtual;
 
 class ops_particle_mapping_core;
 class ops_neighbor_history_core;
+class ops_particle_group_core;
 
-#include "ops_bounding_box.h"
+
 
 /** Particle decleration lists */
 class ops_particle_core {
@@ -135,6 +143,10 @@ public:
   ops_dat normal_vector; /**< Normal to face if necessary **/
   ops_dat particle_pos_dat;
   ops_dat ids;
+
+  ops_particle_group_core **groups; /**< Group of particles */
+  int group_index;                  /**< Number of generated particle groups */
+  int group_max;                    /**< Maximum number of particle groups */
 
   int *mark_deletion;  /**< Marking particles for deletion */
 
@@ -238,6 +250,15 @@ public:
 
 typedef ops_neighbor_history_core *ops_neighbor_history;
 
+class ops_particle_group_core {
+public:
+  int index;
+  int particle_index;   /*<Index of particle which owns the group */
+  ops_dat group_dat;    /*<Particle data structure contain groups of particles */
+  char *name;           /*< Name of group type */
+};
+
+typedef ops_particle_group_core *ops_particle_group;
 
 /*************************************************************************************/
 /*   Particle halo data structure definitions                                        */
@@ -331,6 +352,11 @@ class ops_particle_mapping_core {
     ops_dat mapping_grid; /**< Pointer to ops_dat structure for mapping particles */
     ops_dat parts_to_grid; /**< Particles to grid */
 
+    ops_dat grid_head; /**< ops_dat structure containing the first grid point projected to
+                           the uniform grid */
+    ops_dat grid_bin;    /**< Linked list of grid points projected to the same grid point */
+    ops_dat grid_to_map; /**< Location of the mapping point where the grid point projected */
+    ops_dat id_grid;    /**< Array for accessing grid points from grid_bin list  */
     int     Ngrids;   /**< Number of grid for building the particle-grid list */
 
     /* Flags for building mapping structures */
@@ -345,14 +371,23 @@ class ops_particle_mapping_core {
     ops_particle particle;        /**< Pointer an ops_particle_core_structure */
 
     char *dx;       /**< Cell size for uniform mapping */
-                    //NOTE: Its type is derived from the type of pos_old
+    char *xmin;      /**< Location of the first (physical) point in map */
+    char *xmax;      /**< Location of last point (physical) point in map */
+
+    char *region_grid; /**< Region of grid which will be mapped to particle map */
+    int region_access; /**< Accessing specific part of the grid in terms of float arithmetics */
     //TODO: Consider mapping on non-uniform spacing
     int flag_history;   /**< Flag indicating that Verlet list should be locally rebuild */
+    int map_type;   /**< Flag to indicate the type of map
+                         0: Map independent of grid
+                         1: Map to uniform grid and conforming boxes
+                         2: Map to stretched grid and conforming boxes
+                         3: Map to non-conforming boxes*/
 };
 
 typedef ops_particle_mapping_core *ops_particle_mapping;
 
-void ops_set_bounding_box_to_block(ops_block block, char * box);
+void ops_set_bounding_box_to_block(ops_block block, char * box, int type_size);
 
 
 /*--------------------------------------------------------------------------------*/
@@ -381,15 +416,24 @@ BoundingBox<T>* ops_create_bounding_box(int dim) {
  *@param dim         spatial size of the simulation box
  *@param point_low   coordinates of the lowest corner point
  *@param point_max   coordinates of the upper-right corner point
+ *@param box_type    flag indicating that box conforms to the block or not
+ *@param assign      flag for setting the box as the box block
  * @return  a BoundingBox structure
  */
-template<typename T>
+template<typename T = double>
 BoundingBox<T>* ops_create_bounding_box(const ops_block block, int dim,
-                                    ops_point<T> &point_low, ops_point<T> &point_max) {
+                                    ops_point<T> &point_low, ops_point<T> &point_max,
+                                    int box_type = OPS_BOX_CONFORMING,
+                                    int assign = 0) {
+
+
   BoundingBox<T>* box = new BoundingBox<T>{block, dim,
                                            point_low, point_max}; //TODO: Must be assigned to blocks
+  if (assign == OPS_BOX_TO_BLOCK && box_type != OPS_BOX_CONFORMING)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Only conforming boxes can be assigned to a block\n");
 
-  ops_set_bounding_box_to_block(block, (char *) box);
+  if (assign == OPS_BOX_CONFORMING)
+    ops_set_bounding_box_to_block(block, (char *) box, sizeof(T));
 
   return box;
 }
@@ -397,16 +441,19 @@ BoundingBox<T>* ops_create_bounding_box(const ops_block block, int dim,
 /**
  * Create a new BoundingBox object based on an ops_dat structure
  *
- *@param block   pointer to an ops_block structure that this BoundingBox is linked to
- *@param crds    ops_dat structure used to generate this BoundingBox
- *@param dim     size of the spatial space
- *@param dx      array for increasing the size of the owned box
- *
+ *@param block       pointer to an ops_block structure that this BoundingBox is linked to
+ *@param crds        ops_dat structure used to generate this BoundingBox
+ *@param dim         size of the spatial space
+ *@param dx          array for increasing the size of the owned box
+ *@param box_type    flag indicating that box conforms to the block or not
+ *@param assign      flag for setting the box as the box block
  * @return  a BoundingBox structure
  */
-template<typename T>
+
+template<typename T = double>
 BoundingBox<T>* ops_create_bounding_box(const ops_block block, const ops_dat crds,
-                                     int dim, T *dx) {
+                                     int dim, T *dx, int box_type = OPS_BOX_CONFORMING,
+                                     int assign = 1) {
   if (strcmp(block->name, crds->block->name) != 0)
     throw OPSException(OPS_INVALID_ARGUMENT, "The block associated with the "
                        "ops_dat structure not linked to the input block");
@@ -425,7 +472,11 @@ BoundingBox<T>* ops_create_bounding_box(const ops_block block, const ops_dat crd
 
   BoundingBox<T> *box = new BoundingBox<T>{crds, dx, dim};
 
-  ops_set_bounding_box_to_block(block, (char *) box);
+  if (assign == OPS_BOX_TO_BLOCK && box_type != OPS_BOX_CONFORMING)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Only conforming boxes can be assigned to a block\n");
+
+  if (assign == OPS_BOX_TO_BLOCK)
+    ops_set_bounding_box_to_block(block, (char *) box, sizeof(T));
 
   return box;
 
@@ -434,13 +485,17 @@ BoundingBox<T>* ops_create_bounding_box(const ops_block block, const ops_dat crd
 /**
  * Create a new BoundingBox based on user defined region.
  *
- * @param block   pointer to an ops_block structure that this BoundingBox is related to
- * @param dim     size of the spatial space
- * @param region  Region definition in the form [xmin, ymin, zmin, xmax, ymax, zmax]
+ * @param block      pointer to an ops_block structure that this BoundingBox is related to
+ * @param dim        size of the spatial space
+ * @param region     Region definition in the form [xmin, ymin, zmin, xmax, ymax, zmax]
+ *@param box_type    flag indicating that box conforms to the block or not
+ *@param assign      flag for setting the box as the box block
  */
 
 template<typename T>
-BoundingBox<T>* ops_create_bounding_box(const ops_block block, int dim, T *region) {
+BoundingBox<T>* ops_create_bounding_box(const ops_block block, int dim, T *region,
+                                        int box_type = OPS_BOX_CONFORMING,
+                                        int assign = 1) {
   ops_point<T> point_low;
   ops_point<T> point_hi;
 
@@ -465,15 +520,22 @@ BoundingBox<T>* ops_create_bounding_box(const ops_block block, int dim, T *regio
     throw OPSException(OPS_INVALID_ARGUMENT, "ERROR: Candidate region has a non-positive"
                        " length in  x-direction.\n");
 
-  BoundingBox<T> *box = new BoundingBox<T>{block, dim, point_low, point_hi};
+  BoundingBox<T> *box = new BoundingBox<T>{block, dim, point_low, point_hi, box_type};
 
-  ops_set_bounding_box_to_block(block, (char *) box);
+  if (assign == OPS_BOX_TO_BLOCK && box_type != OPS_BOX_CONFORMING)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Only conforming boxes can be assigned to a block\n");
+
+
+  if (assign == OPS_BOX_TO_BLOCK)
+   ops_set_bounding_box_to_block(block, (char *) box, sizeof(T));
 
   return box;
 }
 
 
 void ops_build_bounding_box(ops_particle particle );
+
+void ops_build_main_bounding_box(ops_block block);
 
 ops_particle ops_decl_particle_char(ops_block block, char const* name,
                                     char *Box, int type_size);
@@ -586,7 +648,7 @@ ops_arg ops_arg_gbl_particle(T *data, int dim, char const *type, ops_access acc)
  * @param box    box linked to the given particle
  *
  */
-template<typename T>
+template<typename T = double>
 ops_particle ops_decl_particle(ops_block  block, char const* name, BoundingBox<T> *box = nullptr) {
 
   ops_particle particle =  ops_decl_particle_char(block, name, (char *) box, sizeof(T));
@@ -596,15 +658,20 @@ ops_particle ops_decl_particle(ops_block  block, char const* name, BoundingBox<T
   return particle;
 }
 
+/** This function generates a new ops_particle structure linked to wall structures
+ *  * @param block  block to which the generated ops_particle structure belongs
+ * @param name   name of the particle structure
+ * @param box    box linked to the given particle. For nullptr the box owned by the
+ *               block will be assigned to the particle box.
+ */
 
-template<typename T>
-ops_particle ops_decl_particle_wall(ops_block block, char const *name, BoundingBox<T> *box,
-                               T *xcm, T *np) {
+template<typename T = double>
+ops_particle ops_decl_particle_wall(ops_block block, char const *name,
+                               T *xcm, T *np, BoundingBox<T> *box = nullptr) {
 
   ops_particle particle = ops_decl_particle_char(block, name, (char *) box, sizeof(T));
 
-  particle->is_wall = 1;
-  particle->Nmax = 1;
+  particle->is_wall = 1; //For the moment is OK
 
   T np_norm = 0;
   T np_sum = 0;
@@ -618,8 +685,6 @@ ops_particle ops_decl_particle_wall(ops_block block, char const *name, BoundingB
     np[i] /= np_norm;
     np_sum += ops_abs(np[i]);
   }
-
-
 
   if (np_sum - 1 > 1e-9)
     throw OPSException(OPS_RUNTIME_ERROR,"Error: Wall is inclined-For inclined walls please use analytical model");
@@ -663,7 +728,6 @@ ops_dat ops_decl_particle_dat(ops_particle particle, int data_size, int *base,
    if (particle == nullptr)
      throw OPSException(OPS_INVALID_ARGUMENT,"Empty ops_particle structure.");
 
-//   printf("Bool flag = %d\n",assign);
    int block_size[OPS_MAX_DIM], d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM], stride[OPS_MAX_DIM];
 
    d_m[0] = d_p[0] = 0;
@@ -693,6 +757,7 @@ ops_dat ops_decl_particle_dat(ops_particle particle, int data_size, int *base,
  * This function sets the particle envelope structure (in term of radius)
  *
  * @param particle   ops_particle structure to which this ops_dat structure belongs
+ * @param dim        dimension of the particle envelope structure
  * @param base       base indices in 1D structure
  * @param data       input data of type @p T
  * @param type       the name of type used for output diagnostics
@@ -702,7 +767,7 @@ ops_dat ops_decl_particle_dat(ops_particle particle, int data_size, int *base,
  */
 template<class T>
 ops_dat ops_decl_particle_envelope(ops_particle particle, int *base, T *data,
-                                   char const *type, char const *name) {
+                                   int dim,  char const *type, char const *name) {
   if (particle == nullptr)
     throw OPSException(OPS_INVALID_ARGUMENT, "Particle ops_dat structure must be defined before"
                                              "ops_particle definition");
@@ -721,7 +786,7 @@ ops_dat ops_decl_particle_envelope(ops_particle particle, int *base, T *data,
     stride[i] = 1;
   }
 
-  ops_dat particle_dat = ops_decl_particle_dat_char(particle, 1, block_size,
+  ops_dat particle_dat = ops_decl_particle_dat_char(particle, dim, block_size,
                                                     base, d_m, d_p, stride, (char *)data,
                                                     sizeof(T), type, name, false,
                                                     true);
@@ -813,15 +878,24 @@ ops_dat ops_decl_particle_id_dat(ops_particle particle, int *base, T *data, char
 
 
 
- if (particle->ids != NULL)
-   throw OPSException(OPS_INVALID_ARGUMENT, "Particle id ops dat sturcture is already"
+  if (particle->ids != nullptr)
+    throw OPSException(OPS_INVALID_ARGUMENT, "id ops dat sturcture for the given particle structure is "
                                             "defined\n");
+
+  //Assert that the provided number is integer
 
   int block_size[OPS_MAX_DIM], d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM], stride[OPS_MAX_DIM];
 
   d_m[0] = d_p[0] = 0;
   stride[0] = 1;
   block_size[0] = particle->Nmax; //TODO
+
+  //Assert type
+
+  if (!check_for_integer<T>())
+    throw OPSException(OPS_RUNTIME_ERROR,"Error: id ops_dat structure attempted to be "
+                                         "defined for non-integer number, char type and variants "
+                                         " leads to error\n");
 
   for (int i = 1; i < particle->block->dims; i++) {
     d_m[i] = 0;
@@ -848,7 +922,8 @@ ops_dat ops_decl_particle_normal_dat(ops_particle particle, int data_size, int *
   }
 
   if (particle->normal_vector != nullptr)
-    throw OPSException(OPS_RUNTIME_ERROR, "Error: Wall normal vector is defined\n");
+    throw OPSException(OPS_RUNTIME_ERROR, "Error: Normal vector ops_dat structure has already "
+                       "defined for the given wall");
 
   if (sizeof(T) != particle->type_box)
     throw OPSException(OPS_INVALID_ARGUMENT, "Error: The type of particle positions differs from the "
@@ -906,6 +981,7 @@ ops_dat ops_decl_particle_normal_dat(ops_particle particle, int data_size, int *
  * @param name             a name used for output diagnostics
  */
 
+
 template<typename T>
 ops_neighbor_history  ops_decl_neigh_history(ops_particle particleI,
                                              ops_particle particleJ,
@@ -943,6 +1019,15 @@ ops_neighbor_history ops_decl_neigh_history(ops_particle particleI, int dofs,
                                       type_hist, (char *) array,
                                       sizeof(T), type, name);
 }
+
+/**
+ * This function generates a group for the given particle structure
+ *
+ * @param ops_particle   ops_particle structure to which the group is assigned
+ * @param name           name of the group structure
+ *
+ */
+ops_particle_group ops_decl_particle_group(ops_particle, const char *name);
 
 
 /**
@@ -1261,8 +1346,6 @@ ops_particle_mapping  ops_decl_mapping(ops_particle particle, ops_dat grid,
                                        ops_with_virtual include_virtual,
                                        ops_grid_type grid_type, int Ng = 1);
 
-
-
 /**
  * This function declaires a mapping structure that is coarser than the associated
  * grid structure
@@ -1278,11 +1361,57 @@ ops_particle_mapping  ops_decl_mapping(ops_particle particle, ops_dat grid,
  *                           structure grids
  *
  */
-
 ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid,
                                       ops_stencil stencil, int stride[] ,
                                       ops_with_virtual include_virtual,
                                       ops_grid_type grid_type, int Ng);
+
+//TODO:Add this as well as was removed
+
+/**
+ * This function declaires a map of particles to non-uniform grids
+ *
+ * @param particle        Pointer to an ops_particle structure that map is
+ *                        generated
+ * @param grid            An ops_dat structure for which a map is generated
+ * @param stencil         Pointer to an ops_stencil for accessing grid points
+ * @param include_virtual flag indicating that virtual particles will be included
+ *                        in the map
+ * @param d_m             depth of mapping halos in the negative-direction
+ * @param d_p             dpeth of mapping halos in the positive-direction
+ * @param grid_type       flag indicating grid type
+ * @param skin           the distance of two adjacent points in the uniform projection
+ *                        map
+ * @param region           User defined region for projecting grid points in the
+ *                        uniform mapping grid
+ * @param Ng              number of grids for mapping particles at non-uniform grids
+ */
+
+
+template<typename T = double>
+ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid,
+                                      ops_stencil stencil,
+                                      ops_with_virtual include_virtual,
+                                      int d_m[], int d_p[],
+                                      ops_grid_type grid_type,
+                                      T *skin = nullptr, T *region = nullptr,
+                                      int Ng = 1) {
+
+  int size[OPS_MAX_DIM], d_mm[OPS_MAX_DIM], d_mp[OPS_MAX_DIM];
+  int base[OPS_MAX_DIM], stride[OPS_MAX_DIM];
+  T dx_map;
+
+  _ops_mapping_set_structure(particle, grid, stencil, d_mm, d_mp, size,
+                             base, d_m, d_p, stride, grid_type);
+
+
+  int grid_access = (region == nullptr) ? 1 : 0;
+
+  //Used to declaire maps for non-conforming grids
+  return _ops_decl_mapping_core(particle, grid, stencil, size, base, d_mm, d_mp, stride,
+                                (char *) skin, include_virtual, grid_type, Ng,
+                                (char *) region, grid_access); //TODO
+}
 
 
 
@@ -1314,13 +1443,12 @@ ops_particle_mapping ops_decl_mapping(ops_particle particle, T* skin,
     throw OPSException(OPS_RUNTIME_ERROR, "Error: The type of grid sizes differs from "
                        "the type of particle positions");
 
-  _ops_mapping_set_structures(particle, (char *)skin, d_m, d_p, d_mm,
+  _ops_mapping_set_structures(particle, (char *) skin, d_m, d_p, d_mm,
                               d_mp, size, (char *) dx_map, include_virtual); //TODO: Needs to be modified
   int base[OPS_MAX_DIM] = {};
 
   return _ops_decl_mapping_core(particle, (char *)dx_map, size, d_mm, d_mp,
-                                base, include_virtual,
-                                grid_type, 1);
+                                base, include_virtual, grid_type, 1);
 }
 
 
@@ -1589,6 +1717,9 @@ ops_arg ops_arg_idx_map();
  * ---------------------------------------------------------------------------------------*/
 
 void _ops_particle_swap_data(char *data, int i, int j, int elems);
+
+void _ops_particle_swap_history_data(ops_neighbor_history history, int index,
+                                     int i, int j);
 
 int _ops_particle_owned_dat(ops_particle particle, ops_dat dat); //TODO: Move
 

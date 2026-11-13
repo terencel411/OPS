@@ -58,11 +58,30 @@ inline int virtual_within(int bin[], int bin_limits[], T *pos,
 }
 
 template<typename T>
+bool grid_point_in_range(T *xgrid, T *region_grid, int dim) {
+
+  T eps = std::numeric_limits<T>::epsilon();
+
+
+  for (int i = 0; i < dim; i++) {
+    if (xgrid[i] < region_grid[2 * i] - eps || xgrid[i] > region_grid[2 * i + 1] + eps)
+      return false;
+  }
+
+  return true;
+}
+
+template<typename T>
 inline int particle_is_within(T *xpos, T *region,  int dim)  {
   int flag  =  1;
 
+  T eps = std::numeric_limits<T>::epsilon();
+
   for (int i = 0; i < dim; i++) {
-    if (xpos[i] < region[2 * i] || xpos[i] >= region[2 * i + 1]) return 0;
+    if (xpos[i] < region[2 * i] || xpos[i] > region[2 * i + 1]) return 0;
+
+    //Check for the equality
+    if (xpos[i] >= region[2 * i + 1] - eps && xpos[i] <= region[2 * i + 1] + eps) return 0;
   }
 
   return flag;
@@ -161,6 +180,7 @@ int _ops_coord_to_bin(const int dim, const ops_point<T> xmin, const ops_point<T>
     iy = (int) ops_floor((xp[1] - xmin.y) / dx[1] + epsilon);
   }
 
+
   iz = 0;
   if (dim == 3) {
     within = 0;
@@ -182,7 +202,7 @@ int _ops_coord_to_bin(const int dim, const ops_point<T> xmin, const ops_point<T>
 
 template<typename T>
 int _ops_coord_to_bin(const int dim, const T *xmin, const T* xmax, const T* dx,
-                      int *Ngrid, const T* xp) {
+                      const int *Ngrid, const T *xp) {
 
   T epsilon = std::numeric_limits<T>::epsilon();
 
@@ -196,6 +216,7 @@ int _ops_coord_to_bin(const int dim, const T *xmin, const T* xmax, const T* dx,
       ix[i] = (int) ops_floor((xp[i] - xmin[i]) / dx[i]);
       within = 1;
     }
+    else return -1;
 
     if ((ix[i] < 0) && within) {
       ix[i] = (int) ops_floor((xp[i] - xmin[i]) / dx[i] + epsilon);
@@ -205,6 +226,8 @@ int _ops_coord_to_bin(const int dim, const T *xmin, const T* xmax, const T* dx,
 
     address += ix[i] * prd;
     prd *= Ngrid[i];
+
+
   }
 
   return address;
@@ -223,7 +246,7 @@ void _ops_map_compute_dx(const T *skin,const T* length, const int dim, T* dx_map
 
     int icells = floor(length[i] / skin[i]);
     size[i] = (icells > 0) ? icells : 1;
-    dx_map[i] = length[i] /  static_cast<double>(size[i]);
+    dx_map[i] = length[i] /  static_cast<T>(size[i]);
   }
 
 
@@ -347,5 +370,142 @@ void _ops_particle_no_particles_in_range_by_box(const BoundingBox<T> * box, cons
   (*nsend) = nwithin;
 }
 
+template<typename T>
+void _ops_particle_points_in_map(T *xmin, T *xmax, T* dx,  T* data, int dim, const int size[],
+                                 const int d_m[], const int d_p[], const int flag_m[],
+                                 const int flag_p[], const int d_m_map[], const int d_p_map[],
+                                 int soa, int *nPoints, int access_type, T *region_grid) {
+
+  T region[2 * OPS_MAX_DIM];
+  int range_local[OPS_MAX_DIM];
+  int ifirst_loc[OPS_MAX_DIM];
+  T xgrid[OPS_MAX_DIM];
+  for (int i = 0; i < dim; i++) {
+    range_local[i] = size[i] + d_m[i] * ( 1 - flag_m[i]) - (1 - flag_p[i]) * d_p[i];
+    ifirst_loc[i] = - (1 - flag_m[i]) * d_m[i];
+    region[2 * i ] = xmin[i] + d_m_map[i] * dx[i];
+    region[2 * i + 1] = xmax[i] + dx[i] * d_p_map[i];
+  }
+
+  for (int i = dim; i < OPS_MAX_DIM; i++) {
+    range_local[i] = 1;
+    ifirst_loc[i] = 0;
+  }
+
+  for (int k = 0; k < range_local[2]; k++) {
+    int k_elem = k + ifirst_loc[2];
+    for (int j = 0; j < range_local[1]; j++) {
+      int j_elem = j + ifirst_loc[1];
+      for (int i = 0; i < range_local[0]; i++) {
+        int i_elem = i + ifirst_loc[0];
+
+        xgrid[0] = (soa) ?  *(data + i_elem + j_elem * size[0] + k_elem * size[0] * size[1])
+                        :  *(data + dim * i_elem + j_elem * dim * size[0] + k_elem * size[0] * size[1]);
+        xgrid[1] = (soa) ?  *(data + i_elem + j_elem * size[0] + k_elem * size[0] * size[1]
+                             + size[0] * size[1] * size[2]) : *(data + 1 + i_elem * dim + j_elem * dim * size[0]
+                                                                      + k * dim * size[0] * size[1]);
+        if (dim == 3)
+         xgrid[2] = (soa) ? *(data + i_elem + j_elem * size[0] + k_elem * size[0] * size[1]
+                          + 2 * size[0] * size[1] * size[2]) : *(  data + 2 + i_elem * dim
+                                                                 + j_elem * dim * size[0]
+                                                                 + k_elem * dim * size[0] * size[1]);
+        if (access_type && !grid_point_in_range(xgrid, region_grid, dim)) continue;
+        (*nPoints) += particle_is_within(xgrid, region, dim);
+
+      }
+    }
+  }
+
+
+}
+
+template<typename T>
+void       _ops_particle_generate_maps_non_conf(int map_type, T * xmin, T* xmax, T *dx, T* grid,
+                                                const int dim, int *grid_head, int *grid_bins,
+                                                int *id_grid, int *grid_to_map,
+                                                int size[], const int d_m[],
+                                                const int d_p[], const int flag_m[],
+                                                const int flag_p[], const int size_map[],
+                                                const int d_m_map[], const int d_p_map[],
+                                                const int soa, const int Np,
+                                                int grid_access, T *region_grid) {
+
+  size_t prod{1}, prod_map{1};
+  for (int i = 0; i < dim; i++) {
+    prod *= size[i];
+    prod_map *= size_map[i];
+  }
+  memset(grid_to_map, -1, prod * sizeof(int));
+  memset(grid_head, -1, prod_map * sizeof(int));
+  if (Np == 0)
+    return;
+
+  T region[2 * OPS_MAX_DIM];
+  int range_local[2 * OPS_MAX_DIM];
+  int ifirst_loc[OPS_MAX_DIM];
+  T xgrid[OPS_MAX_DIM];
+  T x_min[OPS_MAX_DIM];
+
+  for (int i = 0; i < dim; i++) {
+    range_local[i] = size[i] + d_m[i] * ( 1 - flag_m[i]) - (1 - flag_p[i]) * d_p[i];
+    ifirst_loc[i] = - (1 - flag_m[i]) * d_m[i];
+    region[2 * i ] = xmin[i] + d_m_map[i] * dx[i];
+    region[2 * i + 1] = xmax[i] + d_p_map[i] * dx[i];
+    x_min[i] = xmin[i] + d_m_map[i] * dx[i];
+  }
+
+  for (int i = dim; i < OPS_MAX_DIM; i++) {
+    range_local[i] = 1;
+    ifirst_loc[i] = 0;
+  }
+
+
+  if (Np > 0) {
+    memset(grid_bins, -1, sizeof(int) * Np);
+    memset(id_grid, -1, sizeof(int) * Np);
+  }
+
+  int ngrid = 0;
+  for (int k = 0; k < range_local[2]; k++) {
+    int k_elem = k + ifirst_loc[2];
+    for (int j = 0; j < range_local[1]; j++) {
+      int j_elem = j + ifirst_loc[1];
+      for (int i = 0; i < range_local[0]; i++) {
+        int i_elem = i + ifirst_loc[0];
+        xgrid[0] = (soa) ?  *(grid + i_elem + j_elem * size[0] + k_elem * size[0] * size[1])
+                        :  *(grid + dim * i_elem + j_elem * dim * size[0] + k_elem * size[0] * size[1]);
+        xgrid[1] = (soa) ?  *(grid + i_elem + j_elem * size[0] + k_elem * size[0] * size[1]
+                             + size[0] * size[1] * size[2]) : *(grid + 1 + i_elem * dim + j_elem * dim * size[0]
+                                                                      + k * dim * size[0] * size[1]);
+        if (dim == 3)
+         xgrid[2] = (soa) ? *(grid + i_elem + j_elem * size[0] + k_elem * size[0] * size[1]
+                          + 2 * size[0] * size[1] * size[2]) : *(  grid + 2 + i_elem * dim
+                                                                 + j_elem * dim * size[0]
+                                                                 + k_elem * dim * size[0] * size[1]);
+
+        if (grid_access > 0 && !grid_point_in_range(xgrid, region_grid, dim)) continue;
+
+        if (particle_is_within(xgrid, region, dim)) {
+
+          int map_grid = i_elem + j_elem * size[0] + k_elem * size[0] * size[1];
+          int address = _ops_coord_to_bin(dim, x_min, xmax, dx, size_map,xgrid );
+
+          grid_to_map[map_grid] = address;
+
+          if (address > -1) {
+            grid_bins[ngrid] = grid_head[address];
+            grid_head[address] = ngrid;
+            id_grid[ngrid] = map_grid;
+            ngrid++;
+          }
+        }
+
+      }
+
+
+    }
+  }
+
+}
 
 #endif /* OPS_C_INCLUDE_OPS_PARTICLE_MAPPING_FUNCTIONS_H_ */

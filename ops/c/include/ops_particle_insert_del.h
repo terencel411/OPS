@@ -77,8 +77,6 @@ int find_offset(ops_arg arg, int *iprev, int elem, int insert_elem) {
                                                "related to a particle structure");
     offs = (elem - (*iprev));// * dat->dim; //TODO: Check if I need bytes
 
-  //  printf("elem = %d Offs = %d iprev = %d dim = %d\n", elem , offs, *iprev, dat->dim);
-
     (*iprev) = elem;
   }
   else if ( arg.argtype == OPS_ARG_GBL_PARTICLE) {
@@ -241,7 +239,7 @@ bool   ops_particle_user_delete_impl(indices<J...>,  int (*kernel)(ParamType... 
     if (markForDeletion[i] >  0) continue;
 
     markForDeletion[i] = kernel((particle_param_handler<param_remove_cvref_t<ParamType>>::get(p_a[J]))...);
-    if (markForDeletion[i] == 1) imarked++; //printf("Particle %d marked for deletion\n", i);}
+    if (markForDeletion[i] == 1) imarked++;
   }
 
 
@@ -326,7 +324,7 @@ bool ops_particle_user_del_grid_impl(indices<J...>,  int (*kernel)(ParamType... 
       if (markForDeletion[i] >  0) continue;
 
       markForDeletion[i] = kernel((particle_param_handler<param_remove_cvref_t<ParamType>>::get(p_a[J]))...);
-      if (markForDeletion[i] == 1) imarked++; //printf("Particle %d marked for deletion\n", i);}
+      if (markForDeletion[i] == 1) imarked++;
 
   }
 
@@ -340,7 +338,7 @@ bool ops_particle_user_del_grid_impl(indices<J...>,  int (*kernel)(ParamType... 
       ops_particle_mapping map = particle->map_list[imap];
       flag = MAX((int) map->decide, flag);
       if (!map->decide) map->decide = true;
-    }
+    } //TODO: Check if particle is in border.
 
     if (flag == 0)
       ops_particle_reset_virtual_particles(particle);

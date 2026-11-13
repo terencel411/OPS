@@ -69,26 +69,52 @@ inline void find_offs(const ops_arg &arg, int &offs, const int *old_ind, const i
     offs = 0;
 }
 
-//This is problematic
+inline int particle_in_group_v2(ops_particle particle, int i, ops_particle_group group) {
+  if (particle->index != group->particle_index)
+    throw OPSException(OPS_RUNTIME_ERROR,"Error: The given ops_particle_group not "
+                                         "linked to the given ops_particle_structure");
 
-inline  void get_point_in_map(int *point2map, int *point, int dim,
-                              ops_stencil stencil) {
+  if (((int *) group->group_dat->data)[i] != 0) return 1;
+
+  return 0;
+}
+
+
+inline  void get_point_in_map(int map_type, int *point2map, const int *point, const int map_address,
+                              const int dim, const int map_size[], const int d_m[], ops_stencil stencil) {
 
   //Get actual grid point in stencil
 
-  switch(stencil->type) {
-  case 0:
-    for (int n = 0; n < dim; n++) point2map[n] = point[n];
-    break;
-   case 1:
-    for (int n = 0; n < dim; n++)
-      point2map[n] = point[n] / stencil->mgrid_stride[n];
-    break;
-  case 2:
-    for (int n = 0; n < dim; n++)
-      point2map[n] = point[n] * stencil->mgrid_stride[n];
-    break;
+  if (map_type < 2) {
+    switch(stencil->type) {
+    case 0:
+      for (int n = 0; n < dim; n++) point2map[n] = point[n];
+      break;
+    case 1:
+      for (int n = 0; n < dim; n++)
+        point2map[n] = point[n] / stencil->mgrid_stride[n];
+      break;
+    case 2:
+      for (int n = 0; n < dim; n++)
+        point2map[n] = point[n] * stencil->mgrid_stride[n];
+      break;
+    }
   }
+  else { //THIS IS WRONG
+    int addr = map_address;
+    for (int i = dim ; i >= 0; i--) {
+      int size = 1;
+      for (int j = 0; j < i; j++) {
+        size *= map_size[j];
+      }
+
+      int iloc = addr / size;
+      point2map[i] = iloc + d_m[i];
+      addr -= iloc * size;
+
+    }
+  }
+
 }
 
 inline int get_mapping_address(int  *point,int dim, ops_dat binhead) {
@@ -348,6 +374,7 @@ template <typename T> struct grid_part_param_handler<ACCP<T>> {
 template<typename... ParamType, typename... OPSARG, size_t... J>
 void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType ...),
                        char const *name, ops_particle particle,
+                       ops_particle_group group,
                        ops_particle_mapping map, ops_stencil map_stencil,
                        int dim, int *range, OPSARG... arguments) {
 
@@ -355,6 +382,7 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType ...),
   ops_arg args[N] = {arguments...};
 //  int count[OPS_MAX_DIM] = {0};
   ops_block block = particle->block;
+
 
   if (map_stencil == nullptr)
     throw OPSException(OPS_INVALID_ARGUMENT, "Empty mapping stencil\n");
@@ -372,8 +400,53 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType ...),
   if (map == nullptr)
     throw OPSException(OPS_INVALID_ARGUMENT, "Empty mapping structure");
 
+  if (map->grid == nullptr)
+    throw OPSException(OPS_RUNTIME_ERROR, "The map for particle/grid interaction must "
+                                          " be constructed based on an ops_dat structure");
+
   if (map->binhead == nullptr || map->bin == nullptr)
     throw OPSException(OPS_INVALID_ARGUMENT, "Empty mapping elements");
+
+
+  if (   map->grid_type == OPS_NON_UNI_STAG
+      || map->grid_type == OPS_NON_UNI_COLL) {
+    int index = map->grid->index;
+    for (int idir = 0; idir < block->dims; idir++) {
+#ifdef OPS_MPI
+      int size_map_grid = OPS_sub_dat_list[index]->gbl_base[idir]
+                        + OPS_sub_dat_list[index]->gbl_size[idir]
+                        + OPS_sub_dat_list[index]->gbl_d_m[idir]
+                        - OPS_sub_dat_list[index]->gbl_d_p[idir];
+#else
+      int size_map_grid = map->mapping_grid->size[idir]
+                        + map->mapping_grid->base[idir]
+                        + map->mapping_grid->d_m[idir]
+                        - map->mapping_grid->d_p[idir];
+
+#endif
+      for (int iarg = 0; iarg < N; iarg++) {
+        if (args[iarg].argtype == OPS_ARG_DAT) {
+#ifdef OPS_MPI
+          int index_dat = args[iarg].dat->index;
+          int size_dat = OPS_sub_dat_list[index_dat]->gbl_base[idir]
+                       + OPS_sub_dat_list[index_dat]->gbl_size[idir]
+                       + OPS_sub_dat_list[index_dat]->gbl_d_m[idir]
+                       - OPS_sub_dat_list[index_dat]->gbl_d_p[idir];
+#else
+          int size_dat = args[iarg].dat->size[idir]
+                       + args[iarg].dat->base[idir]
+                       + args[iarg].dat->d_m[idir]
+                       - args[iarg].dat->d_p[idir];
+#endif
+          if (size_dat != size_map_grid)
+            throw OPSException(OPS_RUNTIME_ERROR, "Error: Accessing data of non-uniform grids"
+                                                  " require the ops_dat to defined in the same "
+                                                  " grid\n");
+
+        }
+      }
+    }
+  }
 
 #ifdef CHECKPOINTING
   if (!ops_checkpointing_name_before(args,N,range,name)) return;
@@ -409,14 +482,6 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType ...),
     start[n] = 0; end[n] = 1;
   }
 
-  /*
-  printf("Rank %d: Start [%d %d] End [%d %d]\n", ops_get_proc(), start[0], start[1], end[0], end[1]);
-  printf("Rank %d Binhead size [%d %d]\n", ops_get_proc(),
-         map->binhead->size[0] +  (OPS_sub_dat_list[map->binhead->index]->d_im[0] +
-         map->binhead->d_m[0]) - (OPS_sub_dat_list[map->binhead->index]->d_ip[0] + map->binhead->d_p[0]),
-         map->binhead->size[1] + (OPS_sub_dat_list[map->binhead->index]->d_im[1] + map->binhead->d_m[1])
-         - (OPS_sub_dat_list[map->binhead->index]->d_ip[1] + map->binhead->d_p[1]));
-         */
 
 #ifdef OPS_DEBUG
   ops_register_args(block->instance, args, name);
@@ -435,8 +500,6 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType ...),
                                                                                       first_point, particle, map,
                                                                                       map_stencil)...};
 
- // printf("Passed construct\n");
-
   int offs[N] = {};
   int old_indices[N][OPS_MAX_DIM];
 //  int igrid_to_map[OPS_MAX_DIM];
@@ -452,10 +515,30 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType ...),
   int point2map[OPS_MAX_DIM]={};
   int point[OPS_MAX_DIM]={};
 
+  int d_mg[OPS_MAX_DIM], d_mm[OPS_MAX_DIM];
+  int index_map = map->grid->index;
+  int binhead_size[OPS_MAX_DIM];
+  for (int i = 0; i < block->dims;i++) {
+#ifdef OPS_MPI
+    d_mg[i] = OPS_sub_dat_list[index_map]->d_im[i] + map->grid->d_m[i];
+    d_mm[i] = OPS_sub_dat_list[map->binhead->index]->d_im[i] + map->binhead->d_m[i];
+#else
+    d_mg[i] = map->grid->d_m[i];
+    d_mm[i] = map->binhead->d_m[i];
+#endif
+    binhead_size[i] = map->binhead->size[i];
+  }
+
+  for (int i = block->dims; i < OPS_MAX_DIM; i++) {
+    d_mg[i] = 0;
+    d_mm[i] = 0;
+    binhead_size[i] = 1;
+  }
+
   (void) std::initializer_list<int>{(find_old_indices(arguments, old_indices[J], dim, start), 0)...}; //TODO
 
-  //printf("Rank %d [%d %d]x[%d %d]x[%d %d]\n", ops_get_proc(), start[0], end[0], start[1], end[1], start[2], end[2]);
 
+  int ipoint  = 0;
   int stencil_point[OPS_MAX_DIM];
   for (int k = start[2]; k < end[2]; k++) {
     for (int j = start[1]; j < end[1]; j++) {
@@ -464,15 +547,28 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType ...),
         point[1] = j;
         point[2] = k;
 
+
+        //Get address
+        int address_grid =  (point[0] - d_mg[0]) + (point[1] - d_mg[1]) * map->grid->size[0]
+                             + (point[2] - d_mg[2]) * map->grid->size[0] * map->grid->size[1];
+
+        int is_projected = (map->map_type > 1) ? ((int *) map->grid_to_map->data)[address_grid] : 1;
+
+        if (is_projected < 0) continue;
+
         (void) std::initializer_list<int>{(find_offs(arguments, offs[J], old_indices[J], dim, point), 0)...};
-
-
-  //      printf("offs[0] = %d offs[1] = %d\n", offs[0], offs[1]);
 
         (void) std::initializer_list<int>{ (grid_part_param_handler<param_remove_cvref_t<ParamType>>::shift_arg(arguments, map, p_a[J],
                                             offs[J], dim, point, block->instance),0)...};
 
-        get_point_in_map(point2map, point, dim, map_stencil); //TODO
+
+        //
+        int map_address = (map->map_type > 1) ? ((int *) map->grid_to_map->data)[address_grid]
+                                              : address_grid;
+
+        get_point_in_map(map->map_type, point2map, point, map_address, dim,
+                         binhead_size, d_mm, map_stencil);
+
 
         for (int isou = 0; isou < map_stencil->points; isou++) {
           //Get stencil point
@@ -480,22 +576,14 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType ...),
             stencil_point[d] = map_stencil->stencil[isou * dim + d] + point2map[d];
           }
 
-
-
           int address = get_mapping_address(stencil_point, dim, binhead); //TODO
-/*
-          printf("Rank %d: Point [%d %d %d] (%d %d) stencil [%d %d] yields address %d\n",
-                 ops_get_proc(), i, j, k, point2map[0], point2map[1],
-                 stencil_point[0], stencil_point[1], address);
-*/
-          if (address < 0) continue; //no-address out of scope
 
-          int ipart = bin_head[address];
-
-/*          if (ipart != -1) printf("Rank %d: Particle %d in bin [%d %d] stencil [%d %d]\n", ops_get_proc(), ipart,
-                                  point2map[0], point2map[1], stencil_point[0], stencil_point[1]); */
+          int ipart = (address < 0) ? -1 : bin_head[address];
 
           while (ipart != - 1) {
+
+            if (group != nullptr)
+              if (!particle_in_group_v2(particle, i, group)) continue;
 
             //Shift particle data & update the previous point
             (void) std::initializer_list<int>{
@@ -513,11 +601,14 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType ...),
 
         }
 
+        ipoint++;
+
         //Get old indices
         (void) std::initializer_list<int>{(find_old_indices(arguments, old_indices[J], dim, point), 0)...};
 
       }
     }
+
   }
 
 #ifdef OPS_DEBUG_DUMP
@@ -560,14 +651,15 @@ void ops_par_loop_impl(indices<J...>, void (*kernel)(ParamType ...),
  */
 template<typename... ParamType, typename... OPSARG>
 void ops_par_loop(void (*kernel)(ParamType...), char const *name,
-                  ops_particle particle, ops_particle_mapping map, ops_stencil map_stencil,
+                  ops_particle particle, ops_particle_group group,
+                  ops_particle_mapping map, ops_stencil map_stencil,
                   int dim, int *range, OPSARG... arguments) {
 
   static_assert(sizeof...(ParamType) == sizeof...(OPSARG),
                 "number of kernel parameter do not match the number of ops_arg");
 
   ops_par_loop_impl(build_indices<sizeof...(ParamType)>{}, kernel, name,
-                    particle, map, map_stencil, dim, range, arguments...);
+                    particle, group, map, map_stencil, dim, range, arguments...);
 
 }
 

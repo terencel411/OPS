@@ -82,7 +82,7 @@ OPSDistribution<Distribution, T>* ops_declaire_distribution(int dim, T* params, 
   OPSDistribution<Distribution, T> *distrib =(OPSDistribution<Distribution, T> *) xmalloc(
                                               sizeof(OPSDistribution<Distribution, T>) * dim); //TODO
 
-  printf("I entered herein to declaire distrib\n");
+//  printf("I entered herein to declaire distrib\n");
 
   distrib->dims = dim;
   distrib->distribution = (Distribution<T> *) xmalloc(sizeof(Distribution<T>) * dim);

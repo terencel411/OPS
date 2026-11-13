@@ -39,6 +39,8 @@
  */
 
 #include <limits>
+#include <type_traits>
+
 void *xmalloc(size_t size);
 
 void *xrealloc(void *ptr, size_t size);
@@ -68,6 +70,18 @@ template<typename T>
 inline int fge(T a, T b) {
     return fgt(a, b) || feq(a, b);
 }
+
+template<typename T>
+constexpr bool check_for_integer() {
+
+  return std::is_integral<T>::value &&
+        !std::is_same<T, bool>::value &&
+        !std::is_same<T, char>::value &&
+        !std::is_same<T, signed char>::value &&
+        !std::is_same<T, unsigned char>::value;
+
+}
+
 
 //int min(int array[], int size);
 
@@ -214,7 +228,7 @@ inline T ops_round_eps(double x, double epsilon) {
 template<typename T>
 inline T ops_floor(T x, T epsilon = 1.e-12) {
 
-  int epsilon1 = epsilon;
+  T epsilon1 = epsilon;
   if (epsilon < std::numeric_limits<T>::epsilon())
     epsilon1 = std::numeric_limits<T>::epsilon();
 

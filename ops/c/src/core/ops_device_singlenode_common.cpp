@@ -44,50 +44,56 @@
 
 ops_dat ops_decl_dat_char(ops_block block, int size, int *dat_size, int *base,
                           int *d_m, int *d_p, int *stride, char *data, int type_size,
-                          char const *type, char const *name) {
+                          char const *type, char const *name, int alloc) {
 
   /** ----             allocate an empty dat             ---- **/
 
+  if (data != nullptr && alloc == 0)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Restoring data is not compatible with non-allocatable "
+                                             "ops-dat structure");
+
   ops_dat dat = ops_decl_dat_temp_core(block, size, dat_size, base, d_m, d_p,
-                                       stride, data, type_size, type, name);
+                                       stride, data, type_size, type, name, alloc);
 
   size_t bytes = size * type_size;
   for (int i = 0; i < block->dims; i++)
     bytes = bytes * dat->size[i];
 
-  if (data != NULL && !block->instance->OPS_realloc) {
-    // printf("Data read in from HDF5 file or is allocated by the user\n");
-    dat->user_managed =
-        1; // will be reset to 0 if called from ops_decl_dat_hdf5()
-    dat->is_hdf5 = 0;
-    dat->mem = bytes;
-    dat->hdf5_file = "none"; // will be set to an hdf5 file if called from
-    ops_cpHostToDevice ( block->instance, ( void ** ) &( dat->data_d ),
-            ( void ** ) &( dat->data ), bytes );
+  if (dat->is_alloc) {
+    if (data != NULL && !block->instance->OPS_realloc) {
+      // printf("Data read in from HDF5 file or is allocated by the user\n");
+      dat->user_managed =
+          1; // will be reset to 0 if called from ops_decl_dat_hdf5()
+      dat->is_hdf5 = 0;
+      dat->mem = bytes;
+      dat->hdf5_file = "none"; // will be set to an hdf5 file if called from
+      ops_cpHostToDevice ( block->instance, ( void ** ) &( dat->data_d ),
+              ( void ** ) &( dat->data ), bytes );
                              // ops_decl_dat_hdf5()
-  } else {
-    // Allocate memory immediately
-    dat->data = (char*) ops_malloc(bytes);
-    dat->user_managed = 0;
-    dat->mem = bytes;
-    dat->data_d = NULL;
-    int init_deviceptr = 1;
-    if (data != NULL && block->instance->OPS_realloc) {
-      ops_convert_layout(data, dat->data, block, size,
-          dat->size, dat_size, type_size, 0);
+    } else {
+       // Allocate memory immediately
+      dat->data = (char*) ops_malloc(bytes);
+      dat->user_managed = 0;
+      dat->mem = bytes;
+      dat->data_d = NULL;
+      int init_deviceptr = 1;
+      if (data != NULL && block->instance->OPS_realloc) {
+        ops_convert_layout(data, dat->data, block, size,
+                           dat->size, dat_size, type_size, 0);
 //          dat->size, dat_size_orig, type_size, 0);
 //          block->instance->OPS_hybrid_layout ? //TODO: comes in when batching
 //          block->instance->ops_batch_size : 0);
-    } else {
+      } else {
       ops_device_malloc(block->instance, ( void ** ) &( dat->data_d ), bytes);
       ops_device_memset(block->instance, ( void ** ) &( dat->data_d ), 0, bytes);
       init_deviceptr = 0;
       dat->dirty_hd = 2;
     }
 
-    if(init_deviceptr)
-      ops_cpHostToDevice ( block->instance, ( void ** ) &( dat->data_d ),
-                                            ( void ** ) &( data ), bytes );
+      if(init_deviceptr)
+        ops_cpHostToDevice ( block->instance, ( void ** ) &( dat->data_d ),
+                                              ( void ** ) &( data ), bytes );
+    }
   }
 
   // Compute offset in bytes to the base index

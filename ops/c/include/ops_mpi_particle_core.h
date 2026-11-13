@@ -82,6 +82,7 @@ void _ops_particle_intra_dat_to_buff(char *buff,  ops_dat dat,
                                      int *sendlist, int nsend);
 
 int _ops_particle_intra_hist_to_buff(char *buff, ops_neighbor_history history,
+                                     int exchange_part,
                                      int *sendlist, int nsend);
 
 void _ops_particle_intra_pack_rev_dat_to_buff(char *buff, ops_dat dat,
@@ -97,6 +98,7 @@ void _ops_particle_intra_buff_to_dat(char  *buff, ops_dat dat,
                                      size_t nexist, int nrecv);
 
 int _ops_particle_intra_buff_to_hist(char *buff, ops_neighbor_history history,
+                                     int parts_exch,
                                      size_t nexist, int nrecv);
 
 void _ops_particle_unpack_within_reg(char *buff_recv_neg, char *buff_recv_pos, ops_dat dat,

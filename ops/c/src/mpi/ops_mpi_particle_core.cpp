@@ -414,7 +414,115 @@ static void   _get_local_box(char *xmin, char *xmax, char *box_block,
   }
 }
 
+void   _ops_particle_init_map_grid(ops_particle_mapping map, char *dx) {
 
+  if (map->map_type == 0 || map->map_type == 1) return;
+
+  sub_block *sb = OPS_sub_block_list[map->particle->block->index];
+  if (!sb->owned) return;
+
+  int flag_m[OPS_MAX_DIM] = {};
+  int flag_p[OPS_MAX_DIM] = {};
+
+  int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
+  int dim = map->particle->block->dims;
+  int dgrid_m[OPS_MAX_DIM], dgrid_p[OPS_MAX_DIM];
+  for (int i = 0; i < dim; i++) {
+    d_m[i] = map->grid_head->d_m[i] + OPS_sub_dat_list[map->grid_head->index]->d_im[i];
+    d_p[i] = map->grid_head->d_p[i] + OPS_sub_dat_list[map->grid_head->index]->d_ip[i];
+    dgrid_m[i] = map->grid->d_m[i] + OPS_sub_dat_list[map->grid->index]->d_im[i];
+    dgrid_p[i] = map->grid->d_p[i] + OPS_sub_dat_list[map->grid->index]->d_ip[i];
+
+  }
+  for (int i = dim; i < OPS_MAX_DIM; i++) {
+    d_m[i] = 0;
+    d_p[i] = 0;
+    dgrid_m[i] = 0;
+    dgrid_p[i] = 0;
+  }
+
+
+  //Get points in range
+  int nPoints = 0;
+  int type_size = map->grid->type_size;
+  switch (type_size) {
+  case sizeof(float):
+    _ops_particle_points_in_map((float *) map->xmin, (float *) map->xmax, (float *) dx,
+                                (float *) map->grid->data, map->particle->block->dims,
+                                map->grid->size, dgrid_m, dgrid_p, flag_m, flag_p,
+                                d_m, d_p,
+                                OPS_instance::getOPSInstance()->OPS_soa, &nPoints,
+                                map->region_access, (float *) map->region_grid);
+    break;
+  case sizeof(double):
+    _ops_particle_points_in_map((double *) map->xmin, (double *) map->xmax,(double *) dx,
+                                (double *) map->grid->data, map->particle->block->dims,
+                                map->grid->size, dgrid_m, dgrid_p,
+                                flag_m, flag_p, d_m, d_p,
+                                OPS_instance::getOPSInstance()->OPS_soa, &nPoints,
+                                map->region_access, (double *) map->region_grid);
+    break;
+  case sizeof(long double):
+    _ops_particle_points_in_map((long double *) map->xmin, (long double *) map->xmax,
+                                (long double *) dx, (long double *) map->grid->data,
+                                map->particle->block->dims,
+                                map->grid->size, d_m, d_p,
+                                flag_m, flag_p, map->grid_head->d_m, map->grid_head->d_p,
+                                OPS_instance::getOPSInstance()->OPS_soa, &nPoints,
+                                map->region_access, (long double *) map->region_grid);
+    break;
+  }
+
+  if (nPoints > 0) {
+    map->grid_bin->data = (char *) ops_realloc(map->grid_bin->data, nPoints * sizeof(int));
+    map->grid_bin->size[0] = nPoints;
+    map->id_grid->data = (map->map_type > 1) ? (char *) ops_realloc(map->id_grid->data, nPoints * sizeof(int)) : nullptr;
+    if (map->map_type > 1) {
+      map->id_grid->size[0] = nPoints;
+    }
+  }
+  else {
+    map->grid_bin->size[0] = 0;
+    map->id_grid->size[0] = 0;
+  }
+
+  //Update grid_map
+  int *grid_head = (int *) map->grid_head->data;
+  int *grid_bin = (int *) map->grid_bin->data;
+  int *id_grid = (int *) map->id_grid->data;
+  int *grid_to_map = (int *) map->grid_to_map->data;
+
+  switch(type_size) {
+  case sizeof(float):
+    _ops_particle_generate_maps_non_conf( map->map_type, (float *) map->xmin, (float *) map->xmax,
+                                         (float *) dx, (float *) map->grid->data,
+                                         map->particle->block->dims, grid_head, grid_bin,
+                                         id_grid, grid_to_map, map->grid->size, dgrid_m, dgrid_p,
+                                         flag_m, flag_p,  map->grid_head->size, d_m,
+                                         d_p, OPS_instance::getOPSInstance()->OPS_soa,
+                                         nPoints, map->region_access, (float *)map->region_grid);
+    break;
+  case sizeof(double):
+    _ops_particle_generate_maps_non_conf( map->map_type, (double *) map->xmin, (double *) map->xmax,
+                                         (double *) dx, (double *) map->grid->data,
+                                         map->particle->block->dims, grid_head, grid_bin,
+                                         id_grid, grid_to_map, map->grid->size, dgrid_m, dgrid_p,
+                                         flag_m, flag_p,  map->grid_head->size, d_m,
+                                         d_p, OPS_instance::getOPSInstance()->OPS_soa,
+                                         nPoints, map->region_access, (double *)map->region_grid);
+    break;
+  case sizeof(long double):
+    _ops_particle_generate_maps_non_conf( map->map_type, (long double *) map->xmin, (long double *) map->xmax,
+                                         (long double *) dx, (long double *) map->grid->data,
+                                         map->particle->block->dims, grid_head, grid_bin,
+                                         id_grid, grid_to_map, map->grid->size, dgrid_m, dgrid_p,
+                                         flag_m, flag_p,  map->grid_head->size, d_m,
+                                         d_p, OPS_instance::getOPSInstance()->OPS_soa,
+                                         nPoints, map->region_access, (long double *)map->region_grid);
+  }
+
+
+}
 
 
 void _ops_mapping_def_core(ops_particle particle, ops_dat grid, ops_stencil stencil,
@@ -457,6 +565,65 @@ void _ops_mapping_def_core(ops_particle particle, ops_dat grid, ops_stencil sten
 
 }
 
+void _ops_mapping_set_structure(ops_particle particle, ops_dat mapping_grid,
+                                ops_stencil stencil, int d_mm[],
+                                int d_mp[], int size[], int base[],
+                                const int d_m[], const int d_p[], int stride[],
+                                ops_grid_type grid_type) {
+
+  if (particle == NULL)
+    throw OPSException(OPS_INVALID_ARGUMENT,"Error: Empty particle structure\n");
+
+  if (mapping_grid == NULL)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Error: Empty grid ops_dat structure\n");
+
+  //Check if boxes conform
+  bool conform{true};
+  switch(particle->type_box) {
+  case sizeof(float):
+    conform = ((BoundingBox<float> *)particle->box_block)->isBoxConformingToBlock();
+    break;
+  case sizeof(double):
+    conform = ((BoundingBox<double> *) particle->box_block)->isBoxConformingToBlock();
+    break;
+  case sizeof(long double):
+    conform = ((BoundingBox<long double> *) particle->box_block)->isBoxConformingToBlock();
+  }
+
+  //Get grid type
+  int grid_gen = (grid_type == OPS_UNIFORM_STAG || grid_type == OPS_UNIFORM_COLL) ? 0 : 1;
+
+  if (conform == 0 && grid_gen == 0) {
+    for (int i = 0; i < particle->block->dims; i++) {
+       size[i] = mapping_grid->size[i] + mapping_grid->d_m[i] - mapping_grid->d_p[i];
+       base[i] = mapping_grid->base[i];
+       stride[i] = mapping_grid->stride[i];
+       d_mm[i] = MIN(d_m[i], -1);
+       d_mp[i] = MAX(d_p[i], 1);
+       for (int p = 0; p < stencil->points; p++) {
+         d_mm[i] = MIN(d_mm[i], stencil->stencil[particle->block->dims * p + i]);
+         d_mp[i] = MAX(d_mp[i], stencil->stencil[particle->block->dims * p + i]);
+       }
+    }
+  }
+  else { //Case II: Non conforming & non-uniform grid
+    for (int i = 0; i < particle->block->dims; i++) {
+      size[i] = 2;
+      base[i] = 0; //no-need for base
+      d_mm[i] = MIN(d_m[i], -1);
+      d_mp[i] = MAX(d_p[i], 1);
+      stride[i] = (grid_gen == 0) ? mapping_grid->stride[i] : 1;
+      for (int p = 0; p < stencil->points; p++) {
+        d_mm[i] = MIN(d_mm[i], stencil->stencil[particle->block->dims * p + i]);
+        d_mp[i] = MAX(d_mp[i], stencil->stencil[particle->block->dims * p + i]);
+
+      }
+    }
+  }
+
+}
+
+
 //TODO: Need to pass them to template structures use size to handle them
 void _ops_mapping_set_structures(ops_particle particle, char *skin, int  d_m[],
                                  int d_p[], int d_mb[], int d_pb[], int size[],
@@ -480,6 +647,7 @@ void _ops_mapping_set_structures(ops_particle particle, char *skin, int  d_m[],
   }
 
 
+
   if (particle->particle_pos_dat->type_size == sizeof(float)) {
     float length[OPS_MAX_DIM];
     for (int i = 0; i < particle->block->dims; i++)
@@ -494,7 +662,8 @@ void _ops_mapping_set_structures(ops_particle particle, char *skin, int  d_m[],
     for (int i = 0; i < particle->block->dims; i++)
       length[i] = ((BoundingBox<double> *) particle->box_block)->getGlobalMax(i)
                 - ((BoundingBox<double> *) particle->box_block)->getGlobalMin(i);
-    _ops_map_compute_dx((double *)skin, length, particle->block->dims, (double *)dx_map, size);
+
+    _ops_map_compute_dx((double *)skin, length, particle->block->dims, (double *) dx_map, size);
   }
   else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
     long double length[OPS_MAX_DIM];
@@ -508,24 +677,196 @@ void _ops_mapping_set_structures(ops_particle particle, char *skin, int  d_m[],
   else
     throw OPSException(OPS_RUNTIME_ERROR, "Error: This type of float is not supported\n");
 
-  for (int i = 0; particle->block->dims; i++) {
+  for (int i = 0; i < particle->block->dims; i++) {
     d_mb[i] = (d_m != nullptr) ? MIN(d_m[i], -1) : -1;
-    d_pb[i] = (d_p != nullptr) ? MAX(d_m[i], 1) : 1;
+    d_pb[i] = (d_p != nullptr) ? MAX(d_p[i], 1) : 1;
   }
 
   for (int i = particle->block->dims; i < OPS_MAX_DIM; i++) {
     size[i] = 1;
-    dx_map[i] = 0.0;
+
+    switch(particle->type_box) {
+    case sizeof(float):
+      ((float *) dx_map)[i] = 0.0;
+      break;
+    case sizeof(double):
+      ((double *) dx_map)[i] = 0.0;
+      break;
+    case sizeof(long double):
+      ((long double *) dx_map)[i] = .0;
+      break;
+    }
+
     d_mb[i] = d_pb[i] = 0;
+
   }
 
   include_virtual = OPS_WITH_VIRTUAL; //Default for MPI
 }
 
+void _ops_particle_init_map_structures(ops_particle_mapping map) {
+
+  ops_particle particle = map->particle;
+  ops_block block = particle->block;
+
+  char *dx_map = nullptr;
+  char *dx_map1 = nullptr;
+
+  //Part I: Get xmin xmax
+  if (map->map_type <=2) {
+    switch (particle->type_box) {
+    case sizeof(float):
+      _ops_particle_set_map_bounds_conform_box(particle->box_block, block->dims,
+                                               (float *) map->xmin, (float *) map->xmax);
+      break;
+    case sizeof(double):
+      _ops_particle_set_map_bounds_conform_box(particle->box_block, block->dims,
+                                               (double *) map->xmin, (double *) map->xmax);
+      break;
+    case sizeof(long double):
+      _ops_particle_set_map_bounds_conform_box(particle->box_block, block->dims,
+                                               (long double *) map->xmin, (long double *) map->xmax);
+      break;
+    }
+  }
+  else if (map->map_type == 3 &&(map->grid_type == OPS_UNIFORM_STAG ||
+                                 map->grid_type == OPS_UNIFORM_COLL)) {
+    char *box = _ops_get_block_box(block);
+    dx_map1 = (char *) ops_malloc(particle->type_box * block->dims);
+    _ops_particle_update_bounds_non_conf_unif_grid(particle, box, dx_map1,
+                                                   map->xmin, map->xmax, map->dx,
+                                                   map->mapping_grid); //TODO
+  }
+  else {//Non-conforming stretched box
+    switch(particle->type_box) {
+    case (sizeof(float)) :
+      _ops_particle_set_map_bounds_conform_box(particle->box_block, block->dims,
+                                             (float *) map->xmin, (float *)map->xmax);
+      break;
+    case sizeof(double):
+      _ops_particle_set_map_bounds_conform_box(particle->box_block, block->dims,
+                                             (double *) map->xmin, (double *) map->xmax);
+      break;
+    case sizeof(long double):
+      _ops_particle_set_map_bounds_conform_box(particle->box_block, block->dims,
+                                             (long double *) map->xmin, (long double *) map->xmax);
+      break;
+    }
+  }
+
+
+
+  dx_map = (map->grid_type == OPS_UNIFORM_STAG || map->grid_type == OPS_UNIFORM_COLL) ? dx_map1 : map->dx;
+
+  if (map->map_type >=2 ) {
+    dx_map = (map->grid_type == OPS_UNIFORM_STAG || map->grid_type == OPS_UNIFORM_COLL) ? dx_map1 : map->dx;
+
+    int base[OPS_MAX_DIM] ={};
+    int size[OPS_MAX_DIM] = {};
+
+
+
+    //Compute data structure
+    char *box = _ops_get_block_box(block);
+    switch(particle->type_box) {
+    case sizeof(float): //TODO
+      _ops_particle_compute_size_base(box,(float *) map->xmin, (float *) map->xmax,
+                                      (float *) dx_map, block->dims, size, base);
+      break;
+    case sizeof(double):
+      _ops_particle_compute_size_base(box, (double *) map->xmin, (double *) map->xmax,
+                                      (double *) dx_map, block->dims, size, base);
+      break;
+    case sizeof(long double):
+      _ops_particle_compute_size_base(box, (long double *) map->xmin, (long double *) map->xmax,
+                                      (long double *) dx_map, block->dims, size, base);
+      break;
+    }
+
+    if (map->grid_type == OPS_NON_UNI_STAG || map->grid_type == OPS_NON_UNI_COLL) {
+      switch(particle->type_box) {
+      case sizeof(float):
+        _ops_update_halo_points((float *) map->dx, (float *) map->xmin, (float *) map->xmax,
+                                size, block, map->binhead, map->grid_head);
+        break;
+      case sizeof(double):
+        _ops_update_halo_points((double *) map->dx, (double *) map->xmin, (double *) map->xmax,
+                                size, block, map->binhead, map->grid_head);
+        break;
+      case sizeof(long double):
+        _ops_update_halo_points((long double *) map->dx, (long double *) map->xmin, (long double *) map->xmax,
+                                size, block, map->binhead, map->grid_head);
+        break;
+      }
+    }
+
+    //TODO: Tommorow
+
+    for (int i = particle->block->dims; i < OPS_MAX_DIM; i++) size[i] = 1;
+
+    ops_malloc_non_defined_dat(map->binhead, size, base); //TODO
+
+    ops_malloc_non_defined_dat(map->grid_head, size, base);
+
+
+  }
+
+  //Part III: Allocate data & initialize grid structures
+  _ops_particle_init_map_grid(map, dx_map);
+
+
+/*
+  printf("Maps constructed. Tommorow additional checks\n");
+  if (map->map_type > 1) {
+  size_t size_grid = map->grid_to_map->size[1];
+  int ip = 0;
+  for (size_t j = 0; j < map->grid->size[1]; j++) {
+    for (size_t i = 0; i < map->grid->size[0]; i++) {
+    int address = i + map->grid->size[0] * j;
+    int within = ((int *) map->grid_to_map->data)[address];
+    if (within > -1 && ops_get_proc() == 0) { ip++;
+    printf("R %d: %d of %d (%d) : (%d) [%12.9e %12.9e] in region [%12.9e %12.9e]x[%12.9e %12.9e]\n", ops_get_proc(),
+           ip, map->grid_bin->size[0], address, within, ((double *) map->grid->data)[2 * address], ((double *) map->grid->data)[2 * address + 1],
+           ((double *) map->xmin)[0], ((double *) map->xmax)[0], ((double *) map->xmin)[1],
+           ((double *) map->xmax)[1]);
+    }
+    }
+  }
+
+
+  if (ops_get_proc() == 0) {
+    printf("Map grid_head = [%d %d]\n", map->grid_head->size[0], map->grid_head->size[1]);
+    for (size_t j = 0; j < map->grid_head->size[1]; j++) {
+      for (size_t i = 0; i < map->grid_head->size[0]; i++ ) {
+
+        int address = i + j * map->grid_head->size[0];
+        int grid_bin = ((int *) map->grid_head->data)[address];
+
+        printf("R1 %d [%d %d] (%d) has grid_points (head = %d): ", ops_get_proc(), i, j,
+                                                                   address, grid_bin);
+
+       while (grid_bin > - 1) {
+         printf("[%d %d], ", grid_bin, ((int *) map->id_grid->data)[grid_bin]);
+         grid_bin = ((int *) map->grid_bin->data)[grid_bin];
+       }
+
+        printf("\n");
+    }
+  }
+  }
+  } */
+
+
+  ops_free(dx_map1);
+
+}
+
+
 void ops_build_bounding_box(ops_particle particle) {
 
   //TODO: Predifine communication map if necessary-
   //For the moment is the first entry map
+
 
   if (particle->type_box == sizeof(float)) {
     BoundingBox<float> *boxT = (BoundingBox<float> *)particle->box_block;
@@ -534,18 +875,41 @@ void ops_build_bounding_box(ops_particle particle) {
                                (float *)particle->map_list[0]->dx);
   }
   else if (particle->type_box == sizeof(double)) {
+
+
     BoundingBox<double> *boxT = (BoundingBox<double> *)particle->box_block;
+
+
     boxT->partitionBoundingBox(particle->block,
                                particle->map_list[0]->binhead,
-                               (double *)particle->map_list[0]->dx);
+                               (double *) particle->map_list[0]->dx);
+
   }
   else if (particle->type_box == sizeof(long double)) {
     BoundingBox<long double> *boxT = (BoundingBox<long double> *)particle->box_block;
     boxT->partitionBoundingBox(particle->block,
                                particle->map_list[0]->binhead,
-                               (long double *)particle->map_list[0]->dx);
+                               (long double *) particle->map_list[0]->dx);
   }
 
+}
+
+void ops_build_main_bounding_box(ops_block block) {
+
+  char *box = block->instance->OPS_block_list[block->index].box;
+  int block_type = block->instance->OPS_block_list[block->index].type_size;
+
+  switch(block_type) {
+  case sizeof(float):
+    ((BoundingBox<float> *) box)->partitionBoundingBox(block);
+    break;
+  case sizeof(double):
+    ((BoundingBox<double> *) box)->partitionBoundingBox(block);
+    break;
+  case sizeof(long double):
+    ((BoundingBox<long double> *) box)->partitionBoundingBox(block);
+     break;
+  }
 
 }
 
@@ -983,7 +1347,7 @@ void  ops_particle_halo_set_exchange_recv(ops_mpi_particle_halo *mpi_halo,
                           halo->translate, i, halo->dir_from,
                           halo->dir_to, dim, halo->particle_from->type_box);
 
-    int intersect;
+    int intersect = 0;
     switch (halo->particle_to->type_box) {
     case sizeof(float):
       intersect = ops_check_box_intersections2(dim, (float *) xmin, (float *) xmax,
@@ -1517,7 +1881,7 @@ void ops_particle_setup_intrablock_comms(ops_particle particle) {
 
   //Get bounding box
   char *box = particle->box_block;
-
+  char *box_block = particle->block->instance->OPS_block_list[particle->block->index].box;
   int block_type = particle->type_box;
 
   for (int idim = 0; idim < particle->block->dims; idim++) {
@@ -1533,21 +1897,24 @@ void ops_particle_setup_intrablock_comms(ops_particle particle) {
     case sizeof(float):
       _ops_particle_set_intra_exch_regs((float *) sp->particle_halos[idim]->region_exch_neg,
                                         (float *) sp->particle_halos[idim]->region_exch_pos,
-                                        (BoundingBox<float> *) box, idim, dim);
+                                        (BoundingBox<float> *) box, (BoundingBox<float> *) box_block,
+                                         idim, dim);
       break;
     case sizeof(double):
       _ops_particle_set_intra_exch_regs((double *) sp->particle_halos[idim]->region_exch_neg,
                                         (double *) sp->particle_halos[idim]->region_exch_pos,
-                                        (BoundingBox<double> *) box, idim, dim);
+                                        (BoundingBox<double> *) box, (BoundingBox<double> *) box_block,
+                                        idim, dim);
       break;
     case sizeof(long double):
       _ops_particle_set_intra_exch_regs((long double *) sp->particle_halos[idim]->region_exch_neg,
                                         (long double *) sp->particle_halos[idim]->region_exch_pos,
-                                        (BoundingBox<long double> *) box, idim, dim);
+                                        (BoundingBox<long double> *) box,
+                                        (BoundingBox<long double> *) box_block, idim, dim);
       break;
     }
 
-    ops_dat binhead = particle->map_list[0]->binhead;
+    ops_dat binhead = particle->map_list[0]->binhead; //TODO: Change that to a proper list
     int d_m = binhead->d_m[idim] + OPS_sub_dat_list[binhead->index]->d_im[idim];
     int d_p = binhead->d_p[idim] + OPS_sub_dat_list[binhead->index]->d_ip[idim];
 
@@ -1555,19 +1922,23 @@ void ops_particle_setup_intrablock_comms(ops_particle particle) {
     case sizeof(float):
       _ops_particle_set_intra_bord_regs((float *) sp->particle_halos[idim]->region_bord_neg,
                                         (float *) sp->particle_halos[idim]->region_bord_pos,
-                                        (BoundingBox<float> *) box, d_m, d_p, binhead->size,
+                                        (BoundingBox<float> *) box, (BoundingBox<float> *) box_block,
+                                        d_m, d_p, binhead->size,
                                         sb->id_m[idim], sb->id_p[idim],idim, dim);
       break;
     case sizeof(double):
       _ops_particle_set_intra_bord_regs((double *) sp->particle_halos[idim]->region_bord_neg,
                                         (double *) sp->particle_halos[idim]->region_bord_pos,
-                                        (BoundingBox<double> *) box, d_m, d_p, binhead->size,
+                                        (BoundingBox<double> *) box, (BoundingBox<double> *) box_block,
+                                        d_m, d_p, binhead->size,
                                         sb->id_m[idim], sb->id_p[idim], idim, dim);
       break;
     case sizeof(long double):
       _ops_particle_set_intra_bord_regs((long double *) sp->particle_halos[idim]->region_bord_neg,
                                         (long double *) sp->particle_halos[idim]->region_bord_pos,
-                                        (BoundingBox<long double> *) box, d_m, d_p, binhead->size,
+                                        (BoundingBox<long double> *) box,
+                                        (BoundingBox<long double> *) box_block,
+                                        d_m, d_p, binhead->size,
                                         sb->id_m[idim], sb->id_p[idim], idim, dim);
       break;
     }
@@ -1647,12 +2018,45 @@ void ops_particle_setup_intrablock_comms(ops_particle particle) {
     }
 
     //Set-up
+
+
+    int conforming_neg, conforming_pos;
+    switch (particle->type_box) {
+    case sizeof(float):
+      conforming_neg = check_box_conformation_in_dir(idim, 0, (BoundingBox<float> *) box,
+                                                    (BoundingBox<float> *) box_block);
+     conforming_pos = check_box_conformation_in_dir(idim, 1, (BoundingBox<float> *) box,
+                                                    (BoundingBox<float> *) box_block);
+        break;
+    case sizeof(double):
+      conforming_neg = check_box_conformation_in_dir(idim, 0, (BoundingBox<double> *) box,
+                                                     (BoundingBox<double> *) box_block);
+      conforming_pos = check_box_conformation_in_dir(idim, 1, (BoundingBox<double> *) box,
+                                                     (BoundingBox<double> *) box_block);
+      break;
+    case sizeof(long double):
+      conforming_neg = check_box_conformation_in_dir(idim, 0, (BoundingBox<long double> *) box,
+                                                    (BoundingBox<long double> *) box_block);
+      conforming_pos = check_box_conformation_in_dir(idim, 1, (BoundingBox<long double> *) box,
+                                                     (BoundingBox<long double> *) box_block);
+      break;
+    }
+
+    //Setting halos in negative direction
     sp->particle_halos[idim]->region_neg[2 * idim] = 0;
-    sp->particle_halos[idim]->region_neg[2 * idim + 1] = (sb->id_m[idim] != MPI_PROC_NULL) ?
+    if (conforming_neg)
+      sp->particle_halos[idim]->region_neg[2 * idim + 1] = (sb->id_m[idim] != MPI_PROC_NULL) ?
        -2 * OPS_sub_dat_list[binhead->index]->d_im[idim] : 0;
-    sp->particle_halos[idim]->region_pos[2 * idim] = (sb->id_p[idim] != MPI_PROC_NULL) ?
-       binhead->size[idim] -2 * OPS_sub_dat_list[binhead->index]->d_ip[idim] : binhead->size[idim];
+    else sp->particle_halos[idim]->region_neg[2 * idim + 1] = 0;
+
+    //Setting halos in positive direction
     sp->particle_halos[idim]->region_pos[2 * idim + 1] =  binhead->size[idim];
+    if (conforming_pos)
+      sp->particle_halos[idim]->region_pos[2 * idim] = (sb->id_p[idim] != MPI_PROC_NULL) ?
+         binhead->size[idim] -2 * OPS_sub_dat_list[binhead->index]->d_ip[idim] : binhead->size[idim];
+    else
+      sp->particle_halos[idim]->region_pos[2 * idim] = binhead->size[idim];
+
 
     if (OPS_instance::getOPSInstance()->OPS_diags > 2)
       printf("Rank %d Forward regions in %d: Neg (%d) [%d %d]x[%d %d]x[%d %d] "
@@ -1678,7 +2082,7 @@ ops_dat ops_decl_particle_dat_char(ops_particle particle, int dim, int *dataset_
                                                          "called after ops_partition");
 
   ops_dat dat = ops_decl_dat_temp_core(particle->block, dim, dataset_size, base,
-                                       d_m, d_p, stride, data, type_size, type, name);
+                                       d_m, d_p, stride, data, type_size, type, name, 1);
 
   dat->user_managed = 0;
   dat->is_hdf5 = 0;

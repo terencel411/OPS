@@ -115,8 +115,9 @@ void _ops_construct_local_box_from_dat(ops_dat coords, const int dim,
                   + imax[2] * coords->dim * size[0] * size[1]);
       xmax[1] = *(  data + 1 + imax[0] * coords->dim + imax[1] * coords->dim * size[0]
                   + imax[2] * coords->dim * size[0] * size[1]);
-      xmax[2] = *(  data + 2 + imax[0] * coords->dim + imax[1] * coords->dim * size[0]
-                  + imax[2] * coords->dim * size[0] * size[1]);
+
+      xmax[2] = * (  data + 2 + imax[0] * coords->dim + imax[1] * coords->dim * size[0]
+                    + imax[2] * coords->dim * size[0] * size[1]);
     }
   }
   else
@@ -130,13 +131,14 @@ void BoundingBox<T>::partitionBoundingBox(ops_block block, ops_dat map_bin, T *d
 
   if (owned) return;
 
+  sub_block *sb = OPS_sub_block_list[block->index];
+  if (!sb->owned) return;
   if (!ops_partitioned())
     throw OPSException(OPS_RUNTIME_ERROR, "ERROR: BoundingBox decomposition "
                                           "failed. Box cannot be decomposed before "
                                           "the domain partition");
 
-  if (this->volume < std::numeric_limits<T>::epsilon()) {
-    sub_block *sb = OPS_sub_block_list[block->index];
+  if (this->volume < std::numeric_limits<T>::epsilon() && this->conform == 0) {
 
     T xmin[OPS_MAX_DIM] = {};
     T xmax[OPS_MAX_DIM] = {};
@@ -181,14 +183,19 @@ void BoundingBox<T>::partitionBoundingBox(ops_block block, ops_dat map_bin, T *d
     this->setBoundingBoxGlobalBound(xmin_glob, xmax_glob);
     this->owned = true;
 
-  }
-  else {
-    if (map_bin == nullptr)
-      throw OPSException(OPS_RUNTIME_ERROR, "ERROR: BoundingBox cannot be defined unless"
-                                                  "one of the following is not specified:\n "
-                                                  "i. Grid structure\n"
-                                                  "ii. Mapping structure\n");
+    this->volume = (this->boundingBox[1].x - this->boundingBox[0].x)
+                 * (this->boundingBox[1].y - this->boundingBox[0].y);
+    if (dim == 3)
+      this->volume *= (this->boundingBox[1].z - this->boundingBox[0].z);
 
+  }
+  else if (this->volume > std::numeric_limits<T>::epsilon() &&
+           this->conform == 0){
+
+    if (map_bin == nullptr)
+      throw OPSException(OPS_RUNTIME_ERROR, "ERROR: BoundingBox cannot be defined if a "
+                                            "grid or mapping structure is not specified"
+                                                  "one of the following is not specified.\n");
     int dim = block->dims;
     T xmin[OPS_MAX_DIM], xmax[OPS_MAX_DIM];
     sub_dat *sdat = OPS_sub_dat_list[map_bin->index];
@@ -199,14 +206,83 @@ void BoundingBox<T>::partitionBoundingBox(ops_block block, ops_dat map_bin, T *d
 
       int isize = sdat->decomp_size[i]  + map_bin->base[i] + map_bin->d_m[i] - map_bin->d_p[i];
 
+
+
+
+
       int ilast = ifirst + isize;
 
-      xmin[i] = this->getGlobalMin(i) + static_cast<double>(ifirst) * dx[i];
-      xmax[i] = this->getGlobalMin(i) + static_cast<double>(ilast) * dx[i];
+      xmin[i] = this->getGlobalMin(i) + static_cast<T>(ifirst) * dx[i];
+      xmax[i] = this->getGlobalMin(i) + static_cast<T>(ilast) * dx[i];
     }
 
-
     this->setBoundingBoxLocalBound(xmin, xmax);
+
+    this->owned = true;
+
+    this->volume = (this->boundingBox[1].x - this->boundingBox[0].x)
+                 * (this->boundingBox[1].y - this->boundingBox[0].y);
+    if (dim == 3)
+      this->volume *= (this->boundingBox[1].z - this->boundingBox[0].z);
+
+  }
+  else { //Case non-conforming box to block
+
+    BoundingBox<T> *block_box =
+        (BoundingBox<T> *) OPS_instance::getOPSInstance()->OPS_block_list[block->index].box;
+
+    if (!block_box->owned)
+      throw OPSException(OPS_RUNTIME_ERROR, "Error: The box of the block must be partitioned before "
+                                            "partitioning particle boxes\n");
+
+    int ix = _check_intersection_at_dir(block_box->getLocalMin().x, block_box->getLocalMax().x,
+                                        this->getGlobalMin().x, this->getGlobalMax().x);
+
+    int iy = _check_intersection_at_dir(block_box->getLocalMin().y, block_box->getLocalMax().y,
+                                        this->getGlobalMin().y, this->getGlobalMax().y);
+
+    int iz = (dim == 3) ? _check_intersection_at_dir(block_box->getLocalMin().x,
+                                                     block_box->getLocalMax().z,
+                                                     this->getGlobalMin().z,
+                                                     this->getGlobalMax().z) : 1;
+
+    sub_block *sb = OPS_sub_block_list[block->index];
+
+    if (ix > 0) {
+      this->boundingBox[0].x = (sb->id_m[0] == MPI_PROC_NULL) ? this->globalBoundingBox[0].x
+                             : MAX(this->globalBoundingBox[0].x, block_box->getLocalMin().x);
+      this->boundingBox[1].x = (sb->id_p[0] == MPI_PROC_NULL) ? this->globalBoundingBox[1].x
+                             : MIN(this->globalBoundingBox[1].x, block_box->getLocalMax().x);
+    }
+
+    if (iy > 0) {
+      this->boundingBox[0].y = (sb->id_m[1] == MPI_PROC_NULL) ? this->globalBoundingBox[0].y
+                             : MAX(this->globalBoundingBox[0].y, block_box->getLocalMin().y);
+      this->boundingBox[1].y = (sb->id_p[1] == MPI_PROC_NULL) ? this->globalBoundingBox[1].y
+                             : MIN(this->globalBoundingBox[1].y, block_box->getLocalMax().y);
+    }
+
+    if (iz > 0 && dim == 3) {
+      sub_block *sb = OPS_sub_block_list[block->index];
+      this->boundingBox[0].z = (sb->id_m[2] == MPI_PROC_NULL) ? this->globalBoundingBox[0].z
+                             : MAX(this->globalBoundingBox[0].z, block_box->getLocalMin().x);
+      this->boundingBox[1].z = (sb->id_p[2] == MPI_PROC_NULL) ? this->globalBoundingBox[1].z
+                             : MIN(this->globalBoundingBox[1].z, block_box->getLocalMax().z);
+    }
+
+    //TODO: We may need to do sth more herein
+    if (ix * iy * iz == 0) {
+      this->owned = true; //no-data
+      this->volume = 0.;
+      return;
+    }
+
+    //Setting block to directions
+    this->volume = (this->boundingBox[1].x - this->boundingBox[0].x)
+                 * (this->boundingBox[1].y - this->boundingBox[0].y);
+
+    this->volume = (dim == 3) ? this->volume * (this->boundingBox[1].z - this->boundingBox[1].z)
+                              : this->volume;
 
     this->owned = true;
   }
@@ -297,17 +373,48 @@ inline void _compute_mapping_region(BoundingBox<T> *box, int *sending_reg, int d
 
 template<typename T>
 void _ops_particle_set_intra_exch_regs(T* reg_neg, T* reg_pos,
-                                       const BoundingBox<T> * box, const int idir,
+                                       const BoundingBox<T> * box,
+                                       const BoundingBox<T> * box_block,
+                                       const int idir,
                                        const int dim) {
-  reg_neg[0] = -BIG_1;
-  reg_neg[1] = box->getMinCoordDir(idir);
+  if (box->isBoxConformingToBlock()) {
+    reg_neg[0] = -BIG_1;
+    reg_neg[1] = box->getMinCoordDir(idir);
 
-  reg_pos[0] = box->getMaxCoordDir(idir);
-  reg_pos[1] = BIG_1;
+    reg_pos[0] = box->getMaxCoordDir(idir);
+    reg_pos[1] = BIG_1;
+  }
+  else { //box-is not conforming
+
+    T epsilon = std::numeric_limits<T>::epsilon();
+    //Set negative direction
+    if (box->getBlockVolume() < epsilon ||
+        ops_abs(box->getMinCoordDir(idir) - box_block->getMinCoordDir(idir))) {
+      reg_neg[0] = -BIG_1;
+      reg_neg[1] = -BIG_1;
+    }
+    else {
+      reg_neg[0] = -BIG_1;
+      reg_neg[1] = box->getMinCoordDir(idir);
+    }
+
+    //Generate positive direction
+    if (box->getBlockVolume() < epsilon ||
+        ops_abs(box->getMaxCoordDir(idir) - box_block->getMaxCoordDir(idir))) {
+      reg_pos[0] = BIG_1;
+      reg_pos[1] = BIG_1;
+    }
+    else {
+      reg_pos[0] = box->getMaxCoordDir(idir);
+      reg_pos[1] = BIG_1;
+    }
+
+  }
 }
 
 template<typename T>
 void _ops_particle_set_intra_bord_regs(T *bord_neg, T *bord_pos, const BoundingBox<T> *box,
+                                       const BoundingBox<T> *box_block,
                                        const int d_m, const int d_p, const int size[],
                                        const int id_m, const int id_p,
                                        const int idir, const int dim) {
@@ -327,12 +434,119 @@ void _ops_particle_set_intra_bord_regs(T *bord_neg, T *bord_pos, const BoundingB
 
 
   //Setting actual borders
-  bord_neg[2 * idir] = -BIG_1;
-  bord_neg[2 * idir + 1] = (id_m != MPI_PROC_NULL) ?
+  if (box->isBoxConformingToBlock()) {
+    bord_neg[2 * idir] = -BIG_1;
+    bord_neg[2 * idir + 1] = (id_m != MPI_PROC_NULL) ?
       xmin - dx * d_m + epsilon : - BIG_1;
 
-  bord_pos[2 * idir + 1] = BIG_1;
-  bord_pos[2 * idir] = (id_p != MPI_PROC_NULL) ? xmax - dx * d_p - epsilon : BIG_1;
+    bord_pos[2 * idir + 1] = BIG_1;
+    bord_pos[2 * idir] = (id_p != MPI_PROC_NULL) ? xmax - dx * d_p - epsilon : BIG_1;
+  }
+  else { //Box is not conforming
+    if (box->getBlockVolume() < epsilon ||
+        ops_abs(box->getMinCoordDir(idir) - box_block->getMinCoordDir(idir)) > epsilon) {
+      bord_neg[2 * idir] = -BIG_1;
+      bord_neg[2 * idir + 1] = -BIG_1;
+    }
+    else {
+      bord_neg[2 * idir] = -BIG_1;
+      bord_neg[2 * idir + 1] = (id_m != MPI_PROC_NULL) ?
+        xmin - dx * d_m + epsilon : - BIG_1;
+    }
+
+    //Positive direction
+    if (box->getBlockVolume() < epsilon ||
+        ops_abs(box->getMaxCoordDir(idir) - box_block->getMinCoordDir(idir)) > epsilon) {
+      bord_pos[2 * idir] = BIG_1;
+      bord_pos[2 * idir + 1] = BIG_1;
+    }
+    else {
+      bord_pos[2 * idir + 1] = BIG_1;
+      bord_pos[2 * idir] = (id_p != MPI_PROC_NULL) ? xmax - dx * d_p - epsilon : BIG_1;
+    }
+
+  }
+}
+
+template<typename T>
+int check_box_conformation_in_dir(int idir, int ireg, const BoundingBox<T> * box,
+                                  const BoundingBox<T> *box_block) {
+  if (box->isBoxConformingToBlock()) return 1;
+
+  T epsilon = std::numeric_limits<T>::epsilon();
+
+  //Negative direction
+  if (ireg == 0) {
+    if (box->getBlockVolume() > epsilon &&
+        ops_abs(box->getMinCoordDir(idir) - box_block->getMinCoordDir(idir)) > epsilon)
+      return 1;
+  }
+  else if (ireg == 1) {
+    if (box->getBlockVolume() > epsilon &&
+        ops_abs(box->getMaxCoordDir(idir) - box_block->getMaxCoordDir(idir)) > epsilon)
+      return 1;
+  }
+
+
+  return 0;
+}
+
+template<typename T>
+void _ops_particle_compute_size_base(char *boxC, T *xmin, T *xmax,
+                                     T *dx, int dim, int size[], int base[]) {
+
+  BoundingBox<T> *box = (BoundingBox<T> *) boxC;
+  for (int i = 0; i < dim; i++) {
+    size[i] = ((xmax[i] - xmin[i]) / dx[i] > 0) ? (int) ops_floor((xmax[i] - xmin[i]) / dx[i]) : 0;
+    base[i] = (size[i] == 1) ? 0 : (int) ((xmin[i] - box->getMinCoordDir(i)) / dx[i]);
+  }
+
+}
+
+template<typename T>
+void  _ops_update_halo_points(T *dx, T *xmin, T *xmax, int size[],  ops_block block,
+                              ops_dat bin_head, ops_dat grid_head) {
+
+  sub_block *sb = OPS_sub_block_list[block->index];
+  if (!sb->owned) return;
+
+  int dim = block->dims;
+  int d_m[OPS_MAX_DIM] = {};
+  int d_p[OPS_MAX_DIM] = {};
+  int d_pG[OPS_MAX_DIM], d_mG[OPS_MAX_DIM];
+  for (int i = 0; i < dim; i++) {
+    T dx1 = dx[i];
+    dx[i] =  (size[i] > 0) ? (xmax[i] - xmin[i])/static_cast<T>(size[i]) : dx[i];
+    d_m[i] = (dx[i] < dx1 && sb->id_m[i] != MPI_PROC_NULL) ? ops_ceil(dx1 / dx[i] * bin_head->d_m[i]) : bin_head->d_m[i];
+    d_p[i] = (dx[i] < dx1 && sb->id_p[i] != MPI_PROC_NULL) ? ops_ceil(dx1 / dx[i] * bin_head->d_p[i]) : bin_head->d_p[i];
+  }
+
+  MPI_Allreduce(d_m, d_mG, dim, MPI_INT, MPI_MIN, sb->comm);
+  MPI_Allreduce(d_p, d_pG, dim, MPI_INT, MPI_MAX, sb->comm);
+
+  for (int i = 0; i < dim; i++) {
+    bin_head->d_m[i] = d_mG[i];
+    bin_head->d_p[i] = d_pG[i];
+    grid_head->d_m[i] = d_mG[i];
+    grid_head->d_p[i] = d_pG[i];
+  }
+}
+
+
+
+template<typename T>
+void _ops_particle_get_xmin_xmax_map_nconf_unif(char *box, char *box_block, T *xmin,
+                                                T* xmax, T *dx, int size[], int dim) {
+  BoundingBox<T> *boxP = (BoundingBox<T> *) box;
+  BoundingBox<T> *boxB = (BoundingBox<T> *) box_block;
+
+  for (int i = 0; i < dim; i++) {
+    dx[i] = (boxB->getGlobalMax(i) - boxB->getGlobalMin(i))/static_cast<T>(size[i]-1);
+    int ix = ops_floor((boxP->getMinCoordDir(i) - boxB->getMinCoordDir(i)) / dx[i]);
+    xmin[i] = boxB->getMinCoordDir(i) + ix * dx[i];
+    ix = ops_ceil((boxP->getMaxCoordDir(i) - boxB->getMinCoordDir(i)) / dx[i]);
+    xmax[i] = boxB->getMinCoordDir(i) + ix * dx[i];
+  }
 
 }
 

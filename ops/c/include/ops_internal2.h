@@ -136,6 +136,8 @@ struct ops_block_descriptor {
   int no_history_structures{0}; /**< number of neighbor history structures */
 
   char *box;                   /**< Pointer to a Bounding box structure */
+  bool block_domain_defined;   /**< Flag indicating that the block box has been defined */
+  int type_size;               /**< Size of block type */
 };
 
 /** Storage for OPS parallel loop statistics */
@@ -254,7 +256,7 @@ ops_dat ops_decl_dat_core(ops_block block, int data_size, int *block_size,
 ops_dat ops_decl_dat_temp_core(ops_block block, int data_size, int *block_size,
                                int *base, int *d_m, int *d_p, int *stride, char *data,
                                int type_size, char const *type,
-                               char const *name);
+                               char const *name, int alloc);
 
 ops_dat ops_decl_dat_mpi_char(ops_block block, int size, int *dat_size,
                               int *base, int *d_m, int *d_p, int *stride, char *data,
@@ -499,7 +501,7 @@ ops_dat ops_block_core::decl_dat(int data_size, int *block_size, int *base,
   }
 
   return ops_decl_dat_char(this, data_size, block_size, base, d_m, d_p,
-      stride, (char *)data, sizeof(T), type, name);
+      stride, (char *)data, sizeof(T), type, name, 1);
 }
 template <class T>
 ops_dat ops_block_core::decl_dat(int data_size, int *block_size, int *base,
@@ -515,7 +517,7 @@ ops_dat ops_block_core::decl_dat(int data_size, int *block_size, int *base,
   int stride[OPS_MAX_DIM];
   for (int i = 0; i < OPS_MAX_DIM; i++) stride[i] = 1;
   return ops_decl_dat_char(this, data_size, block_size, base, d_m, d_p,
-      stride, (char *)data, sizeof(T), type, name);
+      stride, (char *)data, sizeof(T), type, name, 1);
 }
 #endif
 

@@ -228,12 +228,6 @@ template <typename T>
 void ops_weight_particle_partition(const T *weights, const int Ninsert,
                                    const int nranks, int * nparts_out) {
 
-
-  ops_printf("Particles to insert for weights [ ");
-  for (int i = 0; i < nranks; i++)
-    ops_printf(" %f ", ((double *)weights)[i]);
-  printf(" ] = %d\n", Ninsert);
-
   //Case I: Ninsert <  nsplit
   if (nranks > Ninsert) {
     _ops_particle_partition_less_than_ranks(weights, Ninsert, nranks,nparts_out);

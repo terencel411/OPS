@@ -114,11 +114,12 @@ void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
            item != NULL; item = tmp_item) {
         tmp_item = TAILQ_NEXT(item, entries);
 
-        if (item->dat->is_particle) continue; //No need to access particles
+        if (item->dat->is_particle || item->dat->is_alloc == 0) continue; //No need to access particles
         for (int d = 0; d < block->dims; d++)
           max_sizes[d] = MAX(item->dat->size[d] + item->dat->base[d] +
                                  item->dat->d_m[d] - item->dat->d_p[d],
                              max_sizes[d]);
+
       }
 
       for (int j = 0; j < OPS_MAX_DIM; j++) {
@@ -219,7 +220,6 @@ void ops_partition_blocks(int **processes, int **proc_offsets, int **proc_disps,
       for (int d = 0; d < ndim; d++) prod *= (pdims[d]==0 ? 1 : pdims[d]);
       if (prod > processes_per_block[i]) throw OPSException(OPS_RUNTIME_CONFIGURATION_ERROR, "Error: force_decomp requested more processes than available for the block");
       
-      //printf("requesting %dx%d for %d processes\n", pdims[0], pdims[1], processes_per_block[i]);
       MPI_Dims_create(processes_per_block[i], ndim, pdims);
       for (int d = 0; d < ndim; d++)
         (*proc_dimsplit)[i * OPS_MAX_DIM + d] = pdims[d];
@@ -462,17 +462,35 @@ void ops_decomp_particle(sub_block  *sb) {
     ops_block block = particle[idef]->block;
 
    // instance->OPS_block_list[block->index].no_history_structures++;
-    ops_neighbor_history  *histories = particle[idef]->histories;
+    OPS_instance *instance = OPS_instance::getOPSInstance();
+    ops_neighbor_history  *histories =  instance->OPS_block_list[block->index].histories;
 
-    int nhistories = particle[idef]->nhistories;
+    int nhistories = instance->OPS_block_list[block->index].no_history_structures;
 
-    printf("Number of histories stored for this particles %d\n", nhistories);
     for (int ihis = 0; ihis < nhistories; ihis++) {
-      printf("Name %s & index of particle %d\n", histories[ihis]->name, particle[idef]->index);
-    //  if (histories[ihis]->particleI->index != particle[idef]->index) continue;
 
-      sp->bites_in_exchange += histories[ihis]->n_partnersI->elem_size
-                             + histories[ihis]->partnersI->elem_size
+      ops_neighbor_history history = instance->OPS_block_list[block->index].histories[ihis];
+
+      if (!history->history_active) continue;
+
+      if (sp->particle->index != history->particleI->index ||
+         (sp->particle->index != history->particleJ->index &&
+          history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS)) continue; //TODO: Check
+
+      //Part II: Identify which particle to send
+      int exch_part = 0;
+
+      if (history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS &&
+          history->particleI->index != particle[idef]->index)
+        exch_part = 1;
+
+      ops_dat npartner = (exch_part == 0) ? history->n_partnersI
+                                          :  history->n_partnersJ;
+
+      ops_dat partner = (exch_part == 0) ? history->partnersI
+                                         :  history->partnersJ;
+      sp->bites_in_exchange += npartner->elem_size
+                             + partner->elem_size
                              + histories[ihis]->data->elem_size;
     }
 
@@ -495,10 +513,6 @@ void ops_decomp_particle(sub_block  *sb) {
 
       int d_ms = d_m + binhead->d_m[idir];
       int d_ps = d_p + binhead->d_p[idir];
-
-      printf("Rank %d: BinHead size = [%d %d]\n", ops_get_proc(), binhead->size[0], binhead->size[1]);
-      printf("Rank %d: decomp size = [%d %d]\n", ops_get_proc(), OPS_sub_dat_list[binhead->index]->decomp_size[0],
-             OPS_sub_dat_list[binhead->index]->decomp_size[1]);
 
       sp->particle_halos[idir]->nswap_neg = (binhead->size[idir] - d_ps + d_ms  > 1) ?
           -d_m / (binhead->size[idir] - d_ps + d_ms) + 1 : 1;
@@ -566,9 +580,6 @@ void ops_decomp_particle(sub_block  *sb) {
      //Allocate in positive direction
       nalloc = nswap;
 
-
-      printf("nalloc = %d\n", nalloc);
-
       //TODO: NEED AN ALLOCATION ON THE FLY
       sp->particle_halos[idir]->nforward_pos = (int *) ops_malloc(nalloc * sizeof(int));
       sp->particle_halos[idir]->irecv_pos = (int *) ops_malloc(nalloc * sizeof(int));
@@ -626,9 +637,15 @@ void ops_decomp_particle(sub_block  *sb) {
                          particle[idef]->Nmax * particle[idef]->ids->elem_size);
     }
 
+    if (particle[idef]->is_wall > 0) {
+      _ops_particle_subdat_create(particle[idef]->normal_vector, particle[idef]->Nmax, sb);
+      ops_cpHostToDevice(block->instance, (void **)&(particle[idef]->normal_vector->data_d),
+                               (void **)&(particle[idef]->normal_vector->data),
+                               particle[idef]->Nmax * particle[idef]->normal_vector->elem_size);
+    }
+
     for (int idat = 0; idat < particle[idef]->particle_dat_index; idat++) {
       ops_dat dat = particle[idef]->particle_dat[idat];
-      printf("Particle dat: %s\n", dat->name);
       _ops_particle_subdat_create(dat, particle[idef]->Nmax, sb);
       ops_cpHostToDevice(block->instance, (void **)&(dat->data_d),
                          (void **)&(dat->data), particle[idef]->Nmax * dat->elem_size);
@@ -687,11 +704,25 @@ void ops_decomp_histories(sub_block *sb) {
     ops_cpHostToDevice(block->instance, (void **)&(histories[ihis]->flag->data_d),
                                         (void **)&(histories[ihis]->flag->data),
                                         nmax * histories[ihis]->flag->elem_size);
+    if (histories[ihis]->history_active) {
+      _ops_particle_subdat_create(histories[ihis]->data, nmax, sb);
+      ops_cpHostToDevice(block->instance, (void **)&(histories[ihis]->data->data_d),
+                                          (void **)&(histories[ihis]->data->data),
+                                          nmax * histories[ihis]->data->elem_size);
+    }
+    _ops_particle_subdat_create(histories[ihis]->indexing_local, nmax, sb);
+    ops_cpHostToDevice(block->instance, (void **)&(histories[ihis]->indexing_local->data_d),
+                                        (void **)&(histories[ihis]->indexing_local->data),
+                                        nmax * histories[ihis]->indexing_local->elem_size);
 
-    _ops_particle_subdat_create(histories[ihis]->data, nmax, sb);
-    ops_cpHostToDevice(block->instance, (void **)&(histories[ihis]->data->data_d),
-                                        (void **)&(histories[ihis]->data->data),
-                                        nmax * histories[ihis]->flag->elem_size);
+
+    if (histories[ihis]->history_active) {
+      nmax = histories[ihis]->nmax_new;
+      _ops_particle_subdat_create(histories[ihis]->new_neighbors, nmax, sb);
+       ops_cpHostToDevice(block->instance, (void **) &(histories[ihis]->new_neighbors->data_d),
+                                           (void **) &(histories[ihis]->new_neighbors->data),
+                                           nmax * histories[ihis]->new_neighbors->elem_size);
+    }
 
   }
 
@@ -707,7 +738,7 @@ void ops_decomp_dats(sub_block *sb) {
     tmp_item = TAILQ_NEXT(item, entries);
     ops_dat dat = item->dat;
 
-    if (dat->is_particle) continue;
+    if (dat->is_particle || dat->is_alloc == 0) continue;
     sub_dat *sd = OPS_sub_dat_list[dat->index];
 
     // aggregate size and prod array
@@ -1467,16 +1498,12 @@ void _ops_partition(OPS_instance *instance, const char *routine, std::map<std::s
   ops_buffer_send_2_size = ops_buffer_size;
   ops_buffer_recv_2_size = ops_buffer_size;
 
-  ops_printf("Allocated send and recv buffers\n");
-
   OPS_mpi_halo_list =
       (ops_mpi_halo *)ops_calloc(OPS_instance::getOPSInstance()->OPS_halo_index , sizeof(ops_mpi_halo));
   OPS_mpi_halo_group_list = (ops_mpi_halo_group *)ops_calloc(
       OPS_instance::getOPSInstance()->OPS_halo_group_index , sizeof(ops_mpi_halo_group));
   ops_partition_halos(processes, proc_offsets, proc_disps, proc_sizes,
                       proc_dimsplit);
-
-  ops_printf("Allocated OPS MPI Halos\n");
 
   if (OPS_instance::getOPSInstance()->OPS_particle_halo_index > 0)
     OPS_mpi_particle_halo_list =
@@ -1621,8 +1648,6 @@ void ops_mpi_exit(OPS_instance *instance) {
 
   }
 
-
-  //printf("OPS_block_index = %d\n",OPS_block_index);
   for (int b = 0; b < OPS_instance::getOPSInstance()->OPS_block_index; b++) { // for each block
     sub_block *sb = OPS_sub_block_list[b];
 

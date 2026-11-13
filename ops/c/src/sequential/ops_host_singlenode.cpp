@@ -39,16 +39,103 @@
 #include <ops_lib_core.h>
 #include <ops_sequential_support.h>
 
+void ops_malloc_non_defined_dat(ops_dat dat, int *size, int  *base) {
+
+  int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
+
+  int dim = dat->block->dims;
+
+  printf("Dat %s: Prior d_m = [%d %d] d_p = [%d %d] x_pad = %d\n",
+         dat->name, dat->d_m[0], dat->d_m[1], dat->d_p[0], dat->d_p[1], dat->x_pad);
+
+  for (int i = 0; i < dim; i++) {
+    d_m[i] = dat->d_m[i];
+    d_p[i] = (i == 0) ? dat->d_p[i] - dat->x_pad : dat->d_p[i];
+    if (size[i] > 0)
+       dat->size[i] = size[i] - d_m[i] + d_p[i];
+    else {
+      dat->size[i] = 1;
+      dat->e_dat = 1;
+    }
+  }
+
+  printf("Dat %s: actual size [%d %d]\n", dat->name, size[0], size[1]);
+
+
+
+  //Setting d_m, d_p
+  for (int i = 0; i < dim; i++) {
+    if (d_m[i] <= 0) {
+      dat->d_m[i] = (dat->size[i] != 1) ? d_m[i] : 0;
+    }
+    else {
+      OPSException ex(OPS_INVALID_ARGUMENT);
+      ex << "Error: ops_decl_dat -- Non negative d_m during declaration of: " << dat->name;
+      throw ex;
+    }
+  }
+
+  for (int n = 0; n < dim; n++) {
+    if (d_p[n] >= 0)
+      dat->d_p[n] = (dat->size[n] == 1) ? 0 : d_p[n];
+    else {
+      OPSException ex(OPS_INVALID_ARGUMENT);
+      ex << "Error: ops_decl_dat -- Non positive d_p during declaration of: "
+         << dat->name;
+      throw ex;
+    }
+  }
+
+  //Set higher dimensions
+  for (int n = dim; n < OPS_MAX_DIM; n++) {
+    dat->size[n] = 1;
+    dat->base[n] = 0;
+    dat->d_m[n] = 0;
+    dat->d_p[n] = 0;
+  }
+
+  printf("d_m = [%d %d] d_p = [%d %d] x_pad = %d\n", d_m[0], d_m[1], d_p[0], d_p[1], dat->x_pad);
+
+  if(dat->size[0] == 1) {
+    dat->x_pad = 0;
+  }
+  else {
+
+    int x_pad = (1+((dat->size[0]-1)/SIMD_VEC))*SIMD_VEC - dat->size[0];
+    dat->size[0] += x_pad;
+    dat->d_p[0] += x_pad;
+    dat->x_pad = x_pad;
+  }
+
+  //Compute size and allocate
+  size_t bytes = dat->elem_size;
+  for (int i = 0; i < dim; i++)
+    bytes *= dat->size[i];
+  dat->mem = bytes;
+  dat->user_managed = 0;
+
+
+  int bytes_alloc = (bytes > 0) ? bytes : 1;
+  dat->data = (char *) ops_malloc(bytes_alloc);
+  ops_init_zero(dat->data, bytes);
+
+}
+
+
 ops_dat ops_decl_dat_char(ops_block block, int size, int *dat_size, int *base,
                           int *d_m, int *d_p, int *stride, char *data, int type_size,
-                          char const *type, char const *name) {
+                          char const *type, char const *name, int alloc) {
 
   /** ----             allocate an empty dat             ---- **/
 
-  ops_dat dat = ops_decl_dat_temp_core(block, size, dat_size, base, d_m, d_p,
-                                       stride, data, type_size, type, name);
+  if (data != nullptr && alloc == 0)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Generating an ops_dat structure with not-empty data"
+                                            "is not compatible with user allocation\n");
 
-  if (data != NULL && !block->instance->OPS_realloc) {
+  ops_dat dat = ops_decl_dat_temp_core(block, size, dat_size, base, d_m, d_p,
+                                       stride, data, type_size, type, name, alloc);
+
+  if (dat->is_alloc == 1 && data != NULL && !block->instance->OPS_realloc) {
     dat->user_managed =
         1; // will be reset to 0 if called from ops_decl_dat_hdf5()
     dat->is_hdf5 = 0;
@@ -77,21 +164,25 @@ ops_dat ops_decl_dat_char(ops_block block, int size, int *dat_size, int *base,
 
     for (int i = 0; i < block->dims; i++)
       bytes = bytes * dat->size[i];
-    dat->data = (char *)ops_malloc(bytes);
+    if (alloc == 1)
+      dat->data = (char *)ops_malloc(bytes);
     dat->user_managed = 0;
     dat->mem = bytes;
-    if (data != NULL && block->instance->OPS_realloc) {
-      ops_convert_layout(data, dat->data, block, size,
-          dat->size, dat_size, type_size, 0);
+
+    if (dat->is_alloc == 1) {
+      if (data != NULL && block->instance->OPS_realloc) {
+        ops_convert_layout(data, dat->data, block, size,
+                           dat->size, dat_size, type_size, 0);
 //          dat->size, dat_size_orig, type_size, 0);
 //          block->instance->OPS_hybrid_layout ? //TODO: comes in when batching
 //          block->instance->ops_batch_size : 0);
-    } else
-      ops_init_zero(dat->data, bytes);
+      } else
+        ops_init_zero(dat->data, bytes);
+    }
   }
 
   // Compute offset in bytes to the base index
-  dat->base_offset = 0;
+  dat->base_offset = 0; //TODO: Need to recalculate after generation
   size_t cumsize = 1;
   for (int i = 0; i < block->dims; i++) {
     dat->base_offset +=

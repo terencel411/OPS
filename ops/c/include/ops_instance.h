@@ -344,8 +344,8 @@ class OPS_instance {
 	//SEQ execution
 	int arg_idx[OPS_MAX_DIM];
 
-        int arg_idp[1]; //SEQ execution
-        int arg_idj[1];
+        int arg_idp[100]; //SEQ execution
+        int arg_idj[100]; //TODO: Fix it with allocation
         int arg_idx_map[OPS_MAX_DIM];
 
 	// Debugging

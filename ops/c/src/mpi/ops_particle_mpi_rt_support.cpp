@@ -185,9 +185,6 @@ void _ops_particle_halo_border_transfer_map(OPS_instance *instance,
   ops_mpi_particle_halo_group *mpi_group =
       &OPS_mpi_particle_halo_group_list[halo_grp->index];
 
-
-  printf("Entering herein for number of halos: %d\n", mpi_group->nhalos);
-
   if (mpi_group->nhalos == 0) return;
   double c, t1, t2;
   ops_timers_core(&c, &t1);
@@ -515,10 +512,6 @@ void _ops_particle_halo_border_transfer(OPS_instance  *instance,
   size = (mpi_group->num_neighbors_recv > 0) ?
       mpi_group->num_neighbors_recv * mpi_group->nhalos : 1;
   int *nrecv = (int *) ops_malloc(size * sizeof(int));
-
-
-  printf("R %d mpi_group->num_neighbors_Send = %d nhalos = %d\n", ops_get_proc(),mpi_group->num_neighbors_send);
-
 
   for (int i = 0; i <mpi_group->num_neighbors_send * mpi_group->nhalos; i++) {
     nsend[i] = 0;
@@ -2108,18 +2101,55 @@ void _ops_particle_exchange(ops_particle particle) {
     for (size_t ipart = 0; ipart < particle->no_particles; ipart++) {
       if (mark_deletion[ipart] == 1) {
         //Check if particle would be mapped for allocation
-        if (xpos[dim * ipart + idir] < halo_int->region_exch_neg[1]
-            && sb->id_m[idir] != MPI_PROC_NULL) {
-          nsend_recv_bites[0]++;
-          mark_deletion[ipart] = 2;
-          continue;
-        }
+        switch(particle->type_box) {
+        case sizeof(float): {
+          if (((float *)particle->particle_pos_dat->data)[ipart * dim + idir] <
+              ((float *)halo_int->region_exch_neg)[1] &&
+                sb->id_m[idir] != MPI_PROC_NULL) {
+            nsend_recv_bites[0]++;
+            mark_deletion[ipart] = 2;
+            continue;
+          }
 
-        if (xpos[dim * ipart + idir] > halo_int->region_exch_pos[0]  &&
-            sb->id_p[idir] != MPI_PROC_NULL)
-        {
-          nsend_recv_bites[1]++;
-          mark_deletion[ipart] = 3;
+          if (((float *) particle->particle_pos_dat->data)[ipart * dim + idir] >
+              ((float *) halo_int->region_exch_pos)[0] &&
+              sb->id_p[idir] != MPI_PROC_NULL) {
+                nsend_recv_bites[1]++;
+                mark_deletion[ipart] = 3;
+          }
+          } break;
+        case sizeof(double): {
+          if (((double *)particle->particle_pos_dat->data)[ipart * dim + idir] <
+              ((double *)halo_int->region_exch_neg)[1] &&
+              sb->id_m[idir] != MPI_PROC_NULL) {
+            nsend_recv_bites[0]++;
+            mark_deletion[ipart] = 2;
+            continue;
+          }
+
+          if (((double *) particle->particle_pos_dat->data)[ipart * dim + idir] >
+              ((double *) halo_int->region_exch_pos)[0] &&
+              sb->id_p[idir] != MPI_PROC_NULL) {
+                nsend_recv_bites[1]++;
+                mark_deletion[ipart] = 3;
+          }
+          } break;
+        case sizeof(long double): {
+          if (((long double *)particle->particle_pos_dat->data)[ipart * dim + idir] <
+              ((long double *)halo_int->region_exch_neg)[1] &&
+                sb->id_m[idir] != MPI_PROC_NULL) {
+             nsend_recv_bites[0]++;
+             mark_deletion[ipart] = 2;
+             continue;
+          }
+
+          if (((long double *) particle->particle_pos_dat->data)[ipart * dim + idir] >
+              ((long double *) halo_int->region_exch_pos)[0] &&
+              sb->id_p[idir] != MPI_PROC_NULL) {
+                nsend_recv_bites[1]++;
+                mark_deletion[ipart] = 3;
+          }
+          } break;
         }
       }
     }
@@ -2243,16 +2273,27 @@ void _ops_particle_exchange(ops_particle particle) {
       //ops_neighbor_history history = ;
       ops_neighbor_history history = instance->OPS_block_list[block->index].histories[ihis];
 
-      if (history->particleI->index != particle->index) continue;
+      if (!history->history_active) continue;
 
+      //Part I: Check if this history needs to exchange
+      if (particle->index != history->particleI->index ||
+          (particle->index != history->particleJ->index &&
+            history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS)) continue; //TODO: Check
+
+      //Part II: Identify which particle to send
+      int exch_part = 0;
+
+      if (history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS &&
+          history->particleI->index != history->particleI->index)
+        exch_part = 1;
 
       shift_neg += _ops_particle_intra_hist_to_buff(ops_buffer_send_1 + shift_neg,
-                                                    history,
+                                                    history, exch_part,
                                                     halo_int->particle_send_neg + shift_neg,
                                                     isend_neg);
 
      shift_pos += _ops_particle_intra_hist_to_buff(ops_buffer_send_2 + shift_pos,
-                                                   history,
+                                                   history, exch_part,
                                                    halo_int->particle_send_pos + shift_pos,
                                                    isend_pos);
 
@@ -2374,13 +2415,29 @@ void _ops_particle_exchange(ops_particle particle) {
 
     for (int ihis = 0; ihis < instance->OPS_block_list[block->index].no_history_structures;
          ihis++) {
-      //ops_neighbor_history history = ;
+
       ops_neighbor_history history = instance->OPS_block_list[block->index].histories[ihis];
+
+      if (!history->history_active) continue;
+
+      //Part I: Check if this history needs to exchange
+      if (particle->index != history->particleI->index ||
+          (particle->index != history->particleJ->index &&
+            history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS)) continue; //TODO: Check
+
+      //Part II: Identify which particle to send
+      int exch_part = 0;
+
+      if (history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS &&
+          history->particleI->index != history->particleI->index)
+        exch_part = 1;
+
+      //Set the flag for the second one
       shift_recv_neg += _ops_particle_intra_buff_to_hist(ops_buffer_recv_2 + shift_recv_neg,
-                                                         history, nexist, nsend_recv_bites[3]);
+                                                         history, exch_part, nexist, nsend_recv_bites[3]);
 
       shift_recv_pos += _ops_particle_intra_buff_to_hist(ops_buffer_recv_1 + shift_recv_pos,
-                                                         history, nexist, nsend_recv_bites[2]);
+                                                         history, exch_part, nexist, nsend_recv_bites[2]);
     }
 
     MPI_Waitall(2, &request[0], &status[0]);
@@ -2546,6 +2603,8 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
     shift_neg += nsend_recv[0] * pos_dat->elem_size;
     shift_pos += nsend_recv[1] * pos_dat->elem_size;
 
+
+
     if (particle->particle_envelope != nullptr) {
       _ops_particle_intra_dat_to_buff(ops_buffer_send_1 + shift_neg,
                                       particle->particle_envelope,
@@ -2579,19 +2638,57 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
     }
 
     for (int idat = 0; idat < particle->particle_dat_index; idat++) {
+
       ops_dat dat = particle->particle_dat[idat];
-      _ops_particle_intra_dat_to_buff(ops_buffer_send_1 + shift_neg,
-                                      dat, halo_int->particle_send_neg,
-                                      nsend_recv[0]);
+      if (dat->is_exchangable) {
 
-      _ops_particle_intra_dat_to_buff(ops_buffer_send_2 + shift_pos,
-                                      dat, halo_int->particle_send_pos,
-                                      nsend_recv[1]);
+        _ops_particle_intra_dat_to_buff(ops_buffer_send_1 + shift_neg,
+                                        dat, halo_int->particle_send_neg,
+                                        nsend_recv[0]);
 
-      shift_neg += nsend_recv[0] * dat->elem_size;
-      shift_pos += nsend_recv[1] * dat->elem_size;
+       _ops_particle_intra_dat_to_buff(ops_buffer_send_2 + shift_pos,
+                                       dat, halo_int->particle_send_pos,
+                                       nsend_recv[1]);
+
+        shift_neg += nsend_recv[0] * dat->elem_size;
+        shift_pos += nsend_recv[1] * dat->elem_size;
+      }
     }
 
+    ops_block block = particle->block;
+    OPS_instance *instance = OPS_instance::getOPSInstance();
+    for (int ihis = 0; ihis < instance->OPS_block_list[block->index].no_history_structures;
+         ihis++) {
+      //ops_neighbor_history history = ;
+      ops_neighbor_history history = instance->OPS_block_list[block->index].histories[ihis];
+
+      if (!history->history_active) continue;
+      //Part I: Check if this history needs to exchange
+      if (particle->index != history->particleI->index ||
+          (particle->index != history->particleJ->index &&
+            history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS &&
+            history->particleI->is_wall == 1)) continue; //TODO: Check
+
+      //Part II: Identify which particle to send
+      int exch_part = 0;
+
+      if (history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS &&
+          history->particleI->index != history->particleI->index)
+        exch_part = 1;
+
+
+      shift_neg += _ops_particle_intra_hist_to_buff(ops_buffer_send_1 + shift_neg,
+                                                    history, exch_part,
+                                                    halo_int->particle_send_neg,
+                                                    isend_neg);
+
+     shift_pos += _ops_particle_intra_hist_to_buff(ops_buffer_send_2 + shift_pos,
+                                                   history, exch_part,
+                                                   halo_int->particle_send_pos,
+                                                   isend_pos);
+
+     //TODO: Failed herein
+    }
 
     //Check what we send
     //Send and receive elements
@@ -2605,7 +2702,6 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
                  &nsend_recv[3], 1, MPI_INT, sb->id_m[idir], 200,
                  sb->comm, &status[0]);
 
-    //Reallocate if necessary
     if (nsend_recv[2] * sp->bites_in_exchange > ops_buffer_recv_1_size) {
       ops_buffer_recv_1 = (char *) OPS_realloc_fast(ops_buffer_recv_1,
                                                     ops_buffer_recv_1_size,
@@ -2701,7 +2797,7 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
     for (int idat = 0; idat < particle->particle_dat_index; idat++) {
       ops_dat dat = particle->particle_dat[idat];
 
-
+      if (!dat->is_exchangable) continue;
       _ops_particle_intra_buff_to_dat(ops_buffer_recv_2 + shift_recv_neg, dat,
                                       nexist, nsend_recv[3]);
 
@@ -2710,6 +2806,33 @@ void _ops_particle_exchange_map_update(ops_particle particle) {
 
       shift_recv_neg += nsend_recv[3] * dat->elem_size;
       shift_recv_pos += nsend_recv[2] * dat->elem_size;
+    }
+
+    for (int ihis = 0; ihis < instance->OPS_block_list[block->index].no_history_structures;
+         ihis++) {
+      //ops_neighbor_history history = ;
+      ops_neighbor_history history = instance->OPS_block_list[block->index].histories[ihis];
+
+      if (!history->history_active) continue;
+
+      //Part I: Check if this history needs to exchange
+      if (particle->index != history->particleI->index ||
+          (particle->index != history->particleJ->index &&
+            history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS)) continue; //TODO: Check
+
+      //Part II: Identify which particle to send
+      int exch_part = 0;
+
+      if (history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS &&
+          particle->index == history->particleI->index)
+        exch_part = 1;
+
+      shift_recv_neg += _ops_particle_intra_buff_to_hist(ops_buffer_recv_2 + shift_recv_neg,
+                                                         history, exch_part, nexist, nsend_recv[3]);
+
+      shift_recv_pos += _ops_particle_intra_buff_to_hist(ops_buffer_recv_1 + shift_recv_pos,
+                                                         history, exch_part, nexist + nsend_recv[3],
+                                                         nsend_recv[2]);
     }
 
     MPI_Waitall(2, &request[0], &status[0]);
@@ -2930,6 +3053,8 @@ void _ops_particle_border_dats(ops_particle particle, ops_dat *dats,
   int dim = particle->block->dims;
   sub_particle sp = sb->sb_particle_list[particle->index];
 
+  //Part I: Finding the element size per particle
+  //Part Ia: Size coming from ops_dat structures
   int elem_size = 0;
   for (int idat = 0; idat < ndats; idat++) {
     if (!dats[idat]->is_particle)
@@ -2938,18 +3063,19 @@ void _ops_particle_border_dats(ops_particle particle, ops_dat *dats,
     elem_size += dats[idat]->elem_size;
   }
 
+  //Part Ib: Size coming from histories
   for (int ihist = 0; ihist < nhistories; ihist++) {
-    if (histories[ihist]->particleI->index != particle->index)
-      throw OPSException(OPS_RUNTIME_ERROR, "Error: History structure not related with "
-                                            " the particle\n");
-    elem_size += histories[ihist]->n_partnersI->elem_size
-               + histories[ihist]->partnersI->elem_size
-               + histories[ihist]->data->elem_size;
+    if (!histories[ihist]->history_active) continue;
+
+    if (particle->index == histories[ihist]->particleI->index ||
+        (particle->index == histories[ihist]->particleJ->index &&
+          histories[ihist]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS))
+      elem_size += histories[ihist]->n_partnersI->elem_size
+                 + histories[ihist]->partnersI->elem_size
+                 + histories[ihist]->data->elem_size;
   }
 
-  for (int idir = 0; idir < dim; idir++) {
-
- //   printf("Number of swaps R %d dir %d: %d\n", ops_get_proc(), idir,sp->particle_halos[idir]->nswaps);
+    for (int idir = 0; idir < dim; idir++) {
 
 //    int nsend_recv[4];
     int nfirst = particle->no_particles + particle->no_virtual;
@@ -2967,7 +3093,7 @@ void _ops_particle_border_dats(ops_particle particle, ops_dat *dats,
     int ilast_send = particle->no_particles + particle->no_virtual;
 
     for (int iswap = 0; iswap < nswaps; iswap++) {
-      //Part I: Find particles within box */
+      //Part II: Find particles within box */
       sp->particle_halos[idir]->nforward_pos[iswap] = 0;
       sp->particle_halos[idir]->nforward_neg[iswap] = 0;
 
@@ -2993,7 +3119,7 @@ void _ops_particle_border_dats(ops_particle particle, ops_dat *dats,
       }
 
 
-      //Part II: Build intra-block halo
+      //Part II: Generate particle halo border
       _ops_particle_set_intra_border_box(particle, halo_int, iswap, ifirst_send, ilast_send);
 
 
@@ -3034,17 +3160,32 @@ void _ops_particle_border_dats(ops_particle particle, ops_dat *dats,
 
       //Part IVa: Pack history-data
       for (int ihis = 0; ihis < nhistories; ihis++) {
-        ishift_neg_buf += _ops_particle_intra_hist_to_buff(ops_buffer_send_1 + ishift_neg_buf,
-                                                           histories[ihis],
+
+        if (!histories[ihis]->history_active) continue;
+        //Check if this history needs to exchange
+        if (particle->index != histories[ihis]->particleI->index ||
+            (particle->index != histories[ihis]->particleJ->index &&
+              histories[ihis]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS)) continue; //TODO: Check
+
+        //Part II: Identify which particle to send
+        int exch_part = 0;
+
+        if (histories[ihis]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS &&
+            histories[ihis]->particleI->index != particle->index)
+          exch_part = 1;
+        int ishift_buff = ishift_neg_buf;
+        ishift_neg_buf += _ops_particle_intra_hist_to_buff(ops_buffer_send_1 + ishift_buff,
+                                                           histories[ihis], exch_part,
                                                            halo_int->particle_send_neg + ishift_neg,
                                                            halo_int->nforward_neg[iswap]);
 
-        ishift_pos_buf += _ops_particle_intra_hist_to_buff(ops_buffer_send_2 + ishift_pos_buf,
-                                                           histories[ihis],
+        ishift_buff = ishift_pos_buf;
+        ishift_pos_buf += _ops_particle_intra_hist_to_buff(ops_buffer_send_2 + ishift_buff,
+                                                           histories[ihis], exch_part,
                                                            halo_int->particle_send_pos + ishift_pos,
                                                            halo_int->nforward_pos[iswap]);
-      }
 
+      }
 
       //Update ishifts to get correct data structures
       ishift_neg += halo_int->nforward_neg[iswap];
@@ -3114,6 +3255,8 @@ void _ops_particle_border_dats(ops_particle particle, ops_dat *dats,
         ops_particle_realloc_data(particle, particle->no_particles + particle->no_virtual);
       }
 
+
+
       //Part IX: Unpacking data
       int irecv_shift_neg = 0;
       int irecv_shift_pos = 0;
@@ -3135,13 +3278,30 @@ void _ops_particle_border_dats(ops_particle particle, ops_dat *dats,
       }
 
       for (int ihis = 0; ihis < nhistories; ihis++) {
-        irecv_shift_neg += _ops_particle_intra_buff_to_hist(ops_buffer_recv_2 + irecv_shift_neg,
-                                                            histories[ihis],
+
+        //Part I: Check if this history needs to exchange
+        if (particle->index != histories[ihis]->particleI->index ||
+            (particle->index != histories[ihis]->particleJ->index &&
+              histories[ihis]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS)) continue; //TODO: Check
+
+        //Part II: Identify which particle to send
+        int exch_part = 0;
+
+        if (histories[ihis]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS &&
+            histories[ihis]->particleI->index != particle->index)
+          exch_part = 1;
+
+
+
+        int irecv_buff = irecv_shift_neg;
+        irecv_shift_neg += _ops_particle_intra_buff_to_hist(ops_buffer_recv_2 + irecv_buff,
+                                                            histories[ihis], exch_part,
                                                             halo_int->irecv_neg[iswap],
                                                             halo_int->nrecv_neg[iswap]);
 
-        irecv_shift_pos += _ops_particle_intra_buff_to_hist(ops_buffer_recv_2 + irecv_shift_pos,
-                                                            histories[ihis],
+        irecv_buff = irecv_shift_pos;
+        irecv_shift_pos += _ops_particle_intra_buff_to_hist(ops_buffer_recv_1 + irecv_buff,
+                                                            histories[ihis], exch_part,
                                                             halo_int->irecv_pos[iswap],
                                                             halo_int->nrecv_pos[iswap]); //TODO
       }
@@ -3175,12 +3335,12 @@ void _ops_particle_border_dats_with_maps(ops_particle particle, ops_dat *dats,
   }
 
   for (int ihist = 0; ihist < nhistories; ihist++) {
-    if (histories[ihist]->particleI->index != particle->index)
-      throw OPSException(OPS_RUNTIME_ERROR, "Error: History structure not related with "
-                                            " the particle\n");
-    elem_size += histories[ihist]->n_partnersI->elem_size
-               + histories[ihist]->partnersI->elem_size
-               + histories[ihist]->data->elem_size;
+    if (particle->index == histories[ihist]->particleI->index ||
+        (particle->index == histories[ihist]->particleJ->index &&
+          histories[ihist]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS))
+      elem_size += histories[ihist]->n_partnersI->elem_size
+                 + histories[ihist]->partnersI->elem_size
+                 + histories[ihist]->data->elem_size;
   }
 
 
@@ -3272,13 +3432,29 @@ void _ops_particle_border_dats_with_maps(ops_particle particle, ops_dat *dats,
 
     //Part IVa: Pack history-data-TODO: Need a modification but this will be after
     for (int ihis = 0; ihis < nhistories; ihis++) {
-      ishift_neg_buf += _ops_particle_intra_hist_to_buff(ops_buffer_send_1 + ishift_neg_buf,
-                                                         histories[ihis],
+
+
+      //Part I: Check if this history needs to exchange
+      if (particle->index != histories[ihis]->particleI->index ||
+          (particle->index != histories[ihis]->particleJ->index &&
+            histories[ihis]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS)) continue; //TODO: Check
+
+      //Part II: Identify which particle to send
+      int exch_part = 0;
+
+      if (histories[ihis]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS &&
+          histories[ihis]->particleI->index != histories[ihis]->particleI->index)
+        exch_part = 1;
+
+      int buff_shift = ishift_neg_buf;
+      ishift_neg_buf += _ops_particle_intra_hist_to_buff(ops_buffer_send_1 + buff_shift,
+                                                         histories[ihis], exch_part,
                                                          halo_int->particle_send_neg + ishift_neg,
                                                          halo_int->nforward_neg[0]);
 
-      ishift_pos_buf += _ops_particle_intra_hist_to_buff(ops_buffer_send_2 + ishift_pos_buf,
-                                                         histories[ihis],
+      buff_shift = ishift_pos_buf;
+      ishift_pos_buf += _ops_particle_intra_hist_to_buff(ops_buffer_send_2 + buff_shift,
+                                                         histories[ihis], exch_part,
                                                          halo_int->particle_send_pos + ishift_pos,
                                                          halo_int->nforward_pos[0]);
     }
@@ -3364,13 +3540,28 @@ void _ops_particle_border_dats_with_maps(ops_particle particle, ops_dat *dats,
     }
 
     for (int ihis = 0; ihis < nhistories; ihis++) {
-      irecv_shift_neg += _ops_particle_intra_buff_to_hist(ops_buffer_recv_2 + irecv_shift_neg,
-                                                          histories[ihis],
+
+      //Part I: Check if this history needs to exchange
+      if (particle->index != histories[ihis]->particleI->index ||
+          (particle->index != histories[ihis]->particleJ->index &&
+            histories[ihis]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS)) continue; //TODO: Check
+
+      //Part II: Identify which particle to send
+      int exch_part = 0;
+
+      if (histories[ihis]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS &&
+          particle->index != histories[ihis]->particleI->index)
+        exch_part = 1;
+
+      int recv_shift = irecv_shift_neg;
+      irecv_shift_neg += _ops_particle_intra_buff_to_hist(ops_buffer_recv_2 + recv_shift,
+                                                          histories[ihis], exch_part,
                                                           halo_int->irecv_neg[0],
                                                           halo_int->nrecv_neg[0]);
 
-      irecv_shift_pos += _ops_particle_intra_buff_to_hist(ops_buffer_recv_2 + irecv_shift_pos,
-                                                          histories[ihis],
+      recv_shift = irecv_shift_pos;
+      irecv_shift_pos += _ops_particle_intra_buff_to_hist(ops_buffer_recv_1 + irecv_shift_pos,
+                                                          histories[ihis], exch_part,
                                                           halo_int->irecv_pos[0],
                                                           halo_int->nrecv_pos[0]); //TODO
     }

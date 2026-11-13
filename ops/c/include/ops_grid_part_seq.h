@@ -74,7 +74,6 @@ template <typename T> struct grid_part_param_handler<ACC<T>> {
                          ops_particle_mapping map) {
 
     if (arg.argtype == OPS_ARG_DAT) {
- //     printf("arg_name = %s\n", arg.dat->name);
       int d_m[OPS_MAX_DIM] = {};
   #ifdef OPS_MPI
       for (int d = 0; d < dim; d++) d_m[d] = arg.dat->d_m[d] + OPS_sub_dat_list[arg.dat->index]->d_im[d];
@@ -103,7 +102,7 @@ template <typename T> struct grid_part_param_handler<ACC<T>> {
   static ACC<T>& get(char *data) { return *((ACC<T> *)data); }
 
 #ifdef OPS_MPI
-  static int shift_arg(const ops_arg &arg, ops_particle_mapping map, char *p, int m, int* start,
+  static void shift_arg(const ops_arg &arg, ops_particle_mapping map, char *p, int m, int* start,
                        const int offs[], int &first,const sub_block_list &sb, OPS_instance *instance)
 #else
   static void shift_arg(const ops_arg &arg, ops_particle_mapping map, char *p, int m, int *start,
@@ -114,6 +113,7 @@ template <typename T> struct grid_part_param_handler<ACC<T>> {
       int offset = (arg.dat->block->instance->OPS_soa ? 1 : arg.dat->dim) * offs[m];
       ((ACC<T> *)p)->next(offset);
     }
+
 
   }
 

@@ -108,7 +108,6 @@ typedef std::complex<float> complexf;
 #if (defined(__HIP_PLATFORM_HCC__) || defined(__HIP_PLATFORM_AMD__)) && !(defined(__HIP_PLATFORM_NVCC__) || defined(__HIP_PLATFORM_NVIDIA__))
 #include <hip/hip_fp16.h>
 #elif !(defined(__HIP_PLATFORM_HCC__) || defined(__HIP_PLATFORM_AMD__)) && (defined(__HIP_PLATFORM_NVCC__) || defined(__HIP_PLATFORM_NVIDIA__))
-<<<<<<< HEAD
 #ifndef __HALF_DEFINED__
 #include <cuda_fp16.h>
 #endif
@@ -122,15 +121,6 @@ typedef __half half;
 #include <sycl/sycl.hpp>
 namespace cl { namespace sycl = ::sycl; }
 typedef sycl::half half;
-=======
-#include <cuda_fp16.h>
-#elif defined(__CUDA_ARCH__) || defined(__CUDACC__)
-#include <cuda_fp16.h>
-typedef __half half;
-//#elif defined(__SYCL_DEVICE_ONLY__)
-#elif defined(__INTEL_SYCL__)
-#include <CL/sycl.hpp>
->>>>>>> mpi_zone
 #elif defined(__STDCPP_FLOAT16_T__) || defined(FLT16_MIN)
 typedef _Float16 half;
 #else
@@ -336,6 +326,8 @@ class ops_dat_core {
                           *   base index */
   int stride[OPS_MAX_DIM];/**< stride[*] > 1 if this dat is a coarse dat under
                            *   multi-grid*/
+  int is_alloc;           /**< flag indicating that an ops_dat participates in
+                               block_partition and has a predefined size. */
 
 
   // Default constructor zeros out all data in the struct
@@ -691,12 +683,14 @@ ops_block ops_decl_block(int dims, const char *name);
  * @param type        the name of type used for output diagnostics
  *                    (e.g. "double", "float")
  * @param name        a name used for output diagnostics
+ * @param alloc       flag indicating that ops_dat structure will be managed
+ *                    automatically
  * @return
  */
 template <class T>
 ops_dat ops_decl_dat(ops_block block, int data_size, int *block_size, int *base,
                      int *d_m, int *d_p, int *stride, T *data, char const *type,
-                     char const *name) {
+                     char const *name, int alloc = 1) {
 
   if (type_error(data, type)) {
     OPSException ex(OPS_HDF5_ERROR);
@@ -705,7 +699,7 @@ ops_dat ops_decl_dat(ops_block block, int data_size, int *block_size, int *base,
   }
 
   return ops_decl_dat_char(block, data_size, block_size, base, d_m, d_p,
-                           stride, (char *)data, sizeof(T), type, name);
+                           stride, (char *)data, sizeof(T), type, name, alloc);
 }
 
 /**
@@ -729,18 +723,20 @@ ops_dat ops_decl_dat(ops_block block, int data_size, int *block_size, int *base,
  * @param type        the name of type used for output diagnostics
  *                    (e.g. "double", "float")
  * @param name        a name used for output diagnostics
+ * @param alloc       flag indicating that the ops_dat structure will be handled
+ *                    automatically.
  * @return
  */
 template <class T>
 ops_dat ops_decl_dat(ops_block block, int data_size, int *block_size, int *base,
                      int *d_m, int *d_p, T *data, char const *type,
-                     char const *name) {
+                     char const *name, int alloc = 1) {
 
   int stride[OPS_MAX_DIM];
 
   for (int i = 0; i < OPS_MAX_DIM; i++) stride[i] = 1;
   return ops_decl_dat_char(block, data_size, block_size, base, d_m, d_p,
-                           stride, (char *)data, sizeof(T), type, name);
+                           stride, (char *)data, sizeof(T), type, name, alloc);
 }
 
 
@@ -1302,20 +1298,6 @@ void ops_dat_release_raw_data_memspace(ops_dat dat, int part, ops_access acc, op
  */
 OPS_FTN_INTEROP
 void ops_dat_fetch_data(ops_dat dat, int part, char *data);
-
-/**
- * This routine gathers the whole dataset onto every MPI process that owns
- * the dat's block: the interior of the dat, in the layout a single-process
- * ops_dat_fetch_data() returns. `data` must hold the product of the global
- * sizes times the element size. Collective over the block's processes;
- * on processes not owning the block it returns without touching `data`.
-
- * @param dat   the dataset
- * @param part  the chunk index (has to be 0)
- * @param data  pointer to CPU memory which should be filled by OPS
- */
-OPS_FTN_INTEROP
-void ops_dat_global_fetch_data(ops_dat dat, int part, char *data);
 
 /**
  * This routine copies the data held by OPS to the user-specified

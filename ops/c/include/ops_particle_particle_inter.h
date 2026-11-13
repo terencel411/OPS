@@ -71,6 +71,16 @@ inline void get_local_point(const int address , const ops_dat binhead,
   }
 }
 
+inline int particle_in_group(ops_particle particle, int i, ops_particle_group group) {
+  if (particle->index != group->particle_index)
+    throw OPSException(OPS_RUNTIME_ERROR,"Error: The given ops_particle_group not "
+                                         "linked to the given ops_particle_structure");
+
+  if (((int *) group->group_dat->data)[i] != 0) return 1;
+
+  return 0;
+}
+
 inline void _get_point_to_mapJ(const int address, const ops_dat binheadI,
                                const ops_dat binheadJ, ops_stencil stencil,
                                const int dim, int cell_to_j[]) {
@@ -434,8 +444,11 @@ template<typename T> struct part_inter_param_handler<ACC_HIS<T>> {
 
 template<typename T, typename... ParamType, typename... OPSARG, size_t... J>
 void ops_part_inter_loop_impl_direct(indices<J...>, void (*kernel)(ParamType...), char const *name,
-                                     ops_particle particleI, ops_particle_mapping mapI,
-                                     ops_particle particleJ, ops_particle_mapping mapJ,
+                                     int (*kernel_bound)(T *, T *, T *, T*, int),
+                                     ops_particle particleI, ops_particle_group groupI,
+                                     ops_particle_mapping mapI,
+                                     ops_particle particleJ, ops_particle_group groupJ,
+                                     ops_particle_mapping mapJ,
                                      ops_stencil stencil, ops_particle_iterate_type iter_type,
                                      int dim, T *range, OPSARG... arguments) {
 
@@ -480,6 +493,8 @@ void ops_part_inter_loop_impl_direct(indices<J...>, void (*kernel)(ParamType...)
     }
   }
 
+  int envelope_test = (particleI->particle_envelope != nullptr &&
+                       particleJ->particle_envelope != nullptr)? 1 : 0;
 
   if (nhists > 1)
     throw OPSException(OPS_RUNTIME_ERROR, "ERROR: The number of assigned histories exceed the "
@@ -633,8 +648,20 @@ void ops_part_inter_loop_impl_direct(indices<J...>, void (*kernel)(ParamType...)
 
   no_particles = (particleI->is_wall == 1) ? particleI->no_particles : no_particles;
 
+  T *xpos = (T *) particleI->particle_pos_dat->data;
+  T *xposJ = (T *) particleJ->particle_pos_dat->data;
+  T *envI = (particleI->particle_envelope != nullptr) ? particleI->particle_envelope->data : nullptr;
+  T *envJ = (particleJ->particle_envelope != nullptr) ? particleJ->particle_envelope->data : nullptr;
+  int dimI = (particleI->particle_envelope != nullptr) ? particleI->particle_envelope->dim : 0;
+  int dimJ = (particleJ->particle_envelope != nullptr) ? particleJ->particle_envelope->dim : 0;
+
+
   int local_point[OPS_MAX_DIM], point2mapJ[OPS_MAX_DIM], map_pointJ[OPS_MAX_DIM];
   for (size_t i = 0; i < no_particles; i++) {
+
+    if (groupI != nullptr)
+      if (!particle_in_group(particleI, i, groupI)) continue;
+
     int address = ((int *) mapI->parts_to_grid->data)[i];
     //TODO: Point to map
 
@@ -663,21 +690,39 @@ void ops_part_inter_loop_impl_direct(indices<J...>, void (*kernel)(ParamType...)
       if (addressJ < 0 ) continue;
       int jpart = ((int *)mapJ->binhead->data)[addressJ];
 
-      while (jpart != - 1) {
-        int jshift = jpart - jfirst;
+      if (groupJ != nullptr)
+        if (!particle_in_group(particleJ, jpart, groupJ)) continue;
 
-        (void) std::initializer_list<int>{
-                         (part_inter_param_handler<param_remove_cvref_t<ParamType>>::shift_history(arguments,
+      while (jpart != - 1) {
+
+        int intersection = 1;
+        if (envelope_test) {
+         intersection =  kernel_bound(xpos + i * dim, envI + i * dimI,
+                                      xposJ + jpart * dim, envJ * dimJ);
+        }
+
+
+        if (intersection) {
+          int jshift = jpart - jfirst;
+
+
+
+          (void) std::initializer_list<int>{
+                           (part_inter_param_handler<param_remove_cvref_t<ParamType>>::shift_history(arguments,
                                                                                                  p_a[J], i, tagsJ[jpart]),0)...};
-        //Shift j-arguments
-        (void) std::initializer_list<int>{
-                    (part_inter_param_handler<param_remove_cvref_t<ParamType>>::shift_point_j_arg(arguments, particleJ, p_a[J],
+           //Shift j-arguments
+          (void) std::initializer_list<int>{
+                      (part_inter_param_handler<param_remove_cvref_t<ParamType>>::shift_point_j_arg(arguments, particleJ, p_a[J],
                                                                                 jshift, jfirst,
                                                                                 particleJ->block->instance), 0)...};
 
-        kernel((part_inter_param_handler<param_remove_cvref_t<ParamType>>::get(p_a[J]))...);
+          kernel((part_inter_param_handler<param_remove_cvref_t<ParamType>>::get(p_a[J]))...);
 
-        jfirst = jpart;
+          jfirst = jpart;
+        }
+        else {
+          //TODO: For histories
+        }
         jpart = binJ[jpart];
       }
     }
@@ -713,7 +758,7 @@ void ops_part_inter_loop_impl(indices<J...>, void (*kernel)(ParamType...), char 
     throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Map for particle I not related to particle I");
 
   if (mapJ->particle->index != particleJ->index)
-    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Map for particle J does not particles J");
+    throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Map for particle J does link to particles J");
 
   if (stencil->points <= 1)
     throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Stencil for accessing interactions between "
@@ -965,8 +1010,10 @@ void ops_part_inter_loop_impl(indices<J...>, void (*kernel)(ParamType...), char 
 
 template<typename... ParamType, typename... OPSARG>
 void ops_particle_inter_loop(void (*kernel)(ParamType...), char const *name,
-                             ops_particle particleI, ops_particle_mapping mapI,
-                             ops_particle particleJ, ops_particle_mapping mapJ,
+                             ops_particle particleI, ops_particle_group groupI,
+                             ops_particle_mapping mapI,
+                             ops_particle particleJ, ops_particle_group groupJ,
+                             ops_particle_mapping mapJ,
                              ops_stencil stencil, ops_particle_iterate_type iter_type,
                              int dim, double *range, OPSARG... arguments) {
 
@@ -975,7 +1022,8 @@ void ops_particle_inter_loop(void (*kernel)(ParamType...), char const *name,
 
   if (iter_type == OPS_PARTICLE_ITERATE_RANDOM)
     ops_part_inter_loop_impl(build_indices<sizeof...(ParamType)>{}, kernel, name,
-                             particleI, mapI, particleJ, mapJ, stencil,
+                             particleI, groupI, mapI, particleJ, groupJ,
+                             mapJ, stencil,
                              iter_type, dim, range, arguments...); //TODO
   else
     ops_part_inter_loop_impl_direct(build_indices<sizeof...(ParamType)>{}, kernel, name,

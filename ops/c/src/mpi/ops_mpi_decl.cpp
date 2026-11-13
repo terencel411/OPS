@@ -143,7 +143,7 @@ void ops_exit() {
 
 ops_dat ops_decl_dat_char(ops_block block, int size, int *dat_size, int *base,
                           int *d_m, int *d_p, int *stride, char *data, int type_size,
-                          char const *type, char const *name) {
+                          char const *type, char const *name, int alloc) {
 
   /** ---- allocate an empty dat based on the local array sizes computed
            above on each MPI process                                      ----
@@ -152,7 +152,7 @@ ops_dat ops_decl_dat_char(ops_block block, int size, int *dat_size, int *base,
   if (partitioned) throw OPSException(OPS_RUNTIME_CONFIGURATION_ERROR, "Error: ops_decl_dat called after ops_partition");
 
   ops_dat dat = ops_decl_dat_temp_core(block, size, dat_size, base, d_m, d_p,
-                                       stride, data, type_size, type, name);
+                                       stride, data, type_size, type, name, alloc);
 
   dat->user_managed = 0;
   dat->is_hdf5 = 0;
@@ -235,4 +235,191 @@ void ops_dat_deep_copy(ops_dat target, ops_dat source) {
     desc->func = ops_internal_copy_seq;
   }
   ops_enqueue_kernel(desc);
+}
+
+void ops_malloc_non_defined_dat(ops_dat dat, int *size, int *base) {
+
+  //As this function non-conforming to grid we need the following
+
+  ops_block block = dat->block;
+  sub_block *sb = OPS_sub_block_list[block->index];
+  if (!sb->owned) return; //no-need to allocate
+
+  int d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM];
+  int dim = dat->block->dims;
+
+  //Get d_m, d_p
+  for (int i = 0; i < dim; i++) {
+    d_m[i] = dat->d_m[i];
+    d_p[i] = dat->d_p[i];
+  }
+
+  //Part I: Get the topology
+  int num_ranks;
+  MPI_Comm_size(sb->comm, &num_ranks);
+  int *rank_array = (int *) ops_malloc(num_ranks * sizeof(int));
+  int *rank_size = (int *) ops_malloc(num_ranks * sizeof(int));
+
+  //Get the cartesian topology
+  int dims_grid[3], periods[3], coords[3];
+  dims_grid[2] = 1; coords[2] = 0;
+  MPI_Cart_get(sb->comm, dim, dims_grid, periods, coords);
+
+  int local_rank;
+  for (int k = 0; k < dims_grid[2]; k++) {
+    for (int j = 0; j < dims_grid[1]; j++) {
+      for (int i = 0; i < dims_grid[0]; i++) {
+        int rank_in_coord[3] = {i, j, k};
+        MPI_Cart_rank(sb->comm, rank_in_coord, &local_rank);
+        rank_array[i + dims_grid[0] * j + dims_grid[0] * dims_grid[1] * k] = local_rank;
+      }
+    }
+  }
+
+/*
+  printf("Rank in %d grid R(0, 0) = %d R(0, 1) = %d R(0, 2) = %d "
+                      "R(1, 0) = %d R(1, 1) = %d R(1, 2) = %d ", ops_get_proc(),
+                      rank_array[0 + dims_grid[0] * 0], rank_array[1 + dims_grid[0] * 0], rank_array[2 + dims_grid[0] * 0],
+                      rank_array[0 + dims_grid[0] * 1], rank_array[1 + dims_grid[0] * 1], rank_array[2 + dims_grid[0] * 1]);
+*/
+
+  //populate the array and derive sd->decom and sd->size (which is known)
+  int my_rank;
+  int coord_loc[3];
+  MPI_Comm_rank(sb->comm, &my_rank);
+  int disp_loc[3];
+  disp_loc[2] = 0;
+
+  MPI_Cart_coords(sb->comm, my_rank, dim, coord_loc);
+
+
+
+  int size_global[3] = {};
+  int coord_rank[3] = {};
+  for (int i = 0; i < dim; i++) {
+
+    int local_size = size[i];
+    MPI_Allgather(&local_size, 1, MPI_INT, rank_size, 1, MPI_INT, sb->comm);
+
+
+    for (int idim = 0; idim < dim; idim++) coord_rank[idim] = coord_loc[idim];
+
+
+    //Get location of my rank
+    for (int irank = 0; irank < dims_grid[i]; irank++) {
+
+      coord_rank[i] = irank;
+
+      if (sb->id_m[i] == MPI_PROC_NULL) {
+        disp_loc[i] = 0;
+      }
+      else if (coord_rank[i] == coord_loc[i])
+        disp_loc[i] = size_global[i];
+
+
+      int index = coord_rank[0] + dims_grid[0] * coord_rank[1]
+                + coord_rank[2] * dims_grid[0] * dims_grid[1];
+
+      int rank_in_pack = rank_array[index];
+      size_global[i] += rank_size[rank_in_pack];
+
+    }
+  }
+
+  //Gathering and reducing the array
+  int size_actual[3] = {};
+  MPI_Allreduce(size_global, size_actual, dim, MPI_INT, MPI_MAX, sb->comm);
+
+  sub_dat *sd = OPS_sub_dat_list[dat->index];
+  for (int i = 0; i < dim; i++) sd->gbl_size[i] = size_actual[i];
+
+
+  //Compute sd->decomp
+  int *all_disps = (int *) ops_malloc(sizeof(int) * dim * num_ranks);
+  MPI_Allgather(disp_loc, dim, MPI_INT, all_disps, dim , MPI_INT, sb->comm);
+
+
+  int size_glob[3] = {};
+  int istart[3], iend[3];
+  istart[2] = 0; iend[2] = 1;
+  for (int i = 0; i < dim; i++) {
+    for (int idim = 0; idim; idim++)  {
+      istart[idim] = ( idim == i) ? coord_loc[i] : 0;
+      iend[idim] = (idim == i) ? coord_loc[i] + 1 : dims_grid[idim];
+    }
+
+    for (int k = istart[2]; k < iend[2]; k++) {
+      for (int j = istart[1]; j < iend[1]; j++) {
+        for (int i1 = istart[0]; i1 < iend[0]; i1++) {
+          int index = i1 + j * dims_grid[0] + k * dims_grid[0] * dims_grid[1];
+
+          int rank_in_pack = rank_array[index];
+          size_glob[i] = MAX(size_glob[i], all_disps[3 * rank_in_pack + i]);
+        }
+      }
+    }
+
+  }
+
+  for (int i = 0 ; i < dim; i++) {
+    sd->decomp_disp[i] = disp_loc[i];
+    sd->decomp_size[i] = size[i]; //Get against local size
+    sd->gbl_base[i] = 0;
+    sd->gbl_size[i] = size_global[i];
+    dat->base[i] = 0;
+    sd->gbl_d_m[i] = d_m[i];
+    sd->gbl_d_p[i] = d_p[i];
+    dat->d_m[i] = (sb->id_m[i] == MPI_PROC_NULL) ? d_m[i] : 0;
+    dat->d_p[i] = (sb->id_p[i] == MPI_PROC_NULL) ? d_p[i] : 0;
+    sd->d_im[i] = (sb->id_m[i] == MPI_PROC_NULL) ? 0 : d_m[i];
+    sd->d_ip[i] = (sb->id_p[i] == MPI_PROC_NULL) ? 0 : d_p[i];
+    dat->size[i] = sd->decomp_size[i] - (dat->d_m[i] + sd->d_im[i])
+                 + (dat->d_p[i] + sd->d_ip[i]);
+  }
+  for (int i = dim; i < OPS_MAX_DIM; i++) {
+    sd->decomp_disp[i] = 0;
+    sd->decomp_size[i] = 1;
+    sd->gbl_base[i] = 0;
+    dat->size[i] = 1;
+    dat->d_m[i] = 0;
+    dat->d_p[i] = 0;
+    sd->d_im[i] = 0;
+    sd->d_ip[i] = 0;
+
+    sd->gbl_base[i] = 0;
+    sd->gbl_size[i] = 1;
+
+  }
+
+  size_t prod = dat->type_size;
+  for (int i = 0; i < dim; i++)
+    prod *= dat->size[i];
+
+  size_t alloc_bytes = (prod > 0) ? prod : 1;
+  dat->data = (char *) ops_malloc(prod);
+  int init_deviceptr = 1;
+  if (dat->block->instance->OPS_hybrid_gpu == 0) // CPU-only target
+      ops_init_zero(dat->data, alloc_bytes);
+  else {
+      ops_device_malloc(dat->block->instance, (void **)&(dat->data_d), alloc_bytes);
+      ops_device_memset(dat->block->instance, (void **)&(dat->data_d), 0, alloc_bytes);
+      init_deviceptr = 0; // When device ptr initialized to zero, no need to call HostToDevice copy
+      dat->dirty_hd = 2;  // device dirty bit set to true to trigger DeviceToHost copy
+      int init_deviceptr = 0;
+
+  }
+
+  printf("R %d dat (%s): size [%d %d] d_m [%d %d] d_p [%d %d] d_im [%d %d] d_ip [%d %d]\n",
+         ops_get_proc(), dat->name, dat->size[0], dat->size[1], dat->d_m[0], dat->d_m[1],
+         dat->d_p[0], dat->d_p[1], sd->d_im[0], sd->d_im[1], sd->d_ip[0], sd->d_ip[1]);
+
+
+  dat->hdf5_file ="none";
+  dat->mem = alloc_bytes;
+
+  ops_free(rank_array);
+  ops_free(rank_size);
+  ops_free(all_disps);
+
+
 }

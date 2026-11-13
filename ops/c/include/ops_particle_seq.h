@@ -35,6 +35,26 @@ inline int multipl(const int size[], int dir) {
   return prod;
 }
 
+template<typename T>
+inline int  _point_in_range_v1(const T *range, T *coords, const int dim) {
+
+  for (int is = 0; is < dim; is++) {
+    if (coords[is] < range[2 * is] || coords[is] > range[2 * is + 1]) return 0;
+  }
+
+  return 1;
+}
+
+
+inline int particle_in_group_ps(ops_particle particle, int i, ops_particle_group group) {
+  if (particle->index != group->particle_index)
+    throw OPSException(OPS_RUNTIME_ERROR,"Error: The given ops_particle_group not "
+                                         "linked to the given ops_particle_structure");
+
+  if (((int *) group->group_dat->data)[i] != 0) return 1;
+
+  return 0;
+}
 
 inline int get_address(int loc[], const int mdim, const int dim, const int d_m[],
                 const int size[]) {
@@ -59,22 +79,6 @@ inline int get_address(int loc[], const int mdim, const int dim, const int d_m[]
   return address;
 }
 
-inline void  get_grid_point_coords(const int igrid,const int dims,const int *size, int *loc_point) {
-
-  int accum{igrid};
-
-
-  for (int i = dims - 1; i > 0; i--) {
-
-    int sizeL = multipl(size, i - 1);
-
-    loc_point[i] = accum / sizeL;
-    accum -= loc_point[i] * sizeL;
-
-  }
-
-  loc_point[0] = accum;
-}
 
 inline void get_local_point(const int point,const int size[],
                             const int d_m[],const int dim, int grid[]) {
@@ -90,432 +94,6 @@ inline void get_local_point(const int point,const int size[],
       grid[i] += d_m[i];
   }
 }
-
-template<typename T>
-inline void get_coord_point(const T *coords, const int size[],const int d_m[],
-                            const int ilocal[], const int dim, T xlocal[]) {
-
-#ifdef OPS_SOA
-  if (dim == 2) {
-    xlocal[0] = *(coords + (ilocal[0] - d_m[0]) + (ilocal[1] - d_m[1]) * size[0]);
-    xlocal[1] = *(coords + (ilocal[0] - d_m[0]) + (ilocal[1] - d_m[1]) * size[0]
-                  + size[0] * size[1]);
-  }
-  else {
-    xlocal[0] = *(  coords + (ilocal[0] - d_m[0]) + (ilocal[1] - d_m[1]) * size[0]
-                  + (ilocal[2] - d_m[2]) * size[0] * size[1]);
-    xlocal[1] = *(  coords + (ilocal[0] - d_m[0])+ (ilocal[1] - d_m[1]) * size[0]
-                  + (ilocal[2] - d_m[2]) * size[0] * size[1] +
-                  size[1] * size[2] * size[0]);
-    xlocal[2] = (  coords + (ilocal[0] - d_m[0])+ (ilocal[1] - d_m[1]) * size[0]
-                  + (ilocal[2] - d_m[2]) * size[0] * size[1]
-                  + 2 * size[1] * size[2] * size[0]);
-  }
-#else
-  if (dim == 2) {
-    xlocal[0] = *(coords + dim * (ilocal[0] - d_m[0])
-              + dim * (ilocal[1] - d_m[0]) * size[0]);
-    xlocal[1] = *(coords +  dim * (ilocal[0] - d_m[0])
-                  + dim * (ilocal[1] - d_m[0]) * size[0] + dim + 1);
-  }
-  else {
-    xlocal[0] = *( coords + dim * (ilocal[0] - d_m[0])
-                  + dim * (ilocal[1] - d_m[1]) * size[0]
-                  + dim * (ilocal[2] - d_m[2]) * size[0] * size[1]);
-    xlocal[1] =  *( coords + 1 + dim * (ilocal[0] - d_m[0])
-                    + dim * (ilocal[1] - d_m[1]) * size[0]
-                    + dim * (ilocal[2] - d_m[2]) * size[0] * size[1]);
-    xlocal[2] =  *( coords + 2 + dim * (ilocal[0] - d_m[0])
-                    + dim * (ilocal[1] - d_m[1]) * size[0]
-                    + dim * (ilocal[2] - d_m[2]) * size[0] * size[1]);
-  }
-#endif
-}
-
-/*-------------------------------------------------------------------------------------*/
-/*
- * \brief Identifies if particle grid points are within range or not exploiting the
- *        grid structure to identify rotation points
- *
- *  \param[in] box Bounding box of operation
- *  \param[in] map Map used to map particles into to grid
- *  \param[in] dim Size of physical space
- *  \param[in] range  Part of physical space were iteration occurs
- *  \param[out] size_loop Number of points to iteration
- *  \param[out] local range in form [imin imax jmin jmax]
- */
-
-template<typename T>
-inline int  _get_iteration_range_grid_info(BoundingBox<T> *box, ops_particle_mapping map,
-                                           int dim, T *range,
-                                           int &size_loop, int *local_range) {
-
-  if (dim == 2) {local_range[4] = 0; local_range[5] = 1;};
-
-  //For the moment assume uniform grid
-  T *coords_grid = (T *)map->grid->data;
-  T xlocal_min[OPS_MAX_DIM];
-  T xlocal_max[OPS_MAX_DIM];
-  int *size_grid = map->grid->size;
-  T dx[OPS_MAX_DIM];
-  int *d_m = map->grid->d_m;
-
-  int ilocal[OPS_MAX_DIM];
-  int loc2[OPS_MAX_DIM];
-
-  ilocal[0] = ilocal[1] = ilocal[2] = 0;
-  loc2[0] = loc2[1] = loc2[2] = 1;
-
-  get_coord_point(coords_grid, size_grid, d_m,
-                  ilocal, dim, xlocal_min);
-  get_coord_point(coords_grid, size_grid, d_m,
-                  loc2, dim, xlocal_max);
-
-  for (int i = 0; i < dim; i++)
-    dx[i] = xlocal_max[i] - xlocal_min[i];
-
-  for(int i = 0; i < dim; i++) {
-    local_range[2 * i] = (int) floor((range[2 * i] -xlocal_min[i])/ dx[i]);
-    local_range[2 * i] = (int) ceil((range[2 * i] - xlocal_max[i]) / dx[i]) + 1;
-  }
-
-
-  //CHeck access in/out
-  for (int i = 0; i < dim; i++) {
-    if (local_range[2 * i] < 0) local_range[2 * i] = 0;
-    if (local_range[2 * i + 1] > map->grid->size[i] - map->grid->d_p[i] + map->grid->d_m[i])
-      local_range[2 * i + 1] = map->grid->size[i] - map->grid->d_p[i] + map->grid->d_m[i];//TODO;l
-  }
-
-  return size_loop;
-
-}
-
-template<typename T>
-inline size_t get_grid_size(BoundingBox<T> *intersection, BoundingBox<T> *box,
-                            ops_particle_mapping map, int dim, int  local_grid[]) {
-  size_t nelems{1};
-
-  //At first assume uniform grid
-  T dx[OPS_MAX_DIM], xfirst[OPS_MAX_DIM], xlast[OPS_MAX_DIM];
-  int iloc[OPS_MAX_DIM], inext[OPS_MAX_DIM];
-  for (int i = 0; i < dim; i++) {
-    inext[i] = 1;
-    iloc[i] = 0;
-  }
-  get_coord_point((T *) map->grid->data, map->grid->size, map->grid->d_m,
-                  iloc, dim, xfirst);
-  get_coord_point((T *) map->grid->data, map->grid->size, map->grid->d_m,
-                  inext, dim, xlast);
-
-  for (int i = 0; i < dim; i++)
-    dx[i] = xlast[i] - xfirst[i];
-
-  for (int i = 0; i < OPS_MAX_DIM; i++) {
-    if (i < dim) {
-      local_grid[2 * i] = floor((intersection->getMinCoordDir(i) - box->getMinCoordDir(i)) / dx[i]);
-      local_grid[2 * i + 1] =  ceil((intersection->getMaxCoordDir(i) - box->getMinCoordDir(i)) / dx[i]) + 1;
-
-      if (local_grid[2 * i + 1] > map->grid->size[i] - map->grid->d_p[i] + map->grid->d_m[i])
-        local_grid[2 * i + 1] = map->grid->size[i] - map->grid->d_p[i] + map->grid->d_m[i];
-    }
-    else {
-      local_grid[2 * i] = 0;
-      local_grid[2 * i + 1] = 1;
-    }
-
-    nelems *= local_grid[2 * i + 1] - local_grid[2 * i];
-  }
-
-  return nelems;
-}
-
-template<typename T>
-inline long int get_direct_iteration_points(BoundingBox<T> *intersection,
-                                            ops_dat crd_parts,
-                                            int nParticles, int  dim,
-                                            long int  *&looping_particles) {
-
-  int nmax = OPS_MAX_PART;
-  long int nloop{0};
-
-  looping_particles = (long int *) ops_malloc(sizeof(long int) * nmax);
-
-  double *coords = (double *)crd_parts->data;
-  for (int i = 0; i < nParticles; i++) {
-    bool is_in = intersection->isCoordinateInBoundingBox(coords + dim * i);
-    if (is_in) {
-      nloop++;
-      if (nloop > nmax) {
-        looping_particles = (long int  *)ops_realloc(looping_particles,
-                                                     sizeof(long int) * (nloop + OPS_MAX_PART));
-        nmax = nloop + OPS_MAX_PART;
-      }
-      looping_particles[nloop - 1] = i;
-    }
-  }
-
-  return nloop;
-
-}
-
-inline long int  get_particles_from_grid(ops_particle_mapping map, int local_grid[], int dim,
-                                         long int *&looping_particles) {
-
-  long int nloop{0};
-  int nmax{OPS_MAX_PART};
-
-  int *binhead = (int *)map->binhead->data;
-  int *bins = (int *)map->bin->data;
-
-  int localPoint[OPS_MAX_DIM];
-  looping_particles = (long int *)ops_malloc(sizeof(long int) * nmax);
-  for (int i = local_grid[0]; i < local_grid[1]; i++)
-    for (int j = local_grid[2] ; j < local_grid[3]; j++)
-      for (int k = local_grid[4] ; k < local_grid[5]; k++) {
-        localPoint[0] = i; localPoint[1] = j; localPoint[2] = k;
-        int address = get_address(localPoint, 1,dim, map->binhead->d_m,
-                                  map->binhead->size);
-        int a1 = binhead[address]; //TODO
-        while (a1 != -1) {
-          nloop++;
-          if (nloop > nmax) {
-            looping_particles = (long int *)ops_realloc(looping_particles,
-                                                        sizeof(long int) * (nloop + OPS_MAX_PART));
-            nmax = nloop + OPS_MAX_PART;
-          }
-          looping_particles[nloop - 1] = a1;
-          a1 = bins[a1];
-
-        }
-      }
-
-  return nloop;
-
-}
-/*----------------------------------------------------------------------------*/
-/* \brief Finds particles within the iterative region. Particles to iterate for
- *        stored as distances from the previous element.
- *
- * \param[in] nParticles          number of actual particles
- *                                within a bounding region
- * \param[in] box                 pointer to the BoundingBox
- *                                for which a loop must
- *                                will be performed
- * \param[in] map                 an ops_particle_mapping
- *                                object
- * \param[in] dim                 spatial size
- * \param[in] range               the box for performing
- *                                a simulation
- * \param[out] looping_particles  list of particles within range. The particles
- *                                are stored as distance from the previous
- *                                element of the list
- *
- * \return                        number of particles
- *
- */
-
-template<typename T>
-inline size_t _get_iteration_range(size_t nParticles,  BoundingBox<T> *box,
-                                  ops_particle_mapping map, int dim, T *range,
-                                  long int *&looping_particles) {
-
-
-  int inters{0};
-
-  BoundingBox<T> *intersection = ops_find_intersection_region(box, range, inters);
-
-  long int nloop{0};
-
-  if (inters == 0 ) { //Bounding Box within range
-
-    nloop = nParticles;
-    looping_particles = (long int *)ops_malloc(sizeof(long int) * nloop);
-    /* #ifdef _OPENMP
-       #pragma omp parallel for shared(looping_particles)
-       #endif     */
-    for (size_t i = 0; i <(size_t) nloop; i++)
-      looping_particles[i] = i;
-
-  }
-  else if (inters == 1) { //overlapping area
-
-    double *xcrd = (double *)map->grid->data;
-    int *bin_head = (int *)map->binhead->data;
-    int *bins = (int *)map->bin->data;
-    double xlocal[OPS_MAX_DIM];
-
-    int size_bin{1};
-    for (int i = 0; i < dim; i++) size_bin *= map->binhead->size[i];
-
-    //Allocate looping list
-    long int  nmax{OPS_MAX_PART};
-    looping_particles = (long int *)ops_malloc(sizeof(long int) * nmax);
-
-    int size_grid[OPS_MAX_DIM];
-    int size_loop{1};
-    for (int i = 0; i < dim ; i++) {
-      size_grid[i] = map->grid->size[i] + map->grid->d_m[i] - map->grid->d_p[i];
-      size_loop *= size_grid[i];
-    }
-
-    int iloc[OPS_MAX_DIM], d_mloc[OPS_MAX_DIM];
-
-    for (int i = 0; i < dim; i++) d_mloc[i] = 0;
-
-    for (int i = 0; i < size_loop; i++) {
-      /* Access right point */
-      get_local_point(i, size_grid, d_mloc, dim, iloc);
-      get_coord_point(xcrd, map->grid->size, map->grid->d_m,
-                      iloc, dim, xlocal);
-      bool is_in = intersection->isCoordinateInBoundingBox(xlocal); //TODO: Shift with or without staggering
-      if (is_in) {
-        int address = get_address(iloc, 1, dim, map->binhead->d_m, map->binhead->size);
-        int a1 = bin_head[address];
-        while (a1 != -1) {
-          nloop++;
-          if (nloop >= nmax) {
-            looping_particles = (long int *)ops_realloc(looping_particles, sizeof(long int) * (nloop + OPS_MAX_PART));
-            nmax = nloop + OPS_MAX_PART;
-          }
-          looping_particles[nloop - 1] = a1;
-          a1 = bins[a1];
-        }
-      }
-
-    }
-
-
-  }
-
-  delete intersection; //TODO-OPS FREE
-  return nloop;
-}
-
-/*------------------------------------------------------------------------------------*/
-/* Local function for getting particles within the user defined range when the number
- * of particles does not exceed the number of grid points within the simulation
- *
- * \param[in]        nParticles        total number of particles with the given block
- * \param[in]        particle          pointer to an ops_particle structure
- * \param[in]        box               pointer to the BoundingBox of the given block
- * \param[in]        dim               size of the spatial space
- * \param[in]        range             user defined region
- * \param[in, out]   looping_particles array containing all particles within the user
- *                   defined range
- * \return  the total number of particles within the user defined region
- */
-/*------------------------------------------------------------------------------------*/
-
-template<typename T>
-inline size_t _get_iteration_range_direct(size_t nParticles, ops_particle particle,
-                                          BoundingBox<T> *box, int dim, T *range,
-                                        long int *&looping_particles) {
-
-  int inters{0};
-  BoundingBox<T> *intersection = ops_find_intersection_region(box, range, inters);
-
-  size_t nloop{0};
-
-  if (inters == 0 ) { //Bounding Box within range
-    nloop = nParticles;
-    looping_particles = (long int *)ops_malloc(sizeof(long int) * nloop);
-    for (size_t i = 0; i < nloop; i++)
-      looping_particles[i] = i;
-  }
-  else if (inters == 1) {
-    double *xcrds = (double *) particle->particle_pos_dat->data;
-
-    size_t nmax{OPS_MAX_PART};
-       looping_particles = (long int *)ops_malloc(sizeof(size_t) * nmax);
-
-    for (size_t i = 0; i < nParticles; i++) {
-      bool is_in = intersection->isCoordinateInBoundingBox(xcrds + dim * i);
-      if (is_in) {
-        nloop++;
-        if (nloop > nmax) {
-          nmax = nloop + OPS_MAX_PART;
-          looping_particles = (long int *) ops_realloc(looping_particles, sizeof(long int) * nmax);
-        }
-
-        looping_particles[nloop-1] = i;
-      }
-    }
-  }
-
-  delete intersection;
-  return nloop;
-}
-
-/*---------------------------------------------------------------------------------------*/
-/*
- * \brief Identifying particles within a user defined region. The function identifies
- *        particles within a given region via two different algorithms based on the
- *        ratio of particles to grid_cell and if a map is defined by the user
- *
- * \param[in]     nParticles           number of particles within the given block
- * \param[in]     particle             an ops_particle structure
- * \param[in[     box                  a BoundingBox structure associated with
- *                                     the given block
- * \param[in]     dim                  size of the spatial space
- * \param[in]     range                user defined region for particle looping given in
- *                                     the form [xmin xmax] x [ymin ymax] x [zmin zmax]
- * \param[in,out] looping_particles    array containing all particles within the loop
- */
-/*---------------------------------------------------------------------------------------*/
-
-template <typename T>
-inline size_t getting_looping_particles_v2(size_t nParticles, ops_particle particle,
-                                           BoundingBox<T> *box, ops_particle_mapping map,
-                                           int dim, T *range,
-                                           long int *&looping_particles) {
-
-  //Check first if all inside or overlapping
-  int inters{2};
-
-  BoundingBox<T> *intersection = ops_find_intersection_region(box, range, inters);
-  //printf("Inters = %d\n", inters);
-  int nsize{0};
-  if (inters == 2) {delete intersection; return 0;}
-  else if (inters == 0) {
-    looping_particles = (long int *)ops_malloc(sizeof(long int) * nParticles);
-    nsize = nParticles;
-    for (int i = 0; i < (int) nParticles; i++)
-      looping_particles[i] = i;
-  }
-  else {
-    int local_grid[2 * OPS_MAX_DIM], ngrid_points{1};
-    if (map != nullptr) {
-      ngrid_points = get_grid_size(intersection, box, map, dim, local_grid);
-    }
-
- //   ngrid_points = 0;
- //   printf("Number of grid_points: %d\n", ngrid_points);
- //   printf("Grid points [%d %d]x[%d %d]x[%d %d]\n", local_grid[0], local_grid[1], local_grid[2], local_grid[3], local_grid[4], local_grid[5]);
-
-    if ((size_t) ngrid_points > nParticles || map == nullptr) {
-      nsize =  get_direct_iteration_points(intersection, particle->particle_pos_dat,
-                                           nParticles, dim, looping_particles);
-    }
-    else
-      nsize =  get_particles_from_grid(map, local_grid, dim, looping_particles);
-  }
-
-  delete intersection;
-  return nsize;
-
-}
-
-inline void init_off_parts(int dim, size_t n_particles, long int *looping_particles,
-                           int *off_parts) {
-
-  int ifirst{0};
-  for (size_t i = 0; i < n_particles; i++) {
-    off_parts[i] = looping_particles[i] - ifirst;
-    ifirst = looping_particles[i];
-  }
-}
-
 
 inline void   init_off_grids(ops_arg &arg, const int dim, const int iPart,
                              int &first_point, ops_particle_mapping map) {
@@ -675,7 +253,7 @@ template<typename ParamT> struct particle_param_handler {
   }
 
   static ParamT get(char *data) { //TODO: Shift it for satefyt
-    return (ParamT) data;
+    return (ParamT)data;
   }
 
   static void shift_arg(const ops_arg &arg, char *p, const int offs,
@@ -814,6 +392,7 @@ void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
 template <typename T, typename... ParamType, typename... OPSARG, size_t... J>
 void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
                                 char const *name, ops_particle particle,
+                                ops_particle_group group,
                                 int dim, ops_particle_iterate_type iterate_type,
                                 T *range_particles, ops_particle_mapping map,
                                 OPSARG... arguments)
@@ -846,9 +425,6 @@ void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
 
 
   /* First identify intersection region */
-  long int *looping_particles = nullptr;
-
-
 
   //Init offsets to the points
 
@@ -857,25 +433,10 @@ void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
   switch (iterate_type) {
   case OPS_PARTICLE_ITERATE_LOCAL:
     n_loop_particles = particle->no_particles;
-
-    if (n_loop_particles > 0)
-      looping_particles = (long int *) ops_malloc(sizeof(long int) * n_loop_particles);
-    for (size_t i = 0; i < n_loop_particles; i++)
-      looping_particles[i] = i;
     break;
   case OPS_PARTICLE_ITERATE_ALL:
-    n_loop_particles = particle->no_particles + particle->no_virtual;
-    if (n_loop_particles > 0)
-      looping_particles = (long int *) ops_malloc(sizeof(long int) * n_loop_particles);
-    for (size_t i = 0; i < n_loop_particles; i++)
-      looping_particles[i] = i;
-    break;
   case OPS_PARTICLE_ITERATE_RANDOM: //TODO: We need to expand the region to virtual
-    //space if neccessary
-    n_loop_particles = getting_looping_particles_v2(no_particles, particle,
-                                                    box, map_part,
-                                                    dim, range_particles,
-                                                    looping_particles);
+    n_loop_particles = particle->no_particles + particle->no_virtual;
     break;
   default:
     throw OPSException(OPS_RUNTIME_ERROR,"Invalid iteration type. Please check your "
@@ -905,10 +466,20 @@ void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
 
   int firstPart = 0; //Initialize to zero
   int offset[N] = {}; //offsets with respect to previous point
-
+  T *coords = (T *) particle->particle_pos_dat->data;
   for (size_t iPart = 0; iPart < n_loop_particles; iPart++) {
 
-    int curPart = looping_particles[iPart];
+    if (group != nullptr)
+      if (!particle_in_group_ps(particle, iPart, group)) continue;
+
+    if (iterate_type == OPS_PARTICLE_ITERATE_RANDOM) {
+      int point_within= (range_particles != nullptr) ?
+         _point_in_range_v1(range_particles, coords + dim * iPart, dim) : 1;
+
+      if (!point_within) continue;
+    }
+
+    int curPart = iPart;
 
     (void) std::initializer_list<int>{(compute_offsets(arguments, dim, curPart, firstPart,
                                                        map, prev_grid_point[J],
@@ -930,7 +501,6 @@ void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
     (particle_param_handler<param_remove_cvref_t<ParamType>>::free(p_a[J]), 0)...};
 
   //TODO: Set functionality
-  ops_free(looping_particles);
 }
 /**
  * Perform a particle-based loop, executing the user defined function kernel,
@@ -967,7 +537,7 @@ void ops_particle_par_loop_impl(indices<J...>, void (*kernel)(ParamType...),
 
 template <typename T, typename... ParamType, typename... OPSARG>
 void ops_particle_par_loop(void (*kernel)(ParamType...), char const *name,
-                       ops_particle particle, int dim,
+                       ops_particle particle, ops_particle_group group, int dim,
                        ops_particle_iterate_type iterate_type,
                        T *particle_range, ops_particle_mapping map,
                        OPSARG... arguments) {
@@ -975,7 +545,7 @@ void ops_particle_par_loop(void (*kernel)(ParamType...), char const *name,
                 "Number of kernel parameters should match the number of ops_arg");
 
   ops_particle_par_loop_impl(build_indices<sizeof...(ParamType)>{}, kernel, name,
-                             particle, dim, iterate_type, particle_range, map, arguments...);
+                             particle, group, dim, iterate_type, particle_range, map, arguments...);
 
 }
 

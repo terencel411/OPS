@@ -465,12 +465,14 @@ ops_block _ops_decl_block(OPS_instance *instance, int dims, const char *name) {
 
       //TODO: Check if assignment works fine
       OPS_block_list_new[i].particle = instance->OPS_block_list[i].particle;
-      OPS_block_list_new[i].box = instance->OPS_block_list[i].box;
       OPS_block_list_new[i].no_particle_structures
                          = instance->OPS_block_list[i].no_particle_structures;
       OPS_block_list_new[i].histories = instance->OPS_block_list[i].histories;
       OPS_block_list_new[i].no_history_structures =
           instance->OPS_block_list[i].no_history_structures;
+      OPS_block_list_new[i].box = instance->OPS_block_list[i].box;
+      OPS_block_list_new[i].block_domain_defined = instance->OPS_block_list[i].block_domain_defined;
+      OPS_block_list_new[i].type_size = instance->OPS_block_list[i].type_size;
     }
     ops_free(instance->OPS_block_list);
     instance->OPS_block_list = OPS_block_list_new;
@@ -488,6 +490,8 @@ ops_block _ops_decl_block(OPS_instance *instance, int dims, const char *name) {
   instance->OPS_block_list[instance->OPS_block_index].no_particle_structures = 0;
   instance->OPS_block_list[instance->OPS_block_index].no_history_structures = 0;
   instance->OPS_block_list[instance->OPS_block_index].box = nullptr;
+  instance->OPS_block_list[instance->OPS_block_index].type_size = 0;
+  instance->OPS_block_list[instance->OPS_block_index].block_domain_defined = false;
   TAILQ_INIT(&(instance->OPS_block_list[instance->OPS_block_index].datasets));
   instance->OPS_block_index++;
 
@@ -513,7 +517,7 @@ void ops_dat_init_metadata_core(
       // The metadata to update
       int dim, int *dataset_size,
       int *base, int *d_m, int *d_p, int *stride, char *data,
-      int type_size, char const *type, const char *name)
+      int type_size, char const *type, const char *name, int alloc)
 {
   if (dim <= 0) {
     OPSException ex(OPS_INVALID_ARGUMENT);
@@ -529,6 +533,8 @@ void ops_dat_init_metadata_core(
   dat->elem_size = type_size * dim;
 
   dat->e_dat = 0; // default to non-edge dat
+
+  dat->is_alloc = alloc;
 
   for (int n = 0; n < block->dims; n++) {
     if (dataset_size[n] != 1) {
@@ -550,8 +556,9 @@ void ops_dat_init_metadata_core(
     if (d_m[n] <= 0)
       dat->d_m[n] = (dat->size[n] != 1) ? d_m[n] : 0;
     else {
+      printf("Dat %s: d_m[%d] = %d\n", name ,n, dat->d_m[n]);
       OPSException ex(OPS_INVALID_ARGUMENT);
-      ex << "Error: ops_decl_dat -- Non negative d_m during declaration of: " << name;
+      ex << "Error: ops_decl_dat -- Non negative d_m[ "<<n<<"] = "<<dat->d_m[n]<<"during declaration of: " << name;
       throw ex;
     }
   }
@@ -659,6 +666,7 @@ ops_dat ops_dat_alloc_core(ops_block block)
   dat->block = block;
 
   dat->is_particle = false;
+  dat->is_alloc = 1;
   /* Create a pointer to an item in the ops_dats doubly linked list */
   ops_dat_entry *item;
 
@@ -693,19 +701,20 @@ ops_dat ops_dat_alloc_core(ops_block block)
 
 ops_dat ops_decl_dat_core(ops_block block, int dim, int *dataset_size,
                           int *base, int *d_m, int *d_p, int *stride, char *data,
-                          int type_size, char const *type, char const *name) 
+                          int type_size, char const *type, char const *name, int alloc)
 {
    ops_dat dat = ops_dat_alloc_core(block);
-   ops_dat_init_metadata_core(dat, dim, dataset_size, base, d_m, d_p, stride, data, type_size, type, name);
+   ops_dat_init_metadata_core(dat, dim, dataset_size, base, d_m, d_p, stride, data, type_size, type, name,
+                              alloc);
    return dat;
 }
 
 ops_dat ops_decl_dat_temp_core(ops_block block, int dim, int *dataset_size,
                                int *base, int *d_m, int *d_p, int *stride, char *data,
                                int type_size, char const *type,
-                               char const *name) {
+                               char const *name, int alloc) {
   return ops_decl_dat_core(block, dim, dataset_size, base, d_m, d_p, stride, data,
-                           type_size, type, name);
+                           type_size, type, name, alloc);
 }
 
 void ops_free_dat_core(ops_dat dat) {
@@ -2461,7 +2470,7 @@ int ops_dat_copy_metadata_core(ops_dat target, ops_dat orig_dat)
                                       orig_dat->stride, 
                                       target->data,    // buffer to write
                                       orig_dat->type_size,
-                                      orig_dat->type, name2);
+                                      orig_dat->type, name2, 1);
   ops_free(name2);
 
   // Following data on target is uninitialised:
@@ -2602,7 +2611,7 @@ void ops_fill_random_uniform_host(ops_dat dat, std::mt19937 &ops_rand_gen) {
   }
   else if (strcmp(type, "int") == 0 || strcmp(type, "int(4)") == 0 || strcmp(type, "integer") == 0 ||
              strcmp(type, "integer(4)") == 0 || strcmp(type, "integer(kind=4)") == 0) {
-    std::uniform_int_distribution<int> distribution(INT_MIN, INT_MAX);
+    std::uniform_int_distribution<int> distribution(0, INT_MAX);
     for (int i =0 ; i < cumsize; i++) {
       ((int *)dat->data)[i] = distribution(ops_rand_gen);
     }

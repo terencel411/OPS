@@ -10,6 +10,29 @@
 
 #include "ops_lib_core.h"
 
+template<typename T>
+inline int _pair_exists_in_list(T partner, T particle) {
+  if (partner == particle) return 1;
+
+  return 0;
+}
+
+inline bool _check_integer_type_for_int(char const *type) {
+
+  return (strcmp(type, "int") == 0 ||
+          strcmp(type, "int(4)") == 0 ||
+          strcmp(type, "integer") == 0 ||
+          strcmp(type, "integer(4)") == 0 ||
+          strcmp(type, "integer(kind=4)"));
+}
+
+inline bool _check_integer_type_for_int64(char const *type) {
+
+  return  (strcmp(type, "int64") == 0 ||
+           strcmp(type, "uint64_t") == 0 ||
+           strcmp(type, "uint64") == 0 ||
+           strcmp(type, "int64_t") == 0);
+}
 
 /**
  * Function that updates neighbor history after maps are build
@@ -50,7 +73,7 @@ void ops_particle_setup_neighbor_history(void (*kernel)(T *, ParamType...), char
 #ifdef OPS_MPI
   #include "ops_particle_neighbor_history_mpi.tpp"
 #else
-#include "ops_particle_neighbor_history_seq.tpp"
+  #include "ops_particle_neighbor_history_seq.tpp"
 #endif
 
 

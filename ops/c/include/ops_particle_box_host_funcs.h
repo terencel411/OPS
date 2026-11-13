@@ -107,14 +107,16 @@ void _ops_construct_local_box_from_dat(ops_dat coords, const T* grid_size, const
                   + imax[2] * coords->dim * size[0] * size[1]);
       xmax[1] = *(  data + 1 + imax[0] * coords->dim + imax[1] * coords->dim * size[0]
                   + imax[2] * coords->dim * size[0] * size[1]);
-      xmax[2] = *(  data + 2 + imax[0] * coords->dim + imax[1] * coords->dim * size[0]
-                  + imax[2] * coords->dim * size[0] * size[1]);
+
+      xmax[2] = *( data + 2 +  imax[0] * coords->dim + imax[1] * coords->dim * size[0]
+                   + imax[2] * coords->dim * size[0] * size[1]);
     }
   }
   else
     throw OPSException(OPS_RUNTIME_ERROR,"ERROR: The size of the physical domain"
                                          "must be 2 or 3\n");
 }
+
 
 template<typename T>
 void BoundingBox<T>::partitionBoundingBox(ops_block block, ops_dat map_bin, T *dx) {
@@ -131,16 +133,12 @@ void BoundingBox<T>::partitionBoundingBox(ops_block block, ops_dat map_bin, T *d
 
     _ops_construct_local_box_from_dat(coords, dx, dim, xmin, xmax);
 
-    printf("xmin = [%f %f] xmax = [%f %f]\n", xmin[0], xmin[1],
-                                              xmax[0], xmax[1]);
     //Now set local and mininum
     setBoundingBoxLocalBound(xmin, xmax);
     setBoundingBoxGlobalBound(xmin, xmax);
 
     owned = true;
 
-    printf("Box has bounding box =[%f %f]x[%f %f]\n", boundingBox[0].x,
-           boundingBox[1].x, boundingBox[0].y, boundingBox[1].y);
   }
   else {
     ops_point<T> xmin, xmax;
@@ -278,4 +276,35 @@ BoundingBox<T> *  _ops_setup_border_region(BoundingBox<T> *box_from, BoundingBox
 
   return nullptr;
 }
+
+
+template<typename T>
+void _ops_particle_get_xmin_xmax_map_nconf_unif(char *box, char *box_block, T *xmin,
+                                                T* xmax, T *dx, int size[], int dim) {
+  BoundingBox<T> *boxP = (BoundingBox<T> *) box;
+  BoundingBox<T> *boxB = (BoundingBox<T> *) box_block;
+
+  for (int i = 0; i < dim; i++) {
+    dx[i] = (boxB->getGlobalMax(i) - boxB->getGlobalMin(i))/static_cast<T>(size[i] - 1);
+    int ix = ops_floor((boxP->getMinCoordDir(i) - boxB->getMinCoordDir(i)) / dx[i]);
+    xmin[i] = boxB->getMinCoordDir(i) + ix * dx[i];
+    ix = ops_ceil((boxP->getMaxCoordDir(i) - boxB->getMinCoordDir(i)) / dx[i]);
+    xmax[i] = boxB->getMinCoordDir(i) + ix * dx[i];
+  }
+
+}
+
+template<typename T>
+void _ops_particle_compute_size_base(char *boxC, T *xmin, T *xmax,
+                                     T *dx, int dim, int size[], int base[]) {
+
+  BoundingBox<T> *box = (BoundingBox<T> *) boxC;
+  for (int i = 0; i < dim; i++) {
+
+    size[i] = ((xmax[i] - xmin[i]) > 0) ? (int) ops_floor((xmax[i] - xmin[i]) / dx[i])  : 0;
+    base[i] = (size[i] == 1) ? 0 : (int) ((xmin[i] - box->getMinCoordDir(i)) / dx[i]);
+
+  }
+}
+
 #endif /* OPS_C_INCLUDE_OPS_PARTICLE_BOX_HOST_FUNCS_H_ */

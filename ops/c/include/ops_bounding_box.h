@@ -37,6 +37,9 @@
 #ifndef __OPS_BOUNDING_BOX_DEFS_H_
 #define __OPS_BOUNDING_BOX_DEFS_H_
 
+#define OPS_BOX_CONFORMING 0
+#define OPS_BOX_NONCONFORMING 1
+
 
 #include <limits.h>
 #include "ops_util.h"
@@ -68,10 +71,11 @@ template<typename T>
 class BoundingBox {
   public:
    BoundingBox(const ops_block block, int dim, ops_point<T> minCrd,
-               ops_point<T> maxCrd);
-   BoundingBox(const ops_dat coords, const T *grid_size, int dim);
-   BoundingBox(int dim);
-   BoundingBox(int dim, T *xmin, T *xmax);
+               ops_point<T> maxCrd, int conforming = OPS_BOX_CONFORMING);
+   BoundingBox(const ops_dat coords, const T *grid_size, int dim,
+               int conforming = OPS_BOX_CONFORMING);
+   BoundingBox(int dim, int conforming = OPS_BOX_CONFORMING);
+   BoundingBox(int dim, T *xmin, T *xmax, int conforming = OPS_BOX_CONFORMING);
    ~BoundingBox();
 
    const ops_point<T> getLocalMin() const;
@@ -84,16 +88,18 @@ class BoundingBox {
    T getGlobalMax(int idir);
    T getGlobalMin(int idir);
    bool isCoordinateInBoundingBox(ops_point<T>& point);
+   bool isCoordinateInBoundingBoxEqual(ops_point<T>& point);
    bool isCoordinateInBoundingBox(const T *point) const;
+   bool isCoordinateInBoundingBoxEqual(const T* point) const;
    bool isCoordinateInGlobalBoundingBox(const ops_point<T>& point);
    void setBoundingBoxLocalBound(const ops_point<T> &xlow, const ops_point<T> &xmax);
    void setBoundingBoxLocalBound(const T* xlow, const T* xmax);
    void setBoundingBoxGlobalBound(const ops_point<T> &xlow, const ops_point<T> &xmax);
    void setBoundingBoxGlobalBound(T* xlow, T* xmax);
    void setBoundingBoxLocalBound(const T *boxregion);
-
+   int  isBoxConformingToBlock() const { return conform;}
    void partitionBoundingBox(ops_block block, ops_dat map_bin = nullptr, T *dx = nullptr);
-   T getBlockVolume() { return volume;}
+   T getBlockVolume() const { return volume;}
 
    void setOwnership(bool flag) {owned = flag;}
    bool getOwnership() {return owned;};
@@ -107,6 +113,7 @@ class BoundingBox {
    void generateGlobalBoundingBox(int count);
    int dim = 0; /**< Size of the spatial space */
    bool owned = true; /**< Ownership of the BoundaryBlock on this rank */
+   int conform = OPS_BOX_CONFORMING;
 
    T volume;
    int sizeT;
@@ -118,12 +125,20 @@ class BoundingBox {
 
 template<typename T>
 BoundingBox<T>::BoundingBox(const ops_block block, int dim,
-                         ops_point<T> minCrd, ops_point<T> maxCrd) :
+                         ops_point<T> minCrd, ops_point<T> maxCrd,
+                         int conforming) :
                          dim(dim), coords(nullptr) {
   if (dim < 2 && dim > 3) {
     throw OPSException(OPS_INVALID_ARGUMENT, "OPS-bound boxes defined only"
                         "for 2D or 3D geometries\n");
   }
+
+  if (conforming != OPS_BOX_CONFORMING && conforming != OPS_BOX_NONCONFORMING)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Unsupported box conformation type.\n"
+                                             "Valid options are OPS_BOX_CONFORMING for boxes"
+                                             "that conform to the block box and "
+                                             "OPS_BOX_NONCONFORMING for boxes that do not conform"
+                                             "to the block box.");
 
   if (minCrd.x >= maxCrd.x)
     throw OPSException(OPS_INVALID_ARGUMENT, "Non-positive size in x-direction");
@@ -158,29 +173,47 @@ BoundingBox<T>::BoundingBox(const ops_block block, int dim,
   sizeT = sizeof(T);
   owned = false;
 
+  conform = conforming;
+
 }
 
 template<typename T>
-BoundingBox<T>::BoundingBox(int dim) : dim(dim) , coords(nullptr) {
+BoundingBox<T>::BoundingBox(int dim, int conforming) : dim(dim) , coords(nullptr) {
   if (dim < 2 && dim > 3)
     throw OPSException(OPS_INVALID_ARGUMENT, "OPS-bound boxes defined only"
                         "for 2D or 3D geometries\n");
+
+  if (conforming != OPS_BOX_CONFORMING && conforming != OPS_BOX_NONCONFORMING)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Unsupported box conformation type.\n"
+                                             "Valid options are OPS_BOX_CONFORMING for boxes"
+                                             "that conform to the block box and "
+                                             "OPS_BOX_NONCONFORMING for boxes that do not conform"
+                                             "to the block box.");
 
   volume = 0.;
 
   owned = false;
 
   sizeT = sizeof(T);
+
+  conform = conforming;
 }
 
 template<typename T>
 BoundingBox<T>::BoundingBox(const ops_dat coords, const T *Dx,
-                         int dim) : dim(dim) , coords(coords) {
+                         int dim, int conforming) : dim(dim) , coords(coords) {
 
   if (dim < 2 && dim > 3) {
     throw OPSException(OPS_INVALID_ARGUMENT, "OPS-bound boxes defined only"
                        "for 2D or 3D geometries\n");
   }
+
+  if (conforming != OPS_BOX_CONFORMING && conforming != OPS_BOX_NONCONFORMING)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Unsupported box conformation type.\n"
+                                             "Valid options are OPS_BOX_CONFORMING for boxes"
+                                             "that conform to the block box and "
+                                             "OPS_BOX_NONCONFORMING for boxes that do not conform"
+                                             "to the block box.");
 
   owned = false;
 
@@ -191,14 +224,29 @@ BoundingBox<T>::BoundingBox(const ops_dat coords, const T *Dx,
 
   sizeT = sizeof(T);
 
+  conform = conforming;
+
 }
 
 template<typename T>
-BoundingBox<T>::BoundingBox(int dim, T *xmin, T *xmax) : dim{dim} , coords(nullptr) {
+BoundingBox<T>::BoundingBox(int dim, T *xmin, T *xmax,
+                            int conforming) : dim{dim} , coords(nullptr) {
 
   if (dim < 2 && dim > 3)
     throw OPSException(OPS_RUNTIME_ERROR,"A bounding box is defined only for "
                        "2D and 3D spaces\n");
+
+  for (int i = 0; i < dim; i++)
+    if (xmin[i] > xmax[i]) throw OPSException(OPS_INVALID_ARGUMENT,
+                                              "Attempt to define box block with "
+                                              "size xmin > xmax");
+
+  if (conforming != OPS_BOX_CONFORMING && conforming != OPS_BOX_NONCONFORMING)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Unsupported box conformation type.\n"
+                                             "Valid options are OPS_BOX_CONFORMING for boxes"
+                                             "that conform to the block box and "
+                                             "OPS_BOX_NONCONFORMING for boxes that do not conform"
+                                             "to the block box.");
 
   /* Setting local bounding boxes */
   globalBoundingBox[0].x = xmin[0];
@@ -217,6 +265,7 @@ BoundingBox<T>::BoundingBox(int dim, T *xmin, T *xmax) : dim{dim} , coords(nullp
 
   sizeT = sizeof(T);
 
+  conform  = conforming;
 }
 
 template<typename T>
@@ -288,7 +337,8 @@ void BoundingBox<T>::setBoundingBoxLocalBound(const ops_point<T> &xl,
 
 template<typename T>
 void BoundingBox<T>::setBoundingBoxLocalBound(const T *xlow, const T *xmax) {
-  if (xmax[0] <= xlow[0] || xmax[1] <= xlow[1])
+
+  if (xmax[0] < xlow[0] || xmax[1] < xlow[1])
       throw OPSException(OPS_INVALID_ARGUMENT,
                          "Error: Defined bounding box of non-positive volume.");
   boundingBox[0].x = xlow[0];
@@ -407,6 +457,28 @@ bool BoundingBox<T>::isCoordinateInBoundingBox(ops_point<T> &point) {
 }
 
 template<typename T>
+bool BoundingBox<T>::isCoordinateInBoundingBoxEqual(ops_point<T> &point) {
+
+  if (!owned)
+    return false;
+
+
+  if (boundingBox[0].x > point.x || boundingBox[1].x < point.x)
+    return false;
+
+  if (boundingBox[0].y > point.y || boundingBox[1].y < point.y)
+    return false;
+
+  if (dim == 3) {
+    if (boundingBox[0].z > point.z || boundingBox[1].z < point.z)
+      return false;
+  }
+
+  return true;
+}
+
+
+template<typename T>
 bool BoundingBox<T>::isCoordinateInBoundingBox(const T* point) const {
   if (!owned)
     return false;
@@ -421,6 +493,23 @@ bool BoundingBox<T>::isCoordinateInBoundingBox(const T* point) const {
     if (boundingBox[0].z > point[2] || boundingBox[1].z <= point[2])
       return false;
   }
+
+  return true;
+}
+
+template<typename T>
+bool BoundingBox<T>::isCoordinateInBoundingBoxEqual(const T* point) const {
+  if (!owned) return false;
+
+  if (boundingBox[0].x > point[0] || boundingBox[1].x < point[0])
+    return false;
+
+  if (boundingBox[0].y > point[1] || boundingBox[1].y < point[1])
+    return false;
+
+  if (dim == 3)
+    if (boundingBox[0].z > point[2] || boundingBox[1].z < point[2])
+      return false;
 
   return true;
 }
@@ -547,6 +636,21 @@ inline int _check_box_intersection(const int dim, T *xbox1_lo, T *xbox1_hi,
 }
 
 template<typename T>
+inline int _check_intersection_at_dir(const T xlo1, const T xhi1,
+                                      const T xlo2, const T xhi2) {
+
+  int a1 = 1;
+  T h1 = 0.5 * (xlo1 + xhi1);
+  T h2 = 0.5 * (xlo2 + xhi2);
+
+  T rAB = 0.5 * (xhi1 - xlo1) + 0.5 * (xhi2 - xlo2);
+
+  if (ops_abs(h2 - h1) > rAB) return 0;
+
+  return 1;
+}
+
+template<typename T>
 inline int _compute_intersection_region(T xbox1_low, T xbox1_hi,
                                         T xbox2_low, T xbox2_hi,
                                         T *xbox_int_low,
@@ -619,17 +723,11 @@ BoundingBox<T>* ops_find_intersection_region(BoundingBox<T> *box, T *region, int
   BoundingBox<T>* intersection = new BoundingBox<T>(dim);
   intersection->setBoundingBoxLocalBound(inters);
 
- /* printf("Intersection Box [%f %f %f]x[%f %f %f] (%d)\n", intersection->getLocalMin().x,
-         intersection->getLocalMin().y, intersection->getLocalMin().z,
-         intersection->getLocalMax().x, intersection->getLocalMax().y,
-         intersection->getLocalMax().z, overlp); */
-
   int iel =0;
   for (int i = 0; i < dim;i++)  {
     iel = 0;
     iel +=  (xbox_lo[i] == intersection->getMinCoordDir(i)) ? 0 : 1;
     iel +=  (xbox_hi[i] == intersection->getMaxCoordDir(i)) ? 0 : 1;
-    //printf("iel = %d\n",iel);
     if (iel > 0) {a1 = 1; return intersection; }
 
   }
@@ -797,7 +895,31 @@ inline void _ops_compute_map_grid_size_dir(int i, char *dx, char *box_block, int
 
   dxs[i] = (box->getMaxCoordDir(i) - box->getMinCoordDir(i)) / static_cast<T>(size);
 
+
+
 }
+
+template<typename T>
+inline T _ops_compute_map_grid_size_dir(int i, T* xmin, T *xmax, int size) {
+
+  return (xmax[i] - xmin[i]) / static_cast<T>(size);
+}
+
+template<typename T>
+inline void _ops_particle_set_map_bounds_conform_box(char *box_block, int dims,
+                                                  T *xmin, T *xmax) {
+
+  BoundingBox<T> *box = (BoundingBox<T> *) box_block;
+
+  if (!box->getOwnership()) return;
+
+  for (int i = 0; i < dims; i++) {
+    xmin[i] = box->getMinCoordDir(i);
+    xmax[i] = box->getMaxCoordDir(i);
+  }
+}
+
+
 template<typename T>
 void _ops_particle_number_of_particles_in_range(BoundingBox<T> *box, int dim, T *xcrd,
                                                 int noParticles, int *nsend) {
@@ -894,6 +1016,14 @@ char * _ops_particle_create_box(T* sending_region, const int dims) {
 
 
   return (char *) new BoundingBox<T>(dims, xmin, xmax);
+}
+
+template<typename T>
+void _ops_particle_compute_size(T *xmin, T *xmax, T *dx, int dim, int size[]) {
+
+  for (int i = 0; i < dim; i++) {
+    size[i] = (int)  (xmax[i] - xmin[i]) / (dx[i]);
+  }
 }
 
 #endif /* OPS_C_INCLUDE_OPS_BOUNDING_BOX_DEFS_H_ */

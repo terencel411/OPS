@@ -1064,7 +1064,7 @@ ops_dat ops_decl_dat_hdf5(ops_block block, int dat_dim, char const *type,
       block, dat_dim, read_size /*global dat size in each dimension*/,
       read_base, read_d_m, read_d_p, stride, data_char,
       type_size /*size of(type)*/, type,
-      dat_name); // TODO: multigrid stride support
+      dat_name, 1); // TODO: multigrid stride support
 
   created_dat->is_hdf5 = 1;
   created_dat->hdf5_file = copy_str(file_name);

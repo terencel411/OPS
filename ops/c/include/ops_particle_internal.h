@@ -80,6 +80,7 @@ void  _ops_particle_add_elem(int dim, T *x_local, ops_dat pos, int loc) {
     data[dim * loc + i] = x_local[i];
 }
 
+char* _ops_get_block_box(ops_block block);
 
 void _ops_particle_halo_copy_tobuf(char *buff, ops_particle_halo_data *halo_data,
                                    int nhalos, ops_particle_halo_exchange  halo_info,
@@ -205,9 +206,24 @@ void _ops_mapping_def_core(ops_particle particle, ops_dat grid, ops_stencil sten
                           ops_with_virtual &include_virtual, int size[],
                           int base[], int d_m[], int d_p[]);
 
+
+void _ops_mapping_set_structure(ops_particle particle, ops_dat mapping_grid,
+                                ops_stencil stencil, int d_mm[],
+                                int d_mp[], int size[], int base[],
+                                const int d_m[], const int d_p[], int stride[],
+                                ops_grid_type grid_type);
+
+
 void _ops_mapping_set_structures(ops_particle particle, char *skin, int  d_m[],
                                  int d_p[], int d_mb[], int d_pb[], int size[],
                                  char *dx_map,  ops_with_virtual &include_virtual);
+
+void _ops_mapping_set_structure(ops_particle particle, ops_dat mapping_grid,
+                                ops_stencil stencil, int d_mm[],
+                                int d_mp[], int size[], int base[],
+                                const int d_m[], const int d_p[], int stride[],
+                                ops_grid_type grid_type);
+
 
 ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, char *skin,
                                            int size[], int d_m[],
@@ -215,6 +231,13 @@ ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, char *skin,
                                            ops_with_virtual with_virtual,
                                            ops_grid_type grid_type,
                                            int Ng);
+
+ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, ops_dat grid,
+                                            ops_stencil stencil, int size[],
+                                            int base[], int d_m[], int d_p[], int stride[],
+                                            char *skin, ops_with_virtual include_virtual,
+                                            ops_grid_type grid_type, int Ng,
+                                            char *region, int grid_access);
 
 ops_particle_mapping  _ops_decl_mapping_core(ops_particle particle, ops_dat grid,
                                              int size[], int d_m[], int d_p[],
@@ -224,11 +247,15 @@ ops_particle_mapping  _ops_decl_mapping_core(ops_particle particle, ops_dat grid
                                              ops_grid_type grid_type,
                                              double skin, int Ng);
 
+void _ops_particle_init_map_structures(ops_particle_mapping map);
+
 void _ops_particle_map_validation(ops_particle_mapping map);
 
 void _ops_partition_flat_wall(ops_particle particle);
 
 void  _ops_particle_init_map(ops_particle_mapping map);
+
+void _ops_particle_init_map_structures(ops_particle_mapping map);
 
 void  _ops_particle_build_local_uniform(ops_particle_mapping map, ops_particle particle);
 
@@ -252,6 +279,12 @@ void  _ops_build_particle_to_grid(const size_t nParticles, const ops_dat bin,
 
 void _ops_particle_remap_virtual(ops_particle_mapping map, ops_particle particle,
                                  int istart, int ilast);
+
+void   _ops_particle_init_map_grid(ops_particle_mapping map, char *dx);
+
+void _ops_particle_update_bounds_non_conf_unif_grid(ops_particle particle, char *box,
+                                                    char *dx_map, char *xmin, char *xmax,
+                                                    char *dx, ops_dat grid);
 
 /*------------------------------------------------------------------------------------*
  * Communication functions

@@ -55,10 +55,10 @@ static char *copy_str(char const *src) {
 
 static char* append_str(char const *array1, char const *array2) {
 
-  char *newArray = new char[std::strlen(array1) + std::strlen(array2)];
+  char *newArray = new char[std::strlen(array1) + std::strlen(array2) + 1];
 
   std::strcpy(newArray, array1);
-  return std::strcpy(newArray, array2);
+  return std::strcat(newArray, array2);
 }
 
 /*-----------------------------------------------------------------------------*
@@ -139,6 +139,15 @@ bool _ops_particle_moved_to_exchange_zone(int bin_old[], int bin_new[], int rmv_
   return false;
 }
 
+char* _ops_get_block_box(ops_block block) {
+
+  if (block != nullptr)
+    return block->instance->OPS_block_list[block->index].box;
+
+  return nullptr;
+}
+
+
 
 /*******************************************************************************/
 /* Particle hanlding functions                                                 *
@@ -198,13 +207,19 @@ ops_particle  _ops_decl_particle_core(OPS_instance *instance, ops_block block,
   ops_particle particle = new  ops_particle_core;//(ops_particle)ops_calloc(1, sizeof(ops_particle_core));
 
   /* Set default values */
+  if (box == nullptr &&
+      instance->OPS_block_list[block->index].block_domain_defined == false)
+    throw OPSException(OPS_INVALID_ARGUMENT, "No BoundingBox is defined for either the"
+                                             "particles or the block.\n");
 
   particle->no_particles = 0;
   particle->no_virtual = 0;
   particle->global_particles = particle->no_particles;
   particle->block = block;
-  particle->box_block = box;
-  particle->type_box = type_size;
+  particle->box_block =
+      (box == nullptr) ? instance->OPS_block_list[block->index].box : box;
+  particle->type_box = (box == nullptr) ? instance->OPS_block_list[block->index].type_size
+                                         : type_size;
 
   particle->Nmax = OPS_MAX_PART;
   particle->name = copy_str(name);
@@ -233,6 +248,11 @@ ops_particle  _ops_decl_particle_core(OPS_instance *instance, ops_block block,
   particle->histories = (ops_neighbor_history *) ops_malloc(particle->nhistories_max *
                                                             sizeof(ops_neighbor_history *));
 
+  particle->group_index = 0;
+  particle->group_max = 10;
+  particle->groups = (ops_particle_group *) ops_malloc(particle->group_max *
+                                                       sizeof(ops_particle_group *));
+
   /* Assign particle to the correct list */
 
   instance->OPS_block_list[block->index].no_particle_structures++;
@@ -250,13 +270,13 @@ ops_particle  _ops_decl_particle_core(OPS_instance *instance, ops_block block,
   return particle;
 }
 
-void ops_set_bounding_box_to_block(ops_block block, char * box) {
+void ops_set_bounding_box_to_block(ops_block block, char * box, int size) {
 
-  OPS_instance *instance = OPS_instance::getOPSInstance();
-  ops_block_descriptor block_list = instance->OPS_block_list[block->index];
-
-  if (block_list.box == nullptr)
-    block_list.box = box;
+  if (!block->instance->OPS_block_list[block->index].block_domain_defined) {
+    block->instance->OPS_block_list[block->index].box = box;
+    block->instance->OPS_block_list[block->index].type_size = size;
+    block->instance->OPS_block_list[block->index].block_domain_defined = true;
+  }
 
 }
 
@@ -279,9 +299,13 @@ ops_particle _ops_free_particle(ops_particle particle) {
     ops_particle_mapping map = particle->map_list[index];
 
     ops_free(map->dx);
+    ops_free(map->xmin);
+    ops_free(map->xmax);
     ops_free(map);
   }
   ops_free(particle->map_list);
+
+  ops_free(particle->groups);
 
   ops_free(particle->histories);
 
@@ -505,9 +529,17 @@ ops_neighbor_history _ops_decl_neigh_history_char(ops_particle particleI,
     throw OPSException(OPS_INVALID_ARGUMENT, "ERROR: A non-positive number of max. neighbors "
                                              "is set. Please check your settings\n");
 
+  if (particleJ->is_wall)
+    throw OPSException(OPS_INVALID_ARGUMENT, "ERROR: Wall-particles are set as the first particle in "
+                                             " the history list\n");
 
-  if ((dofs > 0 && particleI->ids == NULL) || (dofs > 0 && particleJ->ids == NULL))
-    throw OPSException(OPS_INVALID_ARGUMENT, "ERROR: Neighbor history requires tags\n");
+
+  if ((dofs > 0 && particleI->ids == NULL))
+    throw OPSException(OPS_INVALID_ARGUMENT, "ERROR: Neighbor history requires tags for the first particle type\n");
+
+  if (dofs > 0 && !particleI->is_wall && particleJ->ids == NULL)
+    throw OPSException(OPS_INVALID_ARGUMENT, "ERROR: Neighbor history for particle-particle interactions require "
+                                             " second particle to have tags\n");
 
   //TODO: For check for particleI = particleJ and set the update flag to unique
 
@@ -547,9 +579,11 @@ ops_neighbor_history _ops_decl_neigh_history_char(ops_particle particleI,
                                                     "int", name_loc, true, false);
 
   name_loc = append_str(name, "_partnersI");
+  int type_partnerI = (history->particleJ->ids != nullptr) ? history->particleJ->ids->type_size : sizeof(int);
+  const char *array = (history->particleJ->ids != nullptr) ? history->particleJ->ids->type : "int";
   history->partnersI = ops_decl_particle_dat_char(particleI, num_neighsI, block_size, base,
-                                                  d_m, d_p, stride, (char *) data_int, sizeof(int),
-                                                  "int", name_loc, true, false);
+                                                  d_m, d_p, stride, (char *) data_int, type_partnerI,
+                                                  array, name_loc, true, false);
 
   name_loc = append_str(name, "_flagsI");
   history->flagI = ops_decl_particle_dat_char(particleI, num_neighsI, block_size, base,
@@ -566,7 +600,7 @@ ops_neighbor_history _ops_decl_neigh_history_char(ops_particle particleI,
   switch(history->update_type) {
   case OPS_HISTORY_UPDATE_UNIQUE:
     history->partnersJ = history->partnersI;
-    history->n_partnersJ = history->partnersJ;
+    history->n_partnersJ = history->n_partnersI;
     history->flagJ = history->flagI;
     history->indexJ = history->indexI;
     break;
@@ -580,12 +614,15 @@ ops_neighbor_history _ops_decl_neigh_history_char(ops_particle particleI,
     history->n_partnersJ = ops_decl_particle_dat_char(particleJ, num_neighsI, block_size, base,
                                                       d_m, d_p, stride, (char *) data_int,
                                                       sizeof(int), "int", name_loc, true, false);
-    history->n_partnersJ->is_particle = true;
+
 
     name_loc = append_str(name, "_partnersJ");
+    int type_partJ = (history->particleI->ids != nullptr) ? history->particleI->ids->type_size : sizeof(int);
+    const char *arrayJ = (history->particleI->ids != nullptr) ? history->particleI->ids->type: "int";
+
     history->partnersJ = ops_decl_particle_dat_char(particleJ, num_neighsJ, block_size, base,
-                                                    d_m, d_p, stride, (char *) data_int, sizeof(int),
-                                                    "int", name_loc, true, false);
+                                                    d_m, d_p, stride, (char *) data_int, type_partJ,
+                                                    arrayJ, name_loc, true, false);
 
     name_loc = append_str(name, "_flagsJ");
     history->flagJ = ops_decl_particle_dat_char(particleJ, num_neighsJ, block_size, base,
@@ -610,11 +647,14 @@ ops_neighbor_history _ops_decl_neigh_history_char(ops_particle particleI,
   block_size[0] = nmax;
 
   if (history->history_active) {
-    uint64_t *data_64t = NULL;
+    int type_indexI = (history->particleI->is_wall) ? sizeof(int) : particleI->ids->type_size;
+    int type_indexJ = particleJ->ids->type_size;
+    int type_index = MAX(type_indexI, type_indexJ);
+    const char *type = (type_index == sizeof(int)) ? "int" : "int64_t";
     name_loc = append_str(name,"_indexing");
-    history->indexing = ops_decl_particle_dat_char(particleI, 1, block_size, base,
-                                                   d_m, d_p, stride, (char *)data_64t,
-                                                   sizeof(uint64_t), "uint64_t", name_loc,
+    history->indexing = ops_decl_particle_dat_char(particleI, 2, block_size, base,
+                                                   d_m, d_p, stride, (char *) data_int,
+                                                   type_index, type , name_loc,
                                                    false, false); //TODO: Shift into 1
   }
 
@@ -630,22 +670,22 @@ ops_neighbor_history _ops_decl_neigh_history_char(ops_particle particleI,
   name_loc = append_str(name, "_data");
 
   history->data = nullptr;
-  if (history->history_active)
+  if (history->history_active) {
     history->data = ops_decl_particle_dat_char(particleI, dofs, block_size, base,
                                                d_m, d_p, stride, data, size_elem, type,
                                                name_loc, false, false);
-
+  }
   history->nmax_cont = nmax; //TODO:
   history->nconts = 0;
 
 
+  history->new_neighbors = nullptr;
   if (history->history_active) {
-    name = append_str(name, "_tmp_data");
+    name_loc = append_str(name, "_tmp_data");
     history->nmax_new = MAX(history->num_neighsI, history->num_neighsJ) * OPS_MAX_PART;
     block_size[0] = history->nmax_new;
-    size_elem = sizeof(int) * 2;
-    history->new_neighbors  = ops_decl_particle_dat_char(particleI, dofs, block_size, base,
-                                                       d_m, d_p, stride, data, size_elem, "int",
+    history->new_neighbors  = ops_decl_particle_dat_char(particleI, 2, block_size, base,
+                                                       d_m, d_p, stride, data, sizeof(int), "int",
                                                        name_loc, false, false);
   }
 
@@ -656,13 +696,13 @@ ops_neighbor_history _ops_decl_neigh_history_char(ops_particle particleI,
                                                               sizeof(ops_neighbor_history));
   particleI->histories[particleI->nhistories - 1] = history;
 
-  if (history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS) {
+//  if (history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS) {
     particleJ->nhistories++;
     particleJ->histories = (ops_neighbor_history *) ops_realloc(particleJ->histories,
                                                                 particleJ->nhistories *
                                                                 sizeof(ops_neighbor_history));
     particleJ->histories[particleJ->nhistories - 1] = history;
-  }
+//  }
 
   //Set to overall structure-TODO: May have an issue
   OPS_instance *instance = OPS_instance::getOPSInstance();
@@ -681,6 +721,38 @@ ops_neighbor_history _ops_decl_neigh_history_char(ops_particle particleI,
   return history;
 
 }
+
+ops_particle_group ops_decl_particle_group(ops_particle particle, const char *name) {
+
+  if (particle == nullptr)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Empty ops_particle structure.\n"
+                                             "Particle group definition requires"
+                                             "an active ops_particle structure ");
+
+  ops_particle_group  group =
+      (ops_particle_group) ops_malloc(sizeof(ops_particle_group_core));
+
+  group->particle_index = particle->index;
+  int base[OPS_MAX_DIM] = {};
+  int *data_ptr = nullptr;
+  group->group_dat = ops_decl_particle_dat(particle, 1, base, data_ptr, "int",
+                                           "group_data");
+
+  if (particle->group_index + 1 > particle->group_max) {
+    particle->group_max += 10;
+    particle->groups = (ops_particle_group *) ops_realloc(particle->groups,
+                                                          particle->group_max *
+                                                          sizeof(ops_particle_group));
+  }
+
+  particle->group_index++;
+  group->index = particle->group_index - 1;
+  group->name = copy_str(name);
+  particle->groups[group->index] = group;
+
+  return group;
+}
+
 
 /*-------------------------------------------------------------------------------*/
 /* \brief Marking particles for deletion and forward exchange                    *
@@ -806,6 +878,17 @@ void _ops_particle_remove_marked_flag(ops_particle particle, int flag) {
       _ops_particle_swap_data((char *)particle->mark_deletion, i, Nlocal - 1,
                               sizeof(int));
 
+      for (int ihis = 0; ihis < particle->nhistories; ihis++) {
+        //Case I: Particle I nneds to swap
+        ops_neighbor_history history = particle->histories[ihis];
+        if (particle->index == history->particleI->index) {
+          _ops_particle_swap_history_data(history, 0, i, Nlocal - 1);
+        }
+        else if (particle->index == history->particleJ->index &&
+                 history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS)
+          _ops_particle_swap_history_data(history, 0, 1, Nlocal - 1);
+      }
+
       Nlocal--;
       if (Nlocal == 0) break;
 
@@ -857,6 +940,17 @@ void _ops_particle_remove_marked_with_maps(ops_particle particle ) {
         _ops_particle_copy_mapping_data_to(map, i, Nlocal - 1);
       }
 
+      for (int ihis = 0; ihis < particle->nhistories; ihis++) {
+        //Case I: Particle I nneds to swap
+        ops_neighbor_history history = particle->histories[ihis];
+        if (particle->index == history->particleI->index) {
+          _ops_particle_swap_history_data(history, 0, i, Nlocal - 1);
+        }
+        else if (particle->index == history->particleJ->index &&
+                 history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS)
+          _ops_particle_swap_history_data(history, 0, 1, Nlocal - 1);
+      }
+
       Nlocal--;
       if (Nlocal == 0) break;
 
@@ -877,7 +971,8 @@ void  ops_particle_reset_virtual_particles(ops_particle particle) {
     int *bins = (int *)map->bin->data;
     int *bin2grid = (int *)map->parts_to_grid->data;
 
-
+    int flag_his = (particle->nhistories > 0) ? 1 : 0;
+    int reset_flag  = 0;
 
     for (size_t  i = particle->no_particles;
                  i < particle->no_particles + particle->no_virtual; i++) {
@@ -888,6 +983,41 @@ void  ops_particle_reset_virtual_particles(ops_particle particle) {
 
       bins[i] = -1;
       bin2grid[i] = -1;
+
+      if (flag_his) reset_flag = 1;
+      //TODO: Reset virtual lists set everything local to zero
+
+    }
+
+    if (reset_flag) {
+      for (int ihis = 0; ihis < particle->nhistories; ihis++) {
+        //Case I
+        ops_neighbor_history history = particle->histories[ihis];
+
+        if (particle->index == particle->histories[ihis]->particleI->index) {
+          for (size_t i = particle->no_particles;
+                      i < particle->no_particles + particle->no_virtual; i++) {
+            for (int jp = 0; jp < ((int *) history->n_partnersI->data)[i]; jp++) {
+              //TODO: Index to -1
+              ((int *) history->indexI->data)[i * history->num_neighsI + jp] = -1;
+            }
+            ((int *) history->n_partnersI->data)[i] = 0;
+
+          }
+        }
+        else if (particle->index == particle->histories[ihis]->particleJ->index &&
+                 particle->histories[ihis]->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS) {
+          for (size_t i = particle->no_particles;
+                      i < particle->no_particles + particle->no_virtual; i++) {
+            for (int jp = 0; jp < ((int *) history->n_partnersJ->data)[i]; jp++) {
+              //TODO: Index to -1
+              ((int *) history->indexJ->data)[i * history->num_neighsJ + jp] = -1;
+            }
+            ((int *) history->n_partnersJ->data)[i] = 0;
+
+          }
+        }
+      }
     }
 
   }
@@ -936,6 +1066,8 @@ void  ops_particle_rearrange_particles_for_removal(ops_particle particle) {
       //  _ops_particle_swap_mapping_data(map, i, Nlocal - 1);
         _ops_particle_copy_mapping_data_to(map, i, Nlocal - 1);
       }
+
+      //TODO: Swap also data for histories needed for consistency
 
       Nlocal--;
       if (Nlocal == 0) break;
@@ -1664,6 +1796,10 @@ void ops_particle_halo_transfer_group(ops_part_halo_grp_type exchange_type,
 /* Mapping functions                                                                              */
 /**************************************************************************************************/
 
+/*
+ * NOTE: This function supports only generation of maps for uniform grids
+ */
+
 ops_particle_mapping  _ops_decl_mapping_core(ops_particle particle, ops_dat grid,
                                              int size[],
                                              int d_m[], int d_p[], int base[],
@@ -1671,9 +1807,37 @@ ops_particle_mapping  _ops_decl_mapping_core(ops_particle particle, ops_dat grid
                                              ops_stencil stencil,
                                              ops_with_virtual include_virtual,
                                              ops_grid_type grid_type, int Ng) {
+
+
+ if (grid_type == OPS_NON_UNI_STAG || grid_type ==  OPS_NON_UNI_COLL)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Error: Function can be called only"
+                                             "to generate maps of particles to uniform grids.\n");
+
+  //Get flag for allocation
+  int type_box = particle->type_box;
+  int is_conforming{1};
+  switch(type_box) {
+  case(sizeof(float)):
+    is_conforming = ((BoundingBox<float> *) particle->box_block)->isBoxConformingToBlock();
+  break;
+  case(sizeof(double)):
+    is_conforming = ((BoundingBox<double> *) particle->box_block)->isBoxConformingToBlock();
+  break;
+  case(sizeof(long double)):
+    is_conforming = ((BoundingBox<long double> *) particle->box_block)->isBoxConformingToBlock();
+  break;
+  }
+
+
+  int assign = (is_conforming == 0) ? 1 : 0;
+
+  // int flag_alloc =
+
   /* Create a new structure */
   ops_particle_mapping map = (ops_particle_mapping)
        ops_malloc(sizeof(ops_particle_mapping_core));
+
+  map->map_type = (is_conforming == 0) ? 1 : 3;
 
   map->mapping_type = include_virtual;
 
@@ -1682,9 +1846,13 @@ ops_particle_mapping  _ops_decl_mapping_core(ops_particle particle, ops_dat grid
   map->grid = grid;
 
   map->Ngrids = 1;
-  if (map->grid_type != OPS_UNIFORM_STAG || map->grid_type != OPS_UNIFORM_COLL) {
-    map->Ngrids = (Ng > 1) ? Ng : 1;
-  }
+
+
+  int type_size = particle->particle_pos_dat->type_size;
+  map->dx = (char *) ops_malloc( type_size * particle->block->dims);
+  map->xmin = (char *) ops_malloc(type_size * particle->block->dims);
+  map->xmax = (char *) ops_malloc(type_size * particle->block->dims);
+
 
   int*    nulli{nullptr};
 
@@ -1697,9 +1865,10 @@ ops_particle_mapping  _ops_decl_mapping_core(ops_particle particle, ops_dat grid
 
 
 //It should be strided
-
   map->binhead = ops_decl_dat(particle->block, 1, size, base, d_m, d_p,
-                                stride, nulli,"int", "binhead");
+                                stride, nulli,"int", "binhead", assign);
+
+
 
   //Setting up the particle structure
   int dim = particle->particle_pos_dat->dim;
@@ -1717,16 +1886,32 @@ ops_particle_mapping  _ops_decl_mapping_core(ops_particle particle, ops_dat grid
                                          "long double", "xold", true, false);
 
   }
-
-  //Setup map->dx;
-  int type_size = particle->particle_pos_dat->type_size;
-  map->dx = (char *) ops_malloc(particle->block->dims * type_size);
-
-
-
   /* Copy Rp dat structure */
   map->particle = particle;
   map->Nmax = particle->Nmax;
+
+
+
+  if (map->map_type > 1) {
+    map->mapping_grid = grid;
+    map->grid_to_map = ops_decl_dat(particle->block, 1, grid->size, grid->base, grid->d_m,
+                                    grid->d_p, grid->stride, nulli, "int","grid_to_map", 1);
+
+    map->grid_head = ops_decl_dat(particle->block, 1, size, base, d_m, d_p, stride, nulli,
+                                  "int", "grid_head", assign);
+
+    map->grid_bin = ops_decl_particle_dat(particle, dim, base, nulli, "int", "grid_bin",
+                                          false, false);
+    map->id_grid = ops_decl_particle_dat(particle, dim, base, nulli, "int", "id_grid",
+                                         false, false);
+
+  }
+  else {
+    map->grid_to_map = map->binhead;
+    map->grid_head = map->binhead;
+    map->grid_bin = nullptr;
+    map->id_grid = nullptr;
+  }
 
   /* Define uniform grid mapping */
   map->mapping_stencil = stencil;
@@ -1747,6 +1932,7 @@ ops_particle_mapping  _ops_decl_mapping_core(ops_particle particle, ops_dat grid
 
 }
 
+//Declaire for map of type 0:
 ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, char *skin,
                                             int size[], int d_m[],
                                             int d_p[], int base[],
@@ -1754,9 +1940,16 @@ ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, char *skin,
                                             ops_grid_type grid_type,
                                             int Ng) {
 
+  if (grid_type == OPS_NON_UNI_STAG || grid_type ==  OPS_NON_UNI_COLL)
+    throw OPSException(OPS_INVALID_ARGUMENT, "Error: Function can be called only"
+                                             "for uniform grids");
+
   //Allocate mapping structure
   ops_particle_mapping map = (ops_particle_mapping)
            ops_malloc(sizeof(ops_particle_mapping_core));
+
+  //Set particle map
+  map->map_type = 0;
 
   //Set mapping type
   map->grid_type = grid_type;
@@ -1778,7 +1971,7 @@ ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, char *skin,
                                        base, nulld, "double", "ps_old", true, false);
 
   map->binhead = ops_decl_dat(particle->block, 1, size, base, d_m, d_p,
-                              nulld, "double", "binhead");
+                              nulld, "double", "binhead", 1);
 
   map->mapping_stencil = nullptr;
 
@@ -1786,10 +1979,20 @@ ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, char *skin,
 
   int type_size = particle->particle_pos_dat->type_size;
   map->dx = (char *) ops_malloc(type_size * particle->block->dims);
+  map->xmin = (char *) ops_malloc(type_size * particle->block->dims);
+  map->xmax = (char *) ops_malloc(type_size * particle->block->dims);
+
+  memcpy(map->dx, skin, type_size * particle->block->dims);
 
   map->particle = particle;
   map->Nmax = particle->Nmax;
 
+
+  //Allocation of ops_dat structures for grid projection to uniform grid
+  map->grid_head = nullptr;
+  map->grid_bin = nullptr;
+  map->grid_to_map = nullptr;
+  map->id_grid = nullptr;
 
   //Assign array to structure
   particle->particle_map_index++;
@@ -1803,6 +2006,144 @@ ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, char *skin,
   map->index = particle->particle_map_index - 1;
 
 
+
+  return map;
+}
+
+ops_particle_mapping _ops_decl_mapping_core(ops_particle particle, ops_dat grid,
+                                            ops_stencil stencil, int size[],
+                                            int base[], int d_m[], int d_p[], int stride[],
+                                            char *skin, ops_with_virtual include_virtual,
+                                            ops_grid_type grid_type, int Ng,
+                                            char *grid_region, int grid_access) {
+
+  ops_particle_mapping map = (ops_particle_mapping)
+       ops_malloc(sizeof(ops_particle_mapping_core));
+
+  //Get box status
+  int type_box = particle->type_box;
+  int is_conforming{1};
+  switch(type_box) {
+  case(sizeof(float)):
+    is_conforming = !((BoundingBox<float> *) particle->box_block)->isBoxConformingToBlock();
+  break;
+  case(sizeof(double)):
+    is_conforming = !((BoundingBox<double> *) particle->box_block)->isBoxConformingToBlock();
+  break;
+  case(sizeof(long double)):
+    is_conforming = !((BoundingBox<long double> *) particle->box_block)->isBoxConformingToBlock();
+  break;
+  }
+
+  int assign = (is_conforming &&   (grid_type == OPS_UNIFORM_STAG ||
+                                    grid_type == OPS_UNIFORM_COLL)) ? 1 : 0;
+
+  int non_unfrm_active = ( grid_type == OPS_NON_UNI_STAG ||
+                           grid_type == OPS_NON_UNI_COLL) ? 1 : 0;
+  if (assign == 0)
+    assign = (is_conforming && !non_unfrm_active) ? 1 : 0;
+  //Get map_type
+  map->map_type = 1;
+  if (is_conforming) {
+    map->map_type = (non_unfrm_active) ? 1 : 2;
+  }
+  else map->map_type = 3;
+
+
+  //Allocate xmin, xmax, skin
+  map->xmin = (char *) ops_malloc(type_box * particle->block->dims);
+  map->xmax = (char *) ops_malloc(type_box * particle->block->dims);
+  map->dx = (char *) ops_malloc(type_box * particle->block->dims);
+  map->region_access = 0;
+  map->region_grid = nullptr;
+  if (grid_access > 1) {
+    map->map_type = 3;
+    map->region_grid = (char *) ops_malloc(type_box * particle->block->dims * 2);
+    memcpy(map->region_grid, grid_region, type_box * particle->block->dims * 2);
+    map->region_access = grid_access;
+  }
+
+  map->grid = grid;
+
+  if (skin != nullptr)
+    memcpy(map->dx, skin, type_box * particle->block->dims);
+  else
+    memset(map->dx, 0, type_box * particle->block->dims);
+
+  map->Ngrids = Ng;
+  map->mapping_type = include_virtual;
+  map->grid_type = grid_type;
+
+  map->decide = false;
+
+  //Allocate fields
+  int *nulli{nullptr};
+  int base_p[] = {0, 0, 0};
+
+  map->parts_to_grid = ops_decl_particle_dat(particle, 1, base, nulli,
+                                             "int","parts_to_map", true, false);
+  map->bin = ops_decl_particle_dat(particle, 1, base, nulli, "int", "parts_to_map",
+                                             true, false);
+
+  //Binhead
+  map->binhead = ops_decl_dat(particle->block, 1, size, base, d_m, d_p,
+                              stride, nulli, "int", "binhead", assign);
+
+  //Setting up secondary fields for particles
+  int dim = particle->particle_pos_dat->dim;
+  void *data = nullptr;
+  if (particle->particle_pos_dat->type_size == sizeof(float)) {
+    map->pos_old = ops_decl_particle_dat(particle, dim, base, (float *) data,
+                                         "float", "xold", true, false);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(double)) {
+    map->pos_old = ops_decl_particle_dat(particle, dim, base, (double *) data,
+                                         "double", "xold", true, false);
+  }
+  else if (particle->particle_pos_dat->type_size == sizeof(long double)) {
+    map->pos_old = ops_decl_particle_dat(particle, dim, base, (long double *)data,
+                                         "long double", "xold", true, false);
+
+  }
+
+  map->particle = particle;
+  map->Nmax = particle->Nmax;
+
+  /* Define uniform grid mapping */
+  map->mapping_stencil = stencil;
+
+  //In case of non-uniform grid define extra parameters
+  if (map->map_type > 1) {
+    map->grid_to_map = ops_decl_dat(particle->block, 1, grid->size, grid->base,
+                                    grid->d_m, grid->d_p, grid->stride, nulli,
+                                    "int", "grid_to_map");
+
+    map->grid_head = ops_decl_dat(particle->block, 1, size, base,
+                                  d_m, d_p, stride, nulli, "int",
+                                  "grid_head", assign);
+    map->grid_bin = ops_decl_particle_dat(particle, 1, base, nulli,
+                                          "int", "grid_bin", false, false);
+
+    map->id_grid = ops_decl_particle_dat(particle, 1, base, nulli, "int",
+                                             "id_grid", false, false);
+  }
+  else {
+    map->grid_to_map = map->binhead;
+    map->grid_head = map->binhead;
+    map->grid_bin = nullptr;
+    map->id_grid = nullptr;
+
+  }
+
+  particle->particle_map_index++;
+  if (particle->particle_map_index > particle->particle_map_max) {
+    particle->particle_map_max = particle->particle_map_index + 10;
+    particle->map_list = (ops_particle_mapping *)ops_realloc(particle->map_list,
+                     particle->particle_map_max * sizeof(ops_particle_mapping));
+  }
+  particle->map_list[particle->particle_map_index - 1] = map;
+
+  map->index = particle->particle_map_index - 1;
 
   return map;
 }
@@ -1830,8 +2171,7 @@ ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid,
 ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid,
                                       ops_stencil stencil, int stride[] ,
                                       ops_with_virtual include_virtual,
-                                      ops_grid_type grid_type,
-                                      int Ng) {
+                                      ops_grid_type grid_type, int Ng) {
 
   int size[OPS_MAX_DIM], d_m[OPS_MAX_DIM], d_p[OPS_MAX_DIM], base[OPS_MAX_DIM];
   int stride_map[OPS_MAX_DIM];
@@ -1857,7 +2197,8 @@ ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid,
 }
 
 /*------------------------------------------------------------------------------------*/
-/* \brief Building maps of particles to uniform or non-uniform structured grids
+/* \brief Building maps of particles to uniform or non-uniform structured grids. For
+ *        non-uniform grids build only the projection to the uniform grid
  *
  * \param[in] particle pointer to an ops_particle structure
  * \param[in] map      pointer to an ops_particle_mapping structure
@@ -1866,14 +2207,12 @@ ops_particle_mapping ops_decl_mapping(ops_particle particle, ops_dat grid,
 
 void ops_particle_map_build(ops_particle particle, ops_particle_mapping map) {
 //  if (map->decide) {
-    if (map->grid_type == OPS_UNIFORM_STAG ||
-        map->grid_type == OPS_UNIFORM_COLL)
-      _ops_particle_build_local_uniform(map, particle);
-    else if (map->grid_type == OPS_NON_UNI_STAG ||
-             map->grid_type == OPS_NON_UNI_COLL)
-      throw OPSException(OPS_RUNTIME_ERROR, "ERROR: Non-uniform grids are not "
-                                            "currently supported\n");
 
+      _ops_particle_build_local_uniform(map, particle);
+
+    for (int ihis = 0; ihis < particle->nhistories; ihis++)
+      if (!particle->histories[ihis]->flag_update)
+        particle->histories[ihis]->flag_update = true;
     map->decide = false;
  // }
 }
@@ -2006,15 +2345,8 @@ int ops_particle_update_map_lists_actual_parts(ops_particle particle) {
 int ops_particle_update_map_lists_actual_hybrid(ops_particle particle) {
   for (int index = 0; index < particle->particle_map_index; index++) {
     ops_particle_mapping map = particle->map_list[index];
-    if (map->grid_type == OPS_UNIFORM_STAG ||
-          map->grid_type == OPS_UNIFORM_COLL)
-        int a1 =  _ops_particle_decide_build_only_local_uniform(map, particle);
-      else if (map->grid_type == OPS_NON_UNI_STAG ||
-               map->grid_type == OPS_NON_UNI_COLL)
-        throw OPSException(OPS_NOT_IMPLEMENTED, "Concurrent decide and update is not"
-                           "implemented for non uniform grids");
-      else
-        throw OPSException(OPS_NOT_IMPLEMENTED, "This type of grid is not supported\n");
+
+    int a1 =  _ops_particle_decide_build_only_local_uniform(map, particle);
 
     map->decide = ops_particle_global_rebuild(map->decide);
 
@@ -2023,7 +2355,7 @@ int ops_particle_update_map_lists_actual_hybrid(ops_particle particle) {
   int flag{0};
 
   for (int index = 0; index < particle->particle_map_index; index++)
-   if (particle->map_list[index]->decide) {flag = 1; break;}
+   if (particle->map_list[index]->decide) {flag = 1; break;} //TODO flag for histories
 
   if (flag == 1) {
     ops_particle_reset_virtual_particles(particle);
@@ -2031,6 +2363,10 @@ int ops_particle_update_map_lists_actual_hybrid(ops_particle particle) {
     _ops_particle_exchange_map_update(particle); //TODO
 
     //TODO: Rebuild maps for virtual intra-block
+    for (int ihis = 0; ihis < particle->nhistories; ihis++) {
+      if (!particle->histories[ihis]->flag_update)
+        particle->histories[ihis]->flag_update = true;
+    }
   }
 
   return flag;
@@ -2209,6 +2545,33 @@ void _ops_particle_swap_data(char *data, int i, int j, int elems) {
   }
 }
 
+void _ops_particle_swap_history_data(ops_neighbor_history history, int index,
+                                     int i, int j) {
+
+  if (index == 0) {
+    _ops_particle_swap_data(history->n_partnersI->data, i, j,
+                            history->n_partnersI->elem_size);
+    _ops_particle_swap_data(history->partnersI->data, i, j,
+                            history->partnersI->elem_size);
+    _ops_particle_swap_data(history->indexI->data, i, j,
+                            history->indexI->elem_size);
+    _ops_particle_swap_data(history->flagI->data, i, j,
+                            history->flagI->elem_size);
+  }
+  else {
+    _ops_particle_swap_data(history->n_partnersJ->data, i, j,
+                            history->n_partnersJ->elem_size);
+    _ops_particle_swap_data(history->partnersJ->data, i, j,
+                            history->partnersJ->elem_size);
+    _ops_particle_swap_data(history->indexJ->data, i, j,
+                            history->indexJ->elem_size);
+    _ops_particle_swap_data(history->flagJ->data, i, j,
+                            history->flagJ->elem_size);
+
+  }
+}
+
+
 //TO: What about xolds::
 void _ops_particle_swap_mapping_data(ops_particle_mapping map, int from, int to) {
 
@@ -2325,7 +2688,10 @@ void ops_particle_init_maps(ops_particle particle) {
   for (int index = 0; index < particle->particle_map_index; index++) {
     ops_particle_mapping map = particle->map_list[index];
 
+    _ops_particle_init_map_structures(map);
+
     _ops_particle_map_validation(map);
+
     _ops_particle_init_map(map);
 
 
@@ -2356,7 +2722,13 @@ void ops_particle_setup_partition() {
   OPS_instance *instance = OPS_instance::getOPSInstance();
 
 
+  //Decompose main block
+
   for (int index = 0; index < instance->OPS_block_index; index++) {
+
+    ops_block block = instance->OPS_block_list[index].block;
+
+    ops_build_main_bounding_box(block);
 
     int nparticles = instance->OPS_block_list[index].no_particle_structures;
     for (int ipart = 0; ipart < nparticles; ipart++) {
@@ -2371,7 +2743,6 @@ void ops_particle_setup_partition() {
 
     }
   }
-
 
 }
 
@@ -2448,18 +2819,20 @@ void ops_particle_update_map_halo_periodic(ops_particle particle, ops_dat *dat_b
 
 void ops_particle_init_histories(ops_neighbor_history history) {
 
-  for (size_t i = 0; i <   history->particleI->no_particles
-                       + history->particleI->no_virtual; i++) {
-    ((int *) history->n_partnersI->data)[i] = 0;
-  }
+  size_t size = (history->particleI->no_particles + history->particleI->no_virtual)
+           * history->n_partnersI->elem_size;
+  memset(history->n_partnersI->data, 0, size);
+
+  //TODO: Set to -1 all partners ???
 
   if (history->update_type == OPS_HISTORY_UPDATE_BOTH_WAYS) {
-    for (size_t i = 0; i < history->particleJ->no_particles
-                      + history->particleJ->no_virtual; i++) {
-      ((int *) history->n_partnersJ->data)[i] = 0;
 
-    }
+    size = (history->particleJ->no_particles + history->particleJ->no_virtual)
+         * history->n_partnersJ->elem_size;
+    memset(history->n_partnersJ->data, 0, size);
   }
+
+  history->flag_update = true;
 }
 
 
