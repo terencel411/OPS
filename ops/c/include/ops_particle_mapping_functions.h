@@ -400,10 +400,10 @@ void _ops_particle_points_in_map(T *xmin, T *xmax, T* dx,  T* data, int dim, con
         int i_elem = i + ifirst_loc[0];
 
         xgrid[0] = (soa) ?  *(data + i_elem + j_elem * size[0] + k_elem * size[0] * size[1])
-                        :  *(data + dim * i_elem + j_elem * dim * size[0] + k_elem * size[0] * size[1]);
+                        :  *(data + dim * i_elem + j_elem * dim * size[0] + k_elem * dim * size[0] * size[1]);
         xgrid[1] = (soa) ?  *(data + i_elem + j_elem * size[0] + k_elem * size[0] * size[1]
                              + size[0] * size[1] * size[2]) : *(data + 1 + i_elem * dim + j_elem * dim * size[0]
-                                                                      + k * dim * size[0] * size[1]);
+                                                                      + k_elem * dim * size[0] * size[1]);
         if (dim == 3)
          xgrid[2] = (soa) ? *(data + i_elem + j_elem * size[0] + k_elem * size[0] * size[1]
                           + 2 * size[0] * size[1] * size[2]) : *(  data + 2 + i_elem * dim
@@ -473,10 +473,10 @@ void       _ops_particle_generate_maps_non_conf(int map_type, T * xmin, T* xmax,
       for (int i = 0; i < range_local[0]; i++) {
         int i_elem = i + ifirst_loc[0];
         xgrid[0] = (soa) ?  *(grid + i_elem + j_elem * size[0] + k_elem * size[0] * size[1])
-                        :  *(grid + dim * i_elem + j_elem * dim * size[0] + k_elem * size[0] * size[1]);
+                        :  *(grid + dim * i_elem + j_elem * dim * size[0] + k_elem * dim * size[0] * size[1]);
         xgrid[1] = (soa) ?  *(grid + i_elem + j_elem * size[0] + k_elem * size[0] * size[1]
                              + size[0] * size[1] * size[2]) : *(grid + 1 + i_elem * dim + j_elem * dim * size[0]
-                                                                      + k * dim * size[0] * size[1]);
+                                                                      + k_elem * dim * size[0] * size[1]);
         if (dim == 3)
          xgrid[2] = (soa) ? *(grid + i_elem + j_elem * size[0] + k_elem * size[0] * size[1]
                           + 2 * size[0] * size[1] * size[2]) : *(  grid + 2 + i_elem * dim

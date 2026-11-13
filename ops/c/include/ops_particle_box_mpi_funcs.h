@@ -265,7 +265,7 @@ void BoundingBox<T>::partitionBoundingBox(ops_block block, ops_dat map_bin, T *d
     if (iz > 0 && dim == 3) {
       sub_block *sb = OPS_sub_block_list[block->index];
       this->boundingBox[0].z = (sb->id_m[2] == MPI_PROC_NULL) ? this->globalBoundingBox[0].z
-                             : MAX(this->globalBoundingBox[0].z, block_box->getLocalMin().x);
+                             : MAX(this->globalBoundingBox[0].z, block_box->getLocalMin().z);
       this->boundingBox[1].z = (sb->id_p[2] == MPI_PROC_NULL) ? this->globalBoundingBox[1].z
                              : MIN(this->globalBoundingBox[1].z, block_box->getLocalMax().z);
     }
@@ -281,7 +281,7 @@ void BoundingBox<T>::partitionBoundingBox(ops_block block, ops_dat map_bin, T *d
     this->volume = (this->boundingBox[1].x - this->boundingBox[0].x)
                  * (this->boundingBox[1].y - this->boundingBox[0].y);
 
-    this->volume = (dim == 3) ? this->volume * (this->boundingBox[1].z - this->boundingBox[1].z)
+    this->volume = (dim == 3) ? this->volume * (this->boundingBox[1].z - this->boundingBox[0].z)
                               : this->volume;
 
     this->owned = true;
